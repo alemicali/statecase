@@ -10,9 +10,10 @@ Branch protection should require these logical checks on pull requests:
 1. `quality` — lint, typecheck, coverage tests, build, package dry-run, and
    production dependency audit on the primary Node version.
 2. `compatibility` — build and tests on every supported Node major.
-3. `CodeQL` — JavaScript/TypeScript static security analysis.
-4. `Dependency Review` — blocks newly introduced vulnerable dependencies on
-   pull requests where GitHub dependency review is available.
+3. `CodeQL` — JavaScript/TypeScript static security analysis, required once
+   GitHub code scanning is available for the repository.
+4. `Dependency Review` — blocks newly introduced vulnerable dependencies once
+   GitHub dependency review is available for the repository.
 
 Jobs use `npm ci`, minimum permissions, dependency caching, concurrency
 cancellation, timeouts, and no production credentials. CI forks receive no
@@ -45,9 +46,10 @@ and owner approval; it must not be used to merge untested new code.
 
 ### Pull request
 
-Run quality, runtime compatibility, dependency review, and CodeQL. Core
-integration tests must use local Cloudflare emulation and fake identity; no
-network account or personal harness directory.
+Run quality and runtime compatibility. Add dependency review and CodeQL to the
+required set as soon as GitHub exposes them for the repository. Core integration
+tests use local Cloudflare emulation and fake identity; no network account or
+personal harness directory.
 
 ### Main
 
@@ -86,7 +88,8 @@ product defect, not hidden by retries.
 
 ## Security automation
 
-- CodeQL runs on pull requests, main, and weekly schedule.
+- CodeQL will run on pull requests, main, and a weekly schedule once code
+  scanning is available. Its prepared workflow is restored at that gate.
 - Dependabot proposes npm and GitHub Actions updates weekly.
 - Dependency review rejects high/critical newly introduced advisories.
 - Runtime `npm audit --omit=dev --audit-level=high` is blocking.
@@ -94,6 +97,13 @@ product defect, not hidden by retries.
   CI advisory blocks release.
 - GitHub secret scanning and push protection must be enabled in repository
   settings when available.
+
+At repository creation time, branch protection, code scanning, dependency
+review, secret scanning, and push protection were unavailable for the private
+repository on the current GitHub plan. This is an infrastructure limitation,
+not a waived control. Before public release, make the repository public or
+enable the required GitHub plan, restore the security workflows, enable these
+settings, and record passing evidence.
 
 ## Policy exceptions
 

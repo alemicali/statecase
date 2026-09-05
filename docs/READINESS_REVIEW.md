@@ -40,6 +40,10 @@ Last updated: 2026-09-05
 - Agent-native behavior: skills invoke stable JSON CLI operations but are not
   the persistence mechanism.
 - Delivery: TDD, contract tests, fault injection, paranoid UAT, staged beta.
+- Repository security availability: the private MVP repository's current
+  GitHub plan does not expose branch protection, CodeQL/code scanning,
+  dependency review, secret scanning, or push protection. These controls are a
+  mandatory pre-public-release gate, not silently waived.
 
 ## Use-case coverage
 
