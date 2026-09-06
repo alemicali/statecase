@@ -67,7 +67,8 @@ working-tree overlays; Statecase never synchronizes Git credentials.
 
 ```bash
 ./apps/cli/dist/bin.js login
-export STATECASE_RECOVERY_PASSPHRASE='use-a-long-unique-passphrase'
+read -rsp 'Recovery passphrase: ' STATECASE_RECOVERY_PASSPHRASE && export STATECASE_RECOVERY_PASSPHRASE
+printf '\n'
 ./apps/cli/dist/bin.js vault create personal --recovery-file "$PWD/personal.statecase-recovery.json"
 unset STATECASE_RECOVERY_PASSPHRASE
 ./apps/cli/dist/bin.js workspace attach --auto --path /path/to/checkout
