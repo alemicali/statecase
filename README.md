@@ -20,6 +20,10 @@ materialization, a crash-safe runtime journal, transparent harness shims, and
 the canonical agent skill. Immutable Session Capsules bind native sessions to
 their exact harness, Git baseline, workspace overlay, and Drop revision;
 unavailable/external context is reported instead of silently copied.
+Clean Git LFS pointers are likewise rejected with
+`GIT_LFS_CONTENT_UNAVAILABLE` until their bytes are materialized by device-local
+Git LFS; an encrypted overlay that already contains replacement bytes remains
+portable.
 `statecase run codex|claude` performs a bounded
 preflight pull, supervises the unmodified harness, publishes periodically, and
 attempts a final flush without preventing offline use or changing the child
@@ -31,7 +35,8 @@ as an immutable delta that persistent devices can reconcile.
 The persistent daemon can run with `statecase daemon foreground` or be installed
 as a systemd user service / macOS LaunchAgent. Real-OS service UAT, append-aware
 same-session merge, initialized-submodule
-hydration, automatic retention/in-place restore, post-revocation key rewrapping,
+hydration, transparent Git LFS object acquisition, automatic retention/in-place
+restore, post-revocation key rewrapping,
 key rotation, and real-version Codex/Claude fixture certification remain
 release gates. This is not yet a
 public-production release.

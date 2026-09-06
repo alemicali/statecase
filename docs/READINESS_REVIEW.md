@@ -150,6 +150,14 @@ the
 [Daytona Git-baseline acquisition UAT](uat/2026-09-07-git-baseline-daytona.md)
 against the live Cloudflare service.
 
+Git LFS pointer detection is now fail-closed on both capture and hydration.
+Statecase identifies baseline pointer blobs through Git plumbing, reports the
+affected logical paths as `GIT_LFS_CONTENT_UNAVAILABLE`, and accepts a path only
+when device-local Git LFS has materialized it or the encrypted overlay replaces
+or deletes it. Statecase still does not acquire LFS credentials or promise
+transparent LFS object download; that compatibility/UAT work remains a release
+gate.
+
 Persistent installations now keep a stable device ID independent of absolute
 paths and Better Auth session rotation. D1 binds each service session to that
 installation. Device listing and explicit revocation atomically revoke vault

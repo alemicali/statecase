@@ -37,6 +37,12 @@ An uninitialized staged gitlink can be reproduced without copying nested
 repository bytes. Initialized submodule worktrees fail closed until a separate
 transactional submodule hydration design is implemented.
 
+Baseline Git LFS pointer blobs are detected with bounded Git plumbing. A
+pointer or missing worktree file fails with `GIT_LFS_CONTENT_UNAVAILABLE`
+instead of masquerading as restored content. An explicit overlay replacement or
+deletion resolves the path. Statecase does not synchronize or invoke LFS
+credentials; automatic LFS object acquisition remains outside this decision.
+
 ## Alternatives considered
 
 - Copy `.git`: rejected because it is unsafe, path-dependent, and includes
@@ -68,4 +74,5 @@ Tests cover clean baselines; staged/unstaged divergence; additions, deletions,
 binary and empty files; executable bits; relative symlinks; detached and unborn
 repositories; gitlinks; dirty/baseline conflicts; canonical ordering; malformed
 metadata; corrupt bytes; inbound path/symlink attacks; shallow-clone acquisition;
-unreachable/redacted origins; and injected single- and multi-workspace rollback.
+unreachable/redacted origins; LFS pointer rejection/overlay replacement; and
+injected single- and multi-workspace rollback.

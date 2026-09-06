@@ -137,6 +137,200 @@ describe("exact Git workspace capsules (WS-010..WS-018, WS-025..WS-026)", () => 
     expect(await git(target, "status", "--porcelain=v1")).toBe("");
   });
 
+  it("reports a Git LFS pointer instead of treating absent content as complete (WS-017)", async () => {
+    const root = await repository("lfs-pointer");
+    await writeFile(join(root, "asset.bin"), lfsPointer("a".repeat(64), 12_345));
+    await git(root, "add", "asset.bin");
+    await git(root, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "LFS pointer");
+
+    const expected = {
+      name: "GitLfsContentUnavailable",
+      code: "GIT_LFS_CONTENT_UNAVAILABLE",
+      paths: ["asset.bin"],
+    };
+    await expect(captureWorkspace(root)).rejects.toMatchObject(expected);
+    await expect(assertWorkspaceDestination(root, {
+      capsule: {
+        schemaVersion: 1,
+        baseCommit: (await git(root, "rev-parse", "HEAD")).trim(),
+        headRef: (await git(root, "symbolic-ref", "--short", "HEAD")).trim(),
+        records: [],
+      },
+      blobs: [],
+    })).rejects.toMatchObject(expected);
+    await expect(assertWorkspaceDestination(root, {
+      capsule: {
+        schemaVersion: 1,
+        baseCommit: (await git(root, "rev-parse", "HEAD")).trim(),
+        headRef: (await git(root, "symbolic-ref", "--short", "HEAD")).trim(),
+        records: [{ path: "asset.bin", index: { state: "base" }, worktree: { state: "index" } }],
+      },
+      blobs: [],
+    })).rejects.toMatchObject(expected);
+  });
+
+  it("allows encrypted overlay bytes to replace a baseline LFS pointer", async () => {
+    const source = await repository("lfs-overlay-source");
+    await writeFile(join(source, "asset.bin"), lfsPointer("b".repeat(64), 19));
+    await git(source, "add", "asset.bin");
+    await git(source, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "LFS pointer");
+    const targetParent = await mkdtemp(join(tmpdir(), "statecase-workspace-lfs-target-"));
+    temporary.push(targetParent);
+    const target = join(targetParent, "checkout");
+    await run("git", ["clone", "--quiet", source, target]);
+
+    const materialized = `${"materialized content ".repeat(1_000)}\n`;
+    await writeFile(join(source, "asset.bin"), materialized);
+    const captured = await captureWorkspace(source);
+    await expect(applyWorkspaceCapsule(target, captured, { materialize })).resolves.toBeUndefined();
+    expect(await readFile(join(target, "asset.bin"), "utf8")).toBe(materialized);
+  });
+
+  it("reports a missing LFS worktree file and permits an explicit overlay deletion", async () => {
+    const missing = await repository("lfs-missing");
+    await writeFile(join(missing, "missing.bin"), lfsPointer("c".repeat(64), 99));
+    await git(missing, "add", "missing.bin");
+    await git(missing, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "missing LFS pointer");
+    await git(missing, "update-index", "--skip-worktree", "missing.bin");
+    await rm(join(missing, "missing.bin"));
+    await expect(captureWorkspace(missing)).rejects.toMatchObject({
+      name: "GitLfsContentUnavailable",
+      reason: "missing",
+      paths: ["missing.bin"],
+    });
+
+    const source = await repository("lfs-deletion-source");
+    await writeFile(join(source, "delete.bin"), lfsPointer("d".repeat(64), 100));
+    await git(source, "add", "delete.bin");
+    await git(source, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "deletable LFS pointer");
+    const targetParent = await mkdtemp(join(tmpdir(), "statecase-workspace-lfs-delete-"));
+    temporary.push(targetParent);
+    const target = join(targetParent, "checkout");
+    await run("git", ["clone", "--quiet", source, target]);
+    await git(source, "rm", "-q", "delete.bin");
+    const captured = await captureWorkspace(source);
+    await applyWorkspaceCapsule(target, captured, { materialize });
+    await expect(readFile(join(target, "delete.bin"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("does not mistake malformed or oversized lookalikes for Git LFS pointers", async () => {
+    const root = await repository("lfs-lookalikes");
+    await writeFile(join(root, "malformed.txt"), "version https://git-lfs.github.com/spec/v1\noid sha256:nope\nsize 12\n");
+    await writeFile(join(root, "oversized.txt"), `version https://git-lfs.github.com/spec/v1\n${"x".repeat(17_000)}\n`);
+    await writeFile(join(root, "unsafe-size.txt"), `version https://git-lfs.github.com/spec/v1\noid sha256:${"e".repeat(64)}\nsize 999999999999999999999999\n`);
+    await writeFile(join(root, "binary.txt"), Buffer.concat([
+      Buffer.from("version https://git-lfs.github.com/spec/v1\n"),
+      Buffer.from([0xff]),
+      Buffer.from(`\noid sha256:${"f".repeat(64)}\nsize 1\n`),
+    ]));
+    await git(root, "add", "malformed.txt", "oversized.txt", "unsafe-size.txt", "binary.txt");
+    await git(root, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "pointer lookalikes");
+    await expect(captureWorkspace(root)).resolves.toMatchObject({ capsule: { records: [] }, blobs: [] });
+  });
+
+  it("accepts already-materialized LFS worktrees and staged replacements", async () => {
+    const root = await repository("lfs-materialized");
+    await writeFile(join(root, "small.bin"), lfsPointer("1".repeat(64), 3));
+    await writeFile(join(root, "large.bin"), lfsPointer("2".repeat(64), 20_000));
+    await writeFile(join(root, "staged.bin"), lfsPointer("3".repeat(64), 7));
+    await git(root, "add", "small.bin", "large.bin", "staged.bin");
+    await git(root, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "LFS pointers");
+    await git(root, "update-index", "--skip-worktree", "small.bin", "large.bin");
+    await writeFile(join(root, "small.bin"), "abc");
+    await writeFile(join(root, "large.bin"), "x".repeat(20_000));
+    await writeFile(join(root, "staged.bin"), "staged!\n");
+    await git(root, "add", "staged.bin");
+
+    const captured = await captureWorkspace(root);
+    expect(captured.capsule.records).toContainEqual(expect.objectContaining({
+      path: "staged.bin",
+      index: expect.objectContaining({ state: "content" }),
+      worktree: { state: "index" },
+    }));
+  });
+
+  it("recognizes a canonical Git LFS pointer without a trailing newline", async () => {
+    const root = await repository("lfs-no-newline");
+    await writeFile(join(root, "asset.bin"), lfsPointer("4".repeat(64), 8).trimEnd());
+    await git(root, "add", "asset.bin");
+    await git(root, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "LFS pointer without newline");
+    await expect(captureWorkspace(root)).rejects.toMatchObject({ name: "GitLfsContentUnavailable", paths: ["asset.bin"] });
+  });
+
+  it("redacts and classifies a failing Git LFS checkout filter", async () => {
+    const source = await repository("lfs-filter-source");
+    await mkdir(join(source, "nested"));
+    await writeFile(join(source, "nested", ".gitattributes"), "asset.bin filter=lfs\n");
+    await writeFile(join(source, "nested", "asset.bin"), lfsPointer("5".repeat(64), 42));
+    await git(source, "config", "filter.lfs.clean", "cat");
+    await git(source, "config", "filter.lfs.smudge", "cat");
+    await git(source, "config", "filter.lfs.required", "true");
+    await git(source, "add", "nested/.gitattributes", "nested/asset.bin");
+    await git(source, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "LFS baseline");
+    const baseline = (await git(source, "rev-parse", "HEAD")).trim();
+    await git(source, "rm", "-q", "nested/.gitattributes", "nested/asset.bin");
+    await git(source, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "later baseline");
+    const later = (await git(source, "rev-parse", "HEAD")).trim();
+    const targetParent = await mkdtemp(join(tmpdir(), "statecase-workspace-lfs-filter-"));
+    temporary.push(targetParent);
+    const target = join(targetParent, "checkout");
+    await run("git", ["clone", "--quiet", source, target]);
+    await git(target, "config", "filter.lfs.clean", "cat");
+    await git(target, "config", "filter.lfs.smudge", "sh -c 'echo git-lfs injected failure >&2; exit 1'");
+    await git(target, "config", "filter.lfs.required", "true");
+    await mkdir(join(target, "nested"));
+    await writeFile(join(target, "nested", "device-local.txt"), "preserve me\n");
+    await writeFile(join(target, ".git", "info", "exclude"), "nested/device-local.txt\n");
+
+    const capsule = {
+      capsule: { schemaVersion: 1 as const, baseCommit: baseline, headRef: "master", records: [] },
+      blobs: [],
+    };
+    await expect(applyWorkspaceCapsule(target, capsule, { materialize, gitFetch: "auto" })).rejects.toMatchObject({
+      name: "GitLfsContentUnavailable",
+      code: "GIT_LFS_CONTENT_UNAVAILABLE",
+      reason: "checkout-filter",
+      paths: ["nested/asset.bin"],
+    });
+    expect((await git(target, "rev-parse", "HEAD")).trim()).toBe(later);
+    expect(await git(target, "status", "--porcelain=v1")).toBe("");
+    expect(await readFile(join(target, "nested", "device-local.txt"), "utf8")).toBe("preserve me\n");
+    await expect(lstat(join(target, "nested", ".gitattributes"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("keeps an unrelated failing Git filter classified as a baseline checkout failure", async () => {
+    const source = await repository("generic-filter-source");
+    await writeFile(join(source, ".gitattributes"), "asset.txt filter=broken\n");
+    await writeFile(join(source, "asset.txt"), "baseline bytes\n");
+    await git(source, "config", "filter.broken.clean", "cat");
+    await git(source, "config", "filter.broken.smudge", "cat");
+    await git(source, "config", "filter.broken.required", "true");
+    await git(source, "add", ".gitattributes", "asset.txt");
+    await git(source, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "filtered baseline");
+    const baseline = (await git(source, "rev-parse", "HEAD")).trim();
+    await git(source, "rm", "-q", ".gitattributes", "asset.txt");
+    await git(source, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "later baseline");
+    const later = (await git(source, "rev-parse", "HEAD")).trim();
+    const targetParent = await mkdtemp(join(tmpdir(), "statecase-workspace-generic-filter-"));
+    temporary.push(targetParent);
+    const target = join(targetParent, "checkout");
+    await run("git", ["clone", "--quiet", source, target]);
+    await git(target, "config", "filter.broken.clean", "cat");
+    await git(target, "config", "filter.broken.smudge", "sh -c 'echo injected filter failure >&2; exit 1'");
+    await git(target, "config", "filter.broken.required", "true");
+
+    await expect(applyWorkspaceCapsule(target, {
+      capsule: { schemaVersion: 1, baseCommit: baseline, headRef: "master", records: [] },
+      blobs: [],
+    }, { materialize, gitFetch: "auto" })).rejects.toMatchObject({
+      name: "WorkspaceBaselineUnavailable",
+      code: "BASELINE_UNAVAILABLE",
+      reason: "checkout-failed",
+    });
+    expect((await git(target, "rev-parse", "HEAD")).trim()).toBe(later);
+    expect(await git(target, "status", "--porcelain=v1")).toBe("");
+  });
+
   it("rolls back an automatic baseline checkout when materialization fails", async () => {
     const source = await repository("checkout-rollback-source");
     const baseline = (await git(source, "rev-parse", "HEAD")).trim();
@@ -148,6 +342,7 @@ describe("exact Git workspace capsules (WS-010..WS-018, WS-025..WS-026)", () => 
     await git(source, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "later");
     const later = (await git(source, "rev-parse", "HEAD")).trim();
     expect(later).not.toBe(baseline);
+    await git(source, "checkout", "--detach", "-q");
 
     await expect(applyWorkspaceCapsule(source, captured, {
       gitFetch: "auto",
@@ -528,4 +723,8 @@ function gitWithInput(root: string, args: string[], input: string): Promise<stri
     child.once("close", (code) => code === 0 ? resolveOutput(stdout) : reject(new Error(stderr)));
     child.stdin.end(input);
   });
+}
+
+function lfsPointer(oid: string, size: number): string {
+  return `version https://git-lfs.github.com/spec/v1\noid sha256:${oid}\nsize ${size}\n`;
 }

@@ -40,6 +40,7 @@ export function exitCodeFor(error: unknown): number {
   }
   if ((error as { name?: string }).name === "SyncConflict") return 5;
   if ((error as { name?: string }).name === "WorkspaceBaselineUnavailable") return 5;
+  if ((error as { name?: string }).name === "GitLfsContentUnavailable") return 5;
   if ((error as { name?: string }).name === "SessionDependencyError") return 6;
   if ((error as { name?: string }).name === "CryptoFailure") return 6;
   return 10;

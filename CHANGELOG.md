@@ -36,6 +36,10 @@ All notable changes to Statecase will be documented here.
   missing commits from the checkout's existing `origin` with bounded,
   non-interactive system Git; shallow clones are supported, raw remote errors
   are redacted, and multi-workspace acquisition rolls back atomically.
+- Added fail-closed Git LFS pointer diagnostics on capture and hydration. Missing
+  materialized content is reported by logical path, while encrypted overlay
+  replacements and deletions remain portable without synchronizing LFS
+  credentials.
 - Added stable installation identities, server-side auth-session binding,
   account device listing, and explicit device revocation. Revocation atomically
   disables vault memberships and every bound login session; a revoked session

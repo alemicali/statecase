@@ -21,6 +21,7 @@ import { appendOnlyViolations, mergeNamespace, namespaceStateEquals, type Namesp
 import {
   applyWorkspaceTransaction,
   captureWorkspace,
+  GitLfsContentUnavailable,
   inspectWorkspaceDestination,
   type CapturedWorkspace,
   type GitFetchPolicy,
@@ -731,7 +732,7 @@ export class SyncEngine {
       try {
         await inspectWorkspaceDestination(payload.mapping.path, captured, gitFetch);
       } catch (error) {
-        if (error instanceof WorkspaceBaselineUnavailable) throw error;
+        if (error instanceof WorkspaceBaselineUnavailable || error instanceof GitLfsContentUnavailable) throw error;
         throw new SyncConflict([payload.mapping.path]);
       }
       readyWorkspaces.push({ mapping: payload.mapping, captured, gitFetch });

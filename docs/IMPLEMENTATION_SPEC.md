@@ -568,6 +568,14 @@ preflighted first. Acquired checkouts and indexes roll back in reverse order if
 any later acquisition or materialization fails. Existing divergent local
 changes produce a previewable conflict and are never overwritten.
 
+Baseline blobs that conform to the Git LFS pointer format MUST NOT be treated as
+the referenced content. Capture and hydration report
+`GIT_LFS_CONTENT_UNAVAILABLE` with logical paths while the worktree still holds
+a pointer or omits the file. A capsule-provided worktree replacement or deletion
+satisfies this check. Git LFS network access and credentials remain entirely
+device-local; Statecase does not invoke or serialize them in the current
+implementation.
+
 Modes:
 
 - `metadata-only`: session linkage but no source overlay;
