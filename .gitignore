@@ -9,4 +9,5 @@ coverage/
 *.log
 *.tsbuildinfo
 *.auth-state.json
+statecase-cli-*.tgz
 .DS_Store

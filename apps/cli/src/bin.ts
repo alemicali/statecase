@@ -1,9 +1,10 @@
 import { homedir, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { chmod, lstat, mkdir, readFile, readdir, unlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, readdir, realpath, unlink, writeFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 
 import { resolveClaudeRoot } from "@statecase/adapter-claude";
 import { resolveCodexRoots } from "@statecase/adapter-codex";
@@ -812,6 +813,15 @@ function daemonServiceDefinition(store: ConfigStore, argv: string[]) {
   });
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (await isMainModule()) {
   process.exitCode = await runCli();
+}
+
+async function isMainModule(): Promise<boolean> {
+  if (!process.argv[1]) return false;
+  const [modulePath, entrypoint] = await Promise.all([
+    realpath(fileURLToPath(import.meta.url)),
+    realpath(process.argv[1]).catch(() => resolve(process.argv[1]!)),
+  ]);
+  return modulePath === entrypoint;
 }

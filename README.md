@@ -76,6 +76,18 @@ npm run build
 Node.js 22.12+ and system Git are required. Git provides workspace identity and
 working-tree overlays; Statecase never synchronizes Git credentials.
 
+Build an installable private-alpha tarball and smoke-test it in a clean prefix:
+
+```bash
+npm run pack:cli
+npm install --global ./statecase-cli-0.1.0-alpha.1.tgz
+statecase --json status
+```
+
+The package contains the compiled CLI and canonical Statecase skill; it does
+not depend on the private workspace packages at runtime. Tagged alpha releases
+attach the same tested tarball and checksum to GitHub Releases.
+
 ## First private-MVP setup
 
 ```bash

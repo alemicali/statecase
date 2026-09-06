@@ -4,6 +4,9 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Package the alpha CLI as a self-contained npm tarball with its canonical
+  agent skill and runtime SQLite dependency.
+
 - Established the standalone greenfield repository, product specification,
   threat model, TDD/UAT plan, and repository governance.
 - Implemented the private manual-sync MVP: Cloudflare Worker/D1/R2/Durable

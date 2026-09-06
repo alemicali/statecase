@@ -106,6 +106,11 @@ Codex/Claude complete-record handling, skill transfer, arbitrary Drops,
 logical workspace path rewriting, and exact Git index/worktree overlay transfer.
 The single Cloudflare MVP stack is provisioned and private-signup allowlisted.
 
+The CLI also packs as a self-contained `@statecase/cli` alpha tarball. Its
+runtime manifest contains only the external native SQLite dependency; bundled
+workspace code and the canonical agent skill are verified by a clean-prefix
+installation smoke test in the normal quality gate.
+
 The next foreground slice is implemented locally: `statecase run` supervises
 unmodified Codex/Claude processes with inherited terminal and signals, bounded
 preflight and final synchronization, periodic publishing, exact exit-code
