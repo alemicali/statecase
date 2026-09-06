@@ -131,9 +131,16 @@ mismatched destinations before apply, and roll back both the Git index and
 working tree on failure. Automatic baseline fetch, initialized submodule
 hydration, and LFS diagnostics remain explicit follow-on gates.
 
+Persistent installations now keep a stable device ID independent of absolute
+paths and Better Auth session rotation. D1 binds each service session to that
+installation. Device listing and explicit revocation atomically revoke vault
+memberships and all bound sessions; attempts to re-register through a revoked
+session fail. Cryptographic key rewrapping after revocation remains a separate
+release gate because already-decrypted data cannot be remotely withdrawn.
+
 Automated background steady state is not yet claimed. Real-OS daemon/service
 UAT, safe automatic merge, retained
-snapshots/restore, scoped ephemeral bootstrap, device revocation/key rewrap,
+snapshots/restore, scoped ephemeral bootstrap, post-revocation key rewrap,
 and complete historical Session Capsules remain blocking work for a public or
 unattended release.
 

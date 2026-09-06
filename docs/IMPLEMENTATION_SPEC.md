@@ -20,6 +20,11 @@ snapshots/restore, scoped bootstrap, automatic baseline fetch, initialized
 submodule hydration, and complete Session Capsules remain target requirements,
 not current claims.
 
+Persistent device identities, auth-session binding, device enumeration, and
+server-side revocation are implemented. Revocation blocks new service access
+and membership use but cannot erase locally decrypted data; scope-key rotation
+and rewrapping remain required before a full cryptographic revocation claim.
+
 ## 2. System boundaries
 
 ```text

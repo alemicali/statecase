@@ -13,7 +13,7 @@ describe("Statecase in workerd (PR-001, PR-005, PR-010, PR-011, AU-001)", () => 
   it("applies the complete D1 control and auth schema", async () => {
     const rows = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all<{ name: string }>();
     const names = rows.results.map((row) => row.name);
-    expect(names).toEqual(expect.arrayContaining(["vaults", "devices", "bootstrap_tokens", "user", "session", "deviceCode"]));
+    expect(names).toEqual(expect.arrayContaining(["vaults", "devices", "device_sessions", "bootstrap_tokens", "user", "session", "deviceCode"]));
   });
 
   it("issues a real RFC 8628 device code for the registered CLI", async () => {
@@ -64,10 +64,11 @@ describe("Statecase in workerd (PR-001, PR-005, PR-010, PR-011, AU-001)", () => 
     const registration = await exports.default.fetch("http://statecase.test/v1/devices/current", {
       method: "POST",
       headers: authenticated,
-      body: JSON.stringify({ name: "Isolated workerd" }),
+      body: JSON.stringify({ id: "dev_runtime", name: "Isolated workerd" }),
     });
     expect(registration.status).toBe(200);
-    expect(await registration.json()).toMatchObject({ name: "Isolated workerd" });
+    const registeredDevice = await registration.json() as { accountId: string; deviceId: string; name: string };
+    expect(registeredDevice).toMatchObject({ name: "Isolated workerd" });
 
     const created = await exports.default.fetch("http://statecase.test/v1/vaults", {
       method: "POST",
@@ -81,6 +82,30 @@ describe("Statecase in workerd (PR-001, PR-005, PR-010, PR-011, AU-001)", () => 
 
     const listed = await exports.default.fetch("http://statecase.test/v1/vaults", { headers: authenticated });
     expect(await listed.json()).toMatchObject({ vaults: [{ id: vault.id, role: "owner" }] });
+
+    const now = Date.now();
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO devices (id, account_id, name, status, created_at, last_seen_at) VALUES (?, ?, ?, 'active', ?, ?)")
+        .bind("dev_old_runtime", registeredDevice.accountId, "Old runtime", now - 1, now - 1),
+      env.DB.prepare("INSERT INTO vault_members (vault_id, device_id, role, created_at) VALUES (?, ?, 'writer', ?)")
+        .bind(vault.id, "dev_old_runtime", now - 1),
+    ]);
+    const devices = await exports.default.fetch("http://statecase.test/v1/devices", { headers: authenticated });
+    expect(await devices.json()).toMatchObject({ devices: expect.arrayContaining([
+      expect.objectContaining({ id: "dev_old_runtime", status: "active" }),
+    ]) });
+    expect((await exports.default.fetch("http://statecase.test/v1/devices/dev_unknown", { method: "DELETE", headers: authenticated })).status).toBe(404);
+    expect((await exports.default.fetch("http://statecase.test/v1/devices/dev_old_runtime", { method: "DELETE", headers: authenticated })).status).toBe(204);
+    expect(await env.DB.prepare("SELECT status FROM devices WHERE id = ?").bind("dev_old_runtime").first("status")).toBe("revoked");
+    expect(await env.DB.prepare("SELECT revoked_at FROM vault_members WHERE device_id = ?").bind("dev_old_runtime").first("revoked_at")).toEqual(expect.any(Number));
+
+    expect((await exports.default.fetch(`http://statecase.test/v1/devices/${registeredDevice.deviceId}`, { method: "DELETE", headers: authenticated })).status).toBe(204);
+    expect((await exports.default.fetch(`http://statecase.test/v1/vaults/${vault.id}/head`, { headers: authenticated })).status).toBe(404);
+    expect((await exports.default.fetch("http://statecase.test/v1/devices/current", {
+      method: "POST",
+      headers: authenticated,
+      body: JSON.stringify({ id: "dev_evasion", name: "Must not evade revocation" }),
+    })).status).toBe(409);
   });
 
   it("completes the browser approval and one-time CLI token exchange", async () => {

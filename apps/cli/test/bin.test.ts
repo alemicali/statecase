@@ -37,6 +37,10 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
 
     process.env.STATECASE_HOME = machineA;
     expect(await command(io, "--json", "login", "--non-interactive", "--device-name", "laptop")).toBe(0);
+    const firstDeviceId = (JSON.parse(await readFile(join(machineA, "config.json"), "utf8")) as { deviceId: string }).deviceId;
+    expect(firstDeviceId).toMatch(/^dev_[a-f0-9]{32}$/u);
+    expect(await command(io, "--json", "login", "--non-interactive", "--device-name", "laptop renamed")).toBe(0);
+    expect((JSON.parse(await readFile(join(machineA, "config.json"), "utf8")) as { deviceId: string }).deviceId).toBe(firstDeviceId);
     expect(await command(io, "--json", "vault", "create", "personal", "--recovery-file", recovery)).toBe(0);
     const created = JSON.parse(output.at(-1)!) as { id: string };
     expect(await command(io, "--json", "vault", "list")).toBe(0);
@@ -45,6 +49,10 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
     expect(await command(io, "--json", "push")).toBe(0);
     expect(await command(io, "--json", "status")).toBe(0);
     expect(await command(io, "--json", "doctor")).toBe(0);
+    expect(await command(io, "--json", "device", "list")).toBe(0);
+    expect(JSON.parse(output.at(-1)!)).toMatchObject({ devices: expect.any(Array) });
+    expect(await command(io, "--json", "device", "revoke", "dev_other")).toBe(2);
+    expect(await command(io, "--json", "device", "revoke", "dev_other", "--yes")).toBe(0);
     expect(await command(io, "--json", "workspace", "attach", "--path", source, "--id", "ws_test", "--mode", "metadata-only")).toBe(0);
     expect(JSON.parse(output.at(-1)!)).toMatchObject({ id: "ws_test", mode: "metadata-only" });
     expect(await command(io, "--json", "workspace", "list")).toBe(0);
@@ -124,11 +132,23 @@ class CliRemote {
   readonly vaults: Array<{ id: string; name: string; role: "owner" }> = [];
   revisionId: string | null = null;
   manifestObjectId: string | null = null;
+  readonly devices = new Map<string, { id: string; name: string; status: "active" | "revoked" }>();
 
   fetch: typeof fetch = async (input, init) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
     const method = init?.method ?? "GET";
-    if (url.pathname === "/v1/devices/current") return Response.json({ accountId: "acct_test", deviceId: "dev_test", name: "device" });
+    if (url.pathname === "/v1/devices/current") {
+      const input = JSON.parse(String(init?.body)) as { id: string; name: string };
+      const device = { id: input.id, name: input.name, status: "active" as const };
+      this.devices.set(device.id, device);
+      return Response.json({ accountId: "acct_test", deviceId: device.id, name: device.name });
+    }
+    if (url.pathname === "/v1/devices" && method === "GET") return Response.json({ devices: [...this.devices.values()] });
+    const device = /^\/v1\/devices\/([^/]+)$/u.exec(url.pathname);
+    if (device && method === "DELETE") {
+      this.devices.set(device[1], { id: device[1], name: device[1], status: "revoked" });
+      return new Response(null, { status: 204 });
+    }
     if (url.pathname === "/v1/vaults" && method === "POST") {
       const vault = { id: "vlt_test", name: "personal", role: "owner" as const };
       this.vaults.push(vault);

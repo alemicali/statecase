@@ -17,6 +17,7 @@ export interface RootMapping {
 export interface LocalConfig {
   version: 1;
   apiUrl: string;
+  deviceId?: string;
   deviceName?: string;
   selectedVaultId?: string;
   mappings: RootMapping[];

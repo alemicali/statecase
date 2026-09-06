@@ -148,7 +148,7 @@ export class SyncEngine {
       revisionId,
       parentRevisionIds: head.revisionId ? [head.revisionId] : [],
       createdAt: new Date().toISOString(),
-      createdByDeviceId: config.deviceName ? safeIdentifier(config.deviceName, "device") : "device_unknown",
+      createdByDeviceId: config.deviceId ?? (config.deviceName ? safeIdentifier(config.deviceName, "device") : "device_unknown"),
       operationId,
       entries,
       tombstones: tombstones.sort((left, right) => left.namespace.localeCompare(right.namespace, "en") || left.logicalPath.localeCompare(right.logicalPath, "en")),

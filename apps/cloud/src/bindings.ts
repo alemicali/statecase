@@ -9,6 +9,7 @@ import {
   type CloudServices,
   type ControlPlane,
   type Coordinator,
+  type DeviceSummary,
   type ObjectStore,
   type Principal,
   type VaultSummary,
@@ -117,8 +118,20 @@ class D1ControlPlane implements ControlPlane {
 
   async registerDevice(
     principal: Principal,
-    input: { name: string; publicSigningKey?: string; publicExchangeKey?: string },
+    input: { id: string; name: string; publicSigningKey?: string; publicExchangeKey?: string },
   ): Promise<{ accountId: string; deviceId: string; name: string }> {
+    const sessionBinding = await this.#database.prepare(`
+      SELECT device_id, revoked_at FROM device_sessions WHERE session_id = ? AND account_id = ? LIMIT 1
+    `).bind(principal.sessionId, principal.accountId).first<{ device_id: string; revoked_at: number | null }>();
+    if (sessionBinding && (sessionBinding.revoked_at !== null || sessionBinding.device_id !== input.id)) {
+      throw new ControlPlaneError("device-required");
+    }
+    const existing = await this.#database.prepare(`
+      SELECT account_id, status FROM devices WHERE id = ? LIMIT 1
+    `).bind(input.id).first<{ account_id: string; status: DeviceSummary["status"] }>();
+    if (existing && (existing.account_id !== principal.accountId || existing.status !== "active")) {
+      throw new ControlPlaneError("device-required");
+    }
     const now = Date.now();
     await this.#database.batch([
       this.#database.prepare(`
@@ -136,7 +149,7 @@ class D1ControlPlane implements ControlPlane {
           last_seen_at = excluded.last_seen_at
         WHERE devices.account_id = excluded.account_id AND devices.status = 'active'
       `).bind(
-        principal.deviceId,
+        input.id,
         principal.accountId,
         input.name,
         input.publicSigningKey ?? null,
@@ -144,9 +157,19 @@ class D1ControlPlane implements ControlPlane {
         now,
         now,
       ),
-      auditStatement(this.#database, principal, "device.register", "device", principal.deviceId, now),
+      this.#database.prepare(`
+        INSERT INTO device_sessions (session_id, account_id, device_id, created_at, revoked_at)
+        VALUES (?, ?, ?, ?, NULL)
+        ON CONFLICT(session_id) DO UPDATE SET
+          device_id = excluded.device_id,
+          revoked_at = NULL
+        WHERE device_sessions.account_id = excluded.account_id
+          AND device_sessions.device_id = excluded.device_id
+          AND device_sessions.revoked_at IS NULL
+      `).bind(principal.sessionId, principal.accountId, input.id, now),
+      auditStatement(this.#database, principal, "device.register", "device", input.id, now),
     ]);
-    return { accountId: principal.accountId, deviceId: principal.deviceId, name: input.name };
+    return { accountId: principal.accountId, deviceId: input.id, name: input.name };
   }
 
   async createVault(principal: Principal, input: { name: string }): Promise<VaultSummary> {
@@ -163,6 +186,50 @@ class D1ControlPlane implements ControlPlane {
       auditStatement(this.#database, principal, "vault.create", "vault", id, now),
     ]);
     return { id, name: input.name, role: "owner" };
+  }
+
+  async listDevices(principal: Principal): Promise<DeviceSummary[]> {
+    await this.#requireDevice(principal);
+    const rows = await this.#database.prepare(`
+      SELECT id, name, status, created_at, last_seen_at
+      FROM devices
+      WHERE account_id = ?
+      ORDER BY created_at, id
+    `).bind(principal.accountId).all<{
+      id: string;
+      name: string;
+      status: DeviceSummary["status"];
+      created_at: number;
+      last_seen_at: number;
+    }>();
+    return rows.results.map((row) => ({
+      id: row.id,
+      name: row.name,
+      status: row.status,
+      createdAt: row.created_at,
+      lastSeenAt: row.last_seen_at,
+    }));
+  }
+
+  async revokeDevice(principal: Principal, deviceId: string): Promise<void> {
+    await this.#requireDevice(principal);
+    const target = await this.#database.prepare(`
+      SELECT id FROM devices WHERE id = ? AND account_id = ? LIMIT 1
+    `).bind(deviceId, principal.accountId).first<{ id: string }>();
+    if (!target) throw new ControlPlaneError("not-found");
+    const now = Date.now();
+    await this.#database.batch([
+      this.#database.prepare(`
+        UPDATE devices SET status = 'revoked', last_seen_at = ? WHERE id = ? AND account_id = ?
+      `).bind(now, deviceId, principal.accountId),
+      this.#database.prepare(`
+        UPDATE vault_members SET revoked_at = COALESCE(revoked_at, ?) WHERE device_id = ?
+      `).bind(now, deviceId),
+      this.#database.prepare(`
+        UPDATE device_sessions SET revoked_at = COALESCE(revoked_at, ?) WHERE device_id = ? AND account_id = ?
+      `).bind(now, deviceId, principal.accountId),
+      auditStatement(this.#database, principal, "device.revoke", "device", deviceId, now),
+    ]);
   }
 
   async listVaults(principal: Principal): Promise<VaultSummary[]> {

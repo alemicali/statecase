@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { InMemoryCoordinatorStorage, VaultCoordinatorCore } from "@statecase/sync-core";
 
 import {
+  ControlPlaneError,
   createCloudApp,
   type AuthService,
   type CloudServices,
@@ -11,7 +12,7 @@ import {
   type Principal,
 } from "../src/app.js";
 
-const principal: Principal = { accountId: "acct_01", deviceId: "dev_01", scopes: ["sync"] };
+const principal: Principal = { accountId: "acct_01", sessionId: "ses_01", deviceId: "dev_01", scopes: ["sync"] };
 
 function fixture(options: { authenticated?: boolean; authorized?: boolean } = {}) {
   const objects = new MemoryObjects();
@@ -81,7 +82,7 @@ describe("Cloud API contract (PR-001..PR-015)", () => {
     const { app } = fixture();
     const registered = await app.request("/v1/devices/current", {
       method: "POST",
-      body: JSON.stringify({ name: "Test laptop", publicSigningKey: "sign", publicExchangeKey: "exchange" }),
+      body: JSON.stringify({ id: "dev_01", name: "Test laptop", publicSigningKey: "sign", publicExchangeKey: "exchange" }),
     });
     expect(registered.status).toBe(200);
     expect(await registered.json()).toEqual({ accountId: "acct_01", deviceId: "dev_01", name: "Test laptop" });
@@ -94,9 +95,29 @@ describe("Cloud API contract (PR-001..PR-015)", () => {
     expect((await app.request(`/v1/vaults/${vault.id}/join`, { method: "POST" })).status).toBe(200);
   });
 
+  it("lists and revokes account devices without leaking unknown IDs (AU-008, AU-009)", async () => {
+    const { app } = fixture();
+    await app.request("/v1/devices/current", { method: "POST", body: JSON.stringify({ id: "dev_01", name: "Laptop" }) });
+    const listed = await app.request("/v1/devices");
+    expect(listed.status).toBe(200);
+    expect(await listed.json()).toEqual({ devices: [
+      { id: "dev_01", name: "Laptop", status: "active" },
+      { id: "dev_old", name: "Old laptop", status: "active" },
+    ] });
+
+    expect((await app.request("/v1/devices/dev_unknown", { method: "DELETE" })).status).toBe(404);
+    const revoked = await app.request("/v1/devices/dev_old", { method: "DELETE" });
+    expect(revoked.status).toBe(204);
+    expect(await (await app.request("/v1/devices")).json()).toEqual({ devices: [
+      { id: "dev_01", name: "Laptop", status: "active" },
+      { id: "dev_old", name: "Old laptop", status: "revoked" },
+    ] });
+  });
+
   it("rejects invalid device and vault control payloads", async () => {
     const { app } = fixture();
     expect((await app.request("/v1/devices/current", { method: "POST", body: "{}" })).status).toBe(400);
+    expect((await app.request("/v1/devices/current", { method: "POST", body: JSON.stringify({ id: "bad id", name: "Invalid" }) })).status).toBe(400);
     expect((await app.request("/v1/vaults", { method: "POST", body: "{}" })).status).toBe(400);
   });
 
@@ -224,9 +245,23 @@ class MemoryObjects implements ObjectStore {
 
 class MemoryControl implements ControlPlane {
   readonly #vaults: Array<{ id: string; name: string; role: "owner" }> = [];
+  readonly #devices = new Map<string, { id: string; name: string; status: "active" | "revoked" }>([
+    ["dev_old", { id: "dev_old", name: "Old laptop", status: "active" }],
+  ]);
 
-  async registerDevice(principalValue: Principal, input: { name: string }): Promise<{ accountId: string; deviceId: string; name: string }> {
-    return { accountId: principalValue.accountId, deviceId: principalValue.deviceId, name: input.name };
+  async registerDevice(principalValue: Principal, input: { id: string; name: string }): Promise<{ accountId: string; deviceId: string; name: string }> {
+    this.#devices.set(input.id, { id: input.id, name: input.name, status: "active" });
+    return { accountId: principalValue.accountId, deviceId: input.id, name: input.name };
+  }
+
+  async listDevices(): Promise<Array<{ id: string; name: string; status: "active" | "revoked" }>> {
+    return [...this.#devices.values()].sort((left, right) => left.id.localeCompare(right.id, "en"));
+  }
+
+  async revokeDevice(_principalValue: Principal, deviceId: string): Promise<void> {
+    const device = this.#devices.get(deviceId);
+    if (!device) throw new ControlPlaneError("not-found");
+    device.status = "revoked";
   }
 
   async createVault(_principalValue: Principal, input: { name: string }): Promise<{ id: string; name: string; role: "owner" }> {

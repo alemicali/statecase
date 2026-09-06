@@ -23,6 +23,13 @@ unable to grant the secrets category. Persistent refresh/session material is
 stored in the OS credential store; environment bootstrap tokens are consumed
 without being printed.
 
+An installation generates a stable random `deviceId` locally. D1 binds every
+Better Auth session used by that installation to this ID; authorization never
+trusts a caller-provided device header. Revoking a device atomically marks its
+vault memberships and all bound auth sessions revoked. A bound revoked session
+cannot register a replacement ID. A newly authenticated account session may
+enroll an installation through the normal login flow.
+
 ## Alternatives considered
 
 - Fully custom identity and device tokens: less code initially but creates a
@@ -35,7 +42,8 @@ without being printed.
 
 The Worker includes Better Auth and its D1 schema. Auth migrations and plugin
 upgrades are security-sensitive. The application still owns vault membership,
-device records, and bootstrap capability authorization.
+stable device/session bindings, device records, and bootstrap capability
+authorization.
 
 ## Security and privacy impact
 

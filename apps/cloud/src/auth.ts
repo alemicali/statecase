@@ -27,9 +27,18 @@ export function createBetterAuthService(environment: AuthEnvironment): AuthServi
     authenticate: async (request): Promise<Principal | null> => {
       const session = await instance().api.getSession({ headers: request.headers });
       if (!session) return null;
+      const binding = await environment.DB.prepare(`
+        SELECT ds.device_id
+        FROM device_sessions AS ds
+        JOIN devices AS d ON d.id = ds.device_id
+        WHERE ds.session_id = ? AND ds.account_id = ? AND ds.revoked_at IS NULL
+          AND d.account_id = ? AND d.status = 'active'
+        LIMIT 1
+      `).bind(session.session.id, session.user.id, session.user.id).first<{ device_id: string }>();
       return {
         accountId: session.user.id,
-        deviceId: session.session.id,
+        sessionId: session.session.id,
+        deviceId: binding?.device_id ?? session.session.id,
         scopes: ["sync"],
       };
     },

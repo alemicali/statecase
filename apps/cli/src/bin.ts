@@ -75,7 +75,9 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
         if (!token) throw new StatecaseUsageError("device authorization expired", 3);
       }
       const deviceName = options.deviceName ?? config.deviceName ?? hostname();
-      await new StatecaseClient(config.apiUrl, token, io.fetch).registerDevice({ name: deviceName });
+      const deviceId = config.deviceId ?? randomLocalId("dev");
+      await new StatecaseClient(config.apiUrl, token, io.fetch).registerDevice({ id: deviceId, name: deviceName });
+      config.deviceId = deviceId;
       config.deviceName = deviceName;
       secrets.token = token;
       await Promise.all([store.saveConfig(config), store.saveSecrets(secrets)]);
@@ -87,6 +89,19 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
     delete secrets.token;
     await store.saveSecrets(secrets);
     emit(io, program, { authenticated: false }, "Local session removed");
+  });
+
+  const device = program.command("device").description("inspect and revoke enrolled devices");
+  device.command("list").action(async () => {
+    const { client } = await requireSession(store, io.fetch);
+    const devices = await client.listDevices();
+    emit(io, program, { devices }, devices.map((item) => `${item.id}\t${item.status}\t${item.name}`).join("\n") || "No devices");
+  });
+  device.command("revoke <deviceId>").option("--yes", "confirm revocation").action(async (deviceId: string, options: { yes?: boolean }) => {
+    if (!options.yes) throw new StatecaseUsageError("device revocation requires --yes", 2);
+    const { client } = await requireSession(store, io.fetch);
+    await client.revokeDevice(deviceId);
+    emit(io, program, { id: deviceId, revoked: true }, `Revoked device ${deviceId}`);
   });
 
   const vault = program.command("vault").description("manage encrypted vaults");

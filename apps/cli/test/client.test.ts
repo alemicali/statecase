@@ -6,7 +6,8 @@ describe("HTTP client contract (PR-001, AU-011)", () => {
   it("sends bearer identity without exposing it in errors", async () => {
     let authorization: string | null = null;
     const client = new StatecaseClient("https://statecase.test/", "top-secret-token", async (_input, init) => {
-      authorization = new Headers(init?.headers).get("authorization");
+      const headers = new Headers(init?.headers);
+      authorization = headers.get("authorization");
       return Response.json({ error: { code: "NOPE", message: "safe failure" } }, { status: 409 });
     });
     await expect(client.listVaults()).rejects.toEqual(new RemoteError(409, "NOPE", "safe failure"));
@@ -29,6 +30,8 @@ describe("HTTP client contract (PR-001, AU-011)", () => {
       if (path.endsWith("/code")) return Response.json({ device_code: "device", user_code: "USER", verification_uri: "https://verify", expires_in: 600, interval: 5 });
       if (path.endsWith("/token")) return Response.json({ access_token: "issued" });
       if (path.endsWith("/devices/current")) return Response.json({ accountId: "a", deviceId: "d", name: "device" });
+      if (path === "/v1/devices") return Response.json({ devices: [] });
+      if (path.startsWith("/v1/devices/") && init?.method === "DELETE") return new Response(null, { status: 204 });
       if (path === "/v1/vaults" && init?.method === "POST") return Response.json({ id: "vlt_one", role: "owner" });
       if (path === "/v1/vaults") return Response.json({ vaults: [] });
       if (path.endsWith("/join")) return Response.json({ id: "vlt_one", role: "writer" });
@@ -37,7 +40,9 @@ describe("HTTP client contract (PR-001, AU-011)", () => {
     });
     await client.startDeviceCode();
     await client.pollDeviceCode("device");
-    await client.registerDevice({ name: "device" });
+    await client.registerDevice({ id: "dev_stable", name: "device" });
+    await client.listDevices();
+    await client.revokeDevice("dev_old");
     await client.createVault("vault");
     await client.listVaults();
     await client.joinVault("vlt_one");
@@ -45,6 +50,6 @@ describe("HTTP client contract (PR-001, AU-011)", () => {
     await client.commit("vlt_one", {
       protocolVersion: "1.0", operationId: "op_one", baseRevisionId: null, revisionId: "rev_one", manifestObjectId: "obj_one", requiredObjectIds: [],
     });
-    expect(calls).toHaveLength(8);
+    expect(calls).toHaveLength(10);
   });
 });

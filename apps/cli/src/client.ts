@@ -27,6 +27,14 @@ export interface RemoteHead {
   manifestObjectId: string | null;
 }
 
+export interface DeviceRecord {
+  id: string;
+  name: string;
+  status: "active" | "revoked";
+  createdAt?: number;
+  lastSeenAt?: number;
+}
+
 export class StatecaseClient {
   readonly #baseUrl: string;
   readonly #token?: string;
@@ -56,8 +64,16 @@ export class StatecaseClient {
     });
   }
 
-  registerDevice(input: { name: string }): Promise<{ accountId: string; deviceId: string; name: string }> {
+  registerDevice(input: { id: string; name: string }): Promise<{ accountId: string; deviceId: string; name: string }> {
     return this.#json("/v1/devices/current", { method: "POST", body: JSON.stringify(input) });
+  }
+
+  async listDevices(): Promise<DeviceRecord[]> {
+    return (await this.#json<{ devices: DeviceRecord[] }>("/v1/devices")).devices;
+  }
+
+  async revokeDevice(deviceId: string): Promise<void> {
+    await this.#request(`/v1/devices/${encodeURIComponent(deviceId)}`, { method: "DELETE" });
   }
 
   createVault(name: string): Promise<VaultRecord> {

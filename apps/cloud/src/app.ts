@@ -12,6 +12,7 @@ const identifier = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u;
 
 export interface Principal {
   accountId: string;
+  sessionId: string;
   deviceId: string;
   scopes: string[];
 }
@@ -42,11 +43,21 @@ export interface VaultSummary {
   role: "owner" | "writer" | "reader" | "append" | null;
 }
 
+export interface DeviceSummary {
+  id: string;
+  name: string;
+  status: "active" | "revoked";
+  createdAt?: number;
+  lastSeenAt?: number;
+}
+
 export interface ControlPlane {
   registerDevice(
     principal: Principal,
-    input: { name: string; publicSigningKey?: string; publicExchangeKey?: string },
+    input: { id: string; name: string; publicSigningKey?: string; publicExchangeKey?: string },
   ): Promise<{ accountId: string; deviceId: string; name: string }>;
+  listDevices(principal: Principal): Promise<DeviceSummary[]>;
+  revokeDevice(principal: Principal, deviceId: string): Promise<void>;
   createVault(principal: Principal, input: { name: string }): Promise<VaultSummary>;
   listVaults(principal: Principal): Promise<VaultSummary[]>;
   joinVault(principal: Principal, vaultId: string): Promise<VaultSummary>;
@@ -90,12 +101,23 @@ export function createCloudApp(services: CloudServices): Hono<AppEnvironment> {
 
   app.post("/v1/devices/current", async (context) => {
     const body = await parseBody(context, z.object({
+      id: z.string().regex(identifier),
       name: z.string().trim().min(1).max(120),
       publicSigningKey: z.string().min(1).max(4096).optional(),
       publicExchangeKey: z.string().min(1).max(4096).optional(),
     }).strict());
     if (!body.success) return body.response;
     return context.json(await services.control.registerDevice(context.get("principal"), body.data));
+  });
+
+  app.get("/v1/devices", async (context) => {
+    return context.json({ devices: await services.control.listDevices(context.get("principal")) });
+  });
+
+  app.delete("/v1/devices/:deviceId", async (context) => {
+    const deviceId = requireIdentifier(context.req.param("deviceId"));
+    await services.control.revokeDevice(context.get("principal"), deviceId);
+    return context.body(null, 204);
   });
 
   app.get("/v1/vaults", async (context) => {

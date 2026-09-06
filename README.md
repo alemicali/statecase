@@ -25,8 +25,8 @@ exit status.
 The persistent daemon can run with `statecase daemon foreground` or be installed
 as a systemd user service / macOS LaunchAgent. Real-OS service UAT, automatic
 three-way merge, automatic missing-baseline fetch, initialized-submodule
-hydration, retained snapshots, scoped ephemeral capabilities,
-device revocation/key rewrapping, and full historical Session Capsules remain
+hydration, retained snapshots, scoped ephemeral capabilities, post-revocation
+key rewrapping, and full historical Session Capsules remain
 release gates. This is not yet a public-production release.
 
 The approved direction lives in:
@@ -108,6 +108,11 @@ reconciles on a maximum deadline, retries with jitter, and exposes status only
 through an owner-only Unix socket. Service definitions are Statecase-owned,
 atomically written, hardened on systemd, and safely removable with
 `daemon uninstall --yes`; release claims still require Linux and macOS UAT.
+
+Use `device list` to inspect stable installation identities and `device revoke
+<id> --yes` to block a lost installation and all of its bound service sessions.
+Revocation prevents future server access; it cannot erase plaintext already
+present on the lost machine.
 
 Account creation is deliberately allowlisted for the private MVP. Never put
 `STATECASE_TOKEN`, `STATECASE_RECOVERY_PASSPHRASE`, or the recovery kit in a
