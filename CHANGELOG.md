@@ -21,3 +21,11 @@ All notable changes to Statecase will be documented here.
   suppression.
 - Added atomically managed systemd-user and macOS LaunchAgent definitions,
   hardened service settings, explicit activation, and ownership-safe uninstall.
+- Added encrypted exact Git workspace capsules that reproduce staged and
+  unstaged variants independently, additions, deletions, binary/empty files,
+  executable modes, safe relative symlinks, unborn/detached repositories, and
+  staged gitlinks without transferring `.git` or nested repositories. Pulls
+  validate capsule structure, object IDs, modes, paths, byte limits, and
+  destination cleanliness before mutation, with index/filesystem rollback.
+- Added explicit `git-overlay` and `metadata-only` workspace attachment modes;
+  Git mode now fails at setup instead of failing later during synchronization.

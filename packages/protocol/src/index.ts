@@ -44,6 +44,10 @@ const identifier = z.string().min(1).max(256).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]
 export const manifestEntrySchema = z.object({
   namespace: z.string().min(1).max(1024),
   logicalPath: z.string().min(1).max(4096),
+  entryType: z.enum(["file", "workspace-capsule", "workspace-blob"]).default("file"),
+  workspacePath: z.string().min(1).max(4096).optional(),
+  workspaceLayer: z.enum(["index", "worktree"]).optional(),
+  fileMode: z.number().int().nonnegative().max(0o160000).optional(),
   objectIds: z.array(identifier).max(10_000),
   totalSize: z.number().int().nonnegative().safe(),
   contentDigest: identifier,

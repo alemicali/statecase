@@ -13,10 +13,12 @@ the target architecture. The current private MVP implements the encrypted
 manual CLI and supervised foreground vertical slices plus its single
 Cloudflare stack. Foreground `statecase run`, safe shims, tombstone propagation,
 transactional apply, the persistent daemon core, and native systemd/launchd
-service definitions are implemented. Sections covering automatic merge,
-snapshots/restore, scoped
-bootstrap, exact Git index capsules, and complete Session Capsules remain
-target requirements, not current claims.
+service definitions are implemented. Exact Git index/worktree capsules are
+implemented for ordinary files, safe symlinks, unborn/detached repositories,
+and uninitialized gitlinks. Sections covering automatic merge,
+snapshots/restore, scoped bootstrap, automatic baseline fetch, initialized
+submodule hydration, and complete Session Capsules remain target requirements,
+not current claims.
 
 ## 2. System boundaries
 
@@ -738,7 +740,7 @@ statecase logout
 statecase vault create|list|select
 statecase setup [--harness ...] [--transparent] [--dry-run]
 statecase bootstrap [--token-stdin] [--non-interactive]
-statecase workspace attach [--id ...] [--path ...] [--auto]
+statecase workspace attach [--id ...] [--path ...] [--auto] [--mode git-overlay|metadata-only]
 statecase workspace list|move|detach
 statecase workspace capsule|dependencies|hydrate
 statecase drop add|map|list|remove|status

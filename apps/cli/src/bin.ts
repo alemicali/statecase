@@ -159,23 +159,33 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
     .option("--id <workspaceId>")
     .option("--auto", "derive identity from the Git origin")
     .option("--name <name>")
-    .action(async (options: { path: string; id?: string; auto?: boolean; name?: string }) => {
+    .option("--mode <mode>", "git-overlay or metadata-only", "git-overlay")
+    .action(async (options: { path: string; id?: string; auto?: boolean; name?: string; mode: string }) => {
       const path = resolve(options.path);
+      if (options.mode !== "git-overlay" && options.mode !== "metadata-only") {
+        throw new StatecaseUsageError("workspace mode must be git-overlay or metadata-only", 2);
+      }
+      if (options.mode === "git-overlay") {
+        const inside = await promisify(execFile)("git", ["-C", path, "rev-parse", "--is-inside-work-tree"], { encoding: "utf8" })
+          .then(({ stdout }) => stdout.trim() === "true", () => false);
+        if (!inside) throw new StatecaseUsageError("git-overlay requires a Git working tree; use --mode metadata-only for identity mapping", 2);
+      }
       let id = options.id;
       if (!id && options.auto) {
-        const { stdout } = await promisify(execFile)("git", ["-C", path, "config", "--get", "remote.origin.url"]);
+        const { stdout } = await promisify(execFile)("git", ["-C", path, "config", "--get", "remote.origin.url"])
+          .catch(() => { throw new StatecaseUsageError("--auto requires a Git origin; provide --id explicitly", 2); });
         id = workspaceIdForRemote(stdout.trim());
       }
       if (!id || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u.test(id)) throw new StatecaseUsageError("provide --id or use --auto in a Git checkout", 2);
       const config = normalizeConfig(await store.loadConfig());
       config.workspaces = config.workspaces.filter((item) => item.id !== id && resolve(item.path) !== path);
-      config.workspaces.push({ id, path, ...(options.name ? { name: options.name } : {}) });
+      config.workspaces.push({ id, path, sync: options.mode === "metadata-only" ? "identity-only" : "git", ...(options.name ? { name: options.name } : {}) });
       await store.saveConfig(config);
-      emit(io, program, { id, path }, `Attached ${id} to ${path}`);
+      emit(io, program, { id, path, mode: options.mode }, `Attached ${id} to ${path} (${options.mode})`);
     });
   workspace.command("list").action(async () => {
     const workspaces = normalizeConfig(await store.loadConfig()).workspaces;
-    emit(io, program, { workspaces }, workspaces.map((item) => `${item.id}\t${item.path}`).join("\n") || "No workspaces");
+    emit(io, program, { workspaces }, workspaces.map((item) => `${item.id}\t${item.sync === "identity-only" ? "metadata-only" : "git-overlay"}\t${item.path}`).join("\n") || "No workspaces");
   });
 
   program.command("setup")

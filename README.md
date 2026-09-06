@@ -14,7 +14,7 @@ Private alpha. The foreground portability path is implemented and the Cloudflare
 live at `https://statecase-api-mvp.hi-0e6.workers.dev`: Better Auth device
 authorization, D1 identity/catalogue, R2 encrypted objects, Durable Object
 commits, local XChaCha20-Poly1305 encryption, passphrase-protected recovery
-kits, Codex/Claude session and skill adapters, Git working overlays, arbitrary
+kits, Codex/Claude session and skill adapters, exact Git index/worktree overlays, arbitrary
 Drops, logical workspace remapping, deletion tombstones, transactional local
 materialization, a crash-safe runtime journal, transparent harness shims, and
 the canonical agent skill. `statecase run codex|claude` performs a bounded
@@ -24,8 +24,8 @@ exit status.
 
 The persistent daemon can run with `statecase daemon foreground` or be installed
 as a systemd user service / macOS LaunchAgent. Real-OS service UAT, automatic
-three-way merge, exact Git
-index/baseline capsules, retained snapshots, scoped ephemeral capabilities,
+three-way merge, automatic missing-baseline fetch, initialized-submodule
+hydration, retained snapshots, scoped ephemeral capabilities,
 device revocation/key rewrapping, and full historical Session Capsules remain
 release gates. This is not yet a public-production release.
 
@@ -77,7 +77,7 @@ read -rsp 'Recovery passphrase: ' STATECASE_RECOVERY_PASSPHRASE && export STATEC
 printf '\n'
 ./apps/cli/dist/bin.js vault create personal --recovery-file "$PWD/personal.statecase-recovery.json"
 unset STATECASE_RECOVERY_PASSPHRASE
-./apps/cli/dist/bin.js workspace attach --auto --path /path/to/checkout
+./apps/cli/dist/bin.js workspace attach --auto --path /path/to/checkout --mode git-overlay
 ./apps/cli/dist/bin.js setup --harness codex,claude --transparent
 # Prepend the path printed by setup to PATH, then verify both shims:
 ./apps/cli/dist/bin.js shim verify codex
@@ -90,8 +90,8 @@ On a second machine, login, join the vault with the encrypted recovery kit,
 attach the same logical Git workspace at its new local path, map any Drops by
 their non-secret IDs, then run `pull`. `setup` installs the Statecase skill into
 both the Codex-compatible `.agents/skills` root and Claude's skills root.
-Until the persistent daemon lands, use the generated shims or invoke
-`statecase run codex -- <args>` / `statecase run claude -- <args>` explicitly.
+Use the generated shims, the installed daemon, or invoke `statecase run codex
+-- <args>` / `statecase run claude -- <args>` explicitly.
 `statecase bypass codex -- <args>` starts the recorded real executable without
 synchronization.
 

@@ -20,7 +20,7 @@ export interface LocalConfig {
   deviceName?: string;
   selectedVaultId?: string;
   mappings: RootMapping[];
-  workspaces: Array<{ id: string; path: string; name?: string }>;
+  workspaces: Array<{ id: string; path: string; name?: string; sync?: "git" | "identity-only" }>;
   applied: Record<string, { revisionId: string; digests: Record<string, string> }>;
   runtime?: {
     shimDir?: string;

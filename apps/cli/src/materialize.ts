@@ -1,13 +1,15 @@
-import { lstat, mkdir, open, rename, rm } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, rename, rm, symlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 export interface MaterializedWrite {
   path: string;
   bytes: Uint8Array;
+  mode?: number;
 }
 
 export interface FileTransaction {
   writes: readonly MaterializedWrite[];
+  symlinks?: ReadonlyArray<{ path: string; target: string }>;
   deletes: readonly string[];
   /** Fault-injection boundary used by isolated recovery tests. */
   beforeCommit?: (index: number, path: string) => void | Promise<void>;
@@ -18,13 +20,16 @@ interface PreparedTarget {
   staging?: string;
   backup?: string;
   installed: boolean;
+  mode?: number;
+  symbolic?: boolean;
 }
 
 /** Applies one remote revision as an all-or-rollback local filesystem transaction. */
 export async function applyFileTransaction(transaction: FileTransaction): Promise<void> {
   const transactionId = crypto.randomUUID();
   const targets: PreparedTarget[] = [
-    ...transaction.writes.map((write) => ({ path: resolve(write.path), installed: false })),
+    ...transaction.writes.map((write) => ({ path: resolve(write.path), installed: false, mode: write.mode })),
+    ...(transaction.symlinks ?? []).map((link) => ({ path: resolve(link.path), installed: false, symbolic: true })),
     ...transaction.deletes.map((path) => ({ path: resolve(path), installed: false })),
   ];
   const unique = new Set(targets.map((target) => target.path));
@@ -44,12 +49,19 @@ export async function applyFileTransaction(transaction: FileTransaction): Promis
         await handle.close();
       }
     }
+    for (let index = 0; index < (transaction.symlinks?.length ?? 0); index += 1) {
+      const link = transaction.symlinks![index];
+      const target = targets[transaction.writes.length + index];
+      await mkdir(dirname(target.path), { recursive: true, mode: 0o700 });
+      target.staging = `${target.path}.statecase-transaction-${transactionId}.staged`;
+      await symlink(link.target, target.staging);
+    }
 
     for (let index = 0; index < targets.length; index += 1) {
       const target = targets[index];
       await transaction.beforeCommit?.(index, target.path);
       const existing = await optionalLstat(target.path);
-      if (existing && (!existing.isFile() || existing.isSymbolicLink())) {
+      if (existing && !existing.isFile() && !existing.isSymbolicLink()) {
         throw new Error(`refusing to replace non-regular file: ${target.path}`);
       }
       if (existing) {
@@ -57,6 +69,7 @@ export async function applyFileTransaction(transaction: FileTransaction): Promis
         await rename(target.path, target.backup);
       }
       if (target.staging) await rename(target.staging, target.path);
+      if (target.staging && !target.symbolic && target.mode !== undefined) await chmod(target.path, target.mode);
       target.installed = true;
     }
   } catch (cause) {

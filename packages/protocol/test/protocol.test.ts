@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   canonicalJson,
   commitRequestSchema,
+  manifestEntrySchema,
   manifestSchema,
   protocolError,
 } from "../src/index.js";
@@ -58,6 +59,18 @@ describe("wire schemas (PR-001, PR-014)", () => {
   it("accepts a v1 manifest and rejects an unknown required version", () => {
     expect(manifestSchema.parse(manifest)).toEqual(manifest);
     expect(() => manifestSchema.parse({ ...manifest, schemaVersion: 2 })).toThrow();
+  });
+
+  it("defaults legacy entries to files and preserves fail-closed workspace metadata", () => {
+    const legacy = { namespace: "drop:one", logicalPath: "a.txt", objectIds: ["obj_a"], totalSize: 1, contentDigest: "obj_digest" };
+    expect(manifestEntrySchema.parse(legacy)).toMatchObject({ entryType: "file" });
+    expect(manifestEntrySchema.parse({
+      ...legacy,
+      entryType: "workspace-blob",
+      workspacePath: "src/a.txt",
+      workspaceLayer: "index",
+      fileMode: 0o100755,
+    })).toMatchObject({ entryType: "workspace-blob", workspaceLayer: "index", fileMode: 0o100755 });
   });
 
   it("validates a commit request and idempotency key", () => {

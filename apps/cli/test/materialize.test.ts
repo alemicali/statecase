@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, readlink, readdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -23,14 +23,18 @@ describe("transactional native materialization (BK-008, BK-009, WS-025)", () => 
     await applyFileTransaction({
       writes: [
         { path: join(root, "replace.txt"), bytes: new TextEncoder().encode("new") },
-        { path: join(root, "nested", "create.txt"), bytes: new TextEncoder().encode("created") },
+        { path: join(root, "nested", "create.txt"), bytes: new TextEncoder().encode("created"), mode: 0o700 },
       ],
       deletes: [join(root, "delete.txt")],
+      symlinks: [{ path: join(root, "portable-link"), target: "replace.txt" }],
     });
 
     expect(await readFile(join(root, "replace.txt"), "utf8")).toBe("new");
     expect(await readFile(join(root, "nested", "create.txt"), "utf8")).toBe("created");
+    if (process.platform !== "win32") expect((await (await import("node:fs/promises")).lstat(join(root, "nested", "create.txt"))).mode & 0o777).toBe(0o700);
     await expect(readFile(join(root, "delete.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await lstat(join(root, "portable-link"))).isSymbolicLink()).toBe(true);
+    expect(await readlink(join(root, "portable-link"))).toBe("replace.txt");
     expect((await readdir(root)).every((name) => !name.includes(".statecase-transaction-"))).toBe(true);
   });
 
@@ -48,6 +52,7 @@ describe("transactional native materialization (BK-008, BK-009, WS-025)", () => 
         { path: second, bytes: new TextEncoder().encode("second-new") },
       ],
       deletes: [deleted],
+      symlinks: [],
       beforeCommit: (index) => {
         if (index === 2) throw new Error("injected disk failure");
       },
@@ -67,7 +72,24 @@ describe("transactional native materialization (BK-008, BK-009, WS-025)", () => 
     await expect(applyFileTransaction({
       writes: [{ path, bytes: new Uint8Array([1]) }],
       deletes: [path],
+      symlinks: [],
     })).rejects.toThrow("duplicate transaction target");
     expect(await readFile(path, "utf8")).toBe("untouched");
+  });
+
+  it("rolls back a replaced symlink without following its target", async () => {
+    const root = await mkdtemp(join(tmpdir(), "statecase-symlink-rollback-"));
+    temporary.push(root);
+    const path = join(root, "link");
+    await writeFile(join(root, "outside.txt"), "target remains");
+    await symlink("outside.txt", path);
+    await expect(applyFileTransaction({
+      writes: [],
+      symlinks: [{ path, target: "new-target" }],
+      deletes: [],
+      beforeCommit: () => { throw new Error("injected"); },
+    })).rejects.toThrow("injected");
+    expect(await readlink(path)).toBe("outside.txt");
+    expect(await readFile(join(root, "outside.txt"), "utf8")).toBe("target remains");
   });
 });

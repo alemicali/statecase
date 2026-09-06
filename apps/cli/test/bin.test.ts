@@ -45,7 +45,8 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
     expect(await command(io, "--json", "push")).toBe(0);
     expect(await command(io, "--json", "status")).toBe(0);
     expect(await command(io, "--json", "doctor")).toBe(0);
-    expect(await command(io, "--json", "workspace", "attach", "--path", source, "--id", "ws_test")).toBe(0);
+    expect(await command(io, "--json", "workspace", "attach", "--path", source, "--id", "ws_test", "--mode", "metadata-only")).toBe(0);
+    expect(JSON.parse(output.at(-1)!)).toMatchObject({ id: "ws_test", mode: "metadata-only" });
     expect(await command(io, "--json", "workspace", "list")).toBe(0);
 
     process.env.STATECASE_HOME = machineB;
@@ -72,6 +73,21 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
     expect(await command(io, "--json", "push")).toBe(3);
     expect(JSON.parse(errors.at(-1)!)).toMatchObject({ error: { code: 3 } });
     expect(await command(io, "--json", "login", "--non-interactive")).toBe(3);
+  });
+
+  it("fails early when Git overlay is requested for a non-Git directory (WS-001)", async () => {
+    const home = await mkdtemp(join(tmpdir(), "statecase-cli-workspace-"));
+    const ordinary = join(home, "ordinary");
+    temporary.push(home);
+    await mkdir(ordinary);
+    process.env.STATECASE_HOME = home;
+    const output: string[] = [];
+    const errors: string[] = [];
+    const io: CliIO = { stdout: (value) => output.push(value), stderr: (value) => errors.push(value), fetch };
+
+    expect(await command(io, "--json", "workspace", "attach", "--path", ordinary, "--id", "ws_plain")).toBe(2);
+    expect(JSON.parse(errors.at(-1)!)).toMatchObject({ error: { code: 2, message: expect.stringContaining("Git working tree") } });
+    expect(await command(io, "--json", "workspace", "attach", "--path", ordinary, "--id", "ws_plain", "--mode", "metadata-only")).toBe(0);
   });
 
   it("runs an unmodified harness offline and preserves its exit code (RT-002, RT-004, RT-011)", async () => {

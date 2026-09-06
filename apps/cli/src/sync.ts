@@ -9,6 +9,14 @@ import { scanCompleteJsonl } from "@statecase/adapter-common";
 import { chunkBytes, concatChunks } from "@statecase/chunking";
 import { computeObjectId, decryptEnvelope, deriveScopeKey, encryptEnvelope } from "@statecase/crypto";
 import { canonicalJson, manifestSchema, type VaultManifestV1 } from "@statecase/protocol";
+import {
+  applyWorkspaceTransaction,
+  assertWorkspaceDestination,
+  captureWorkspace,
+  type CapturedWorkspace,
+  type WorkspaceBlob,
+  workspaceMatchesCapsule,
+} from "@statecase/workspace";
 
 import type { LocalConfig, RootMapping } from "./config.js";
 import type { StatecaseClient } from "./client.js";
@@ -23,6 +31,10 @@ interface ScannedEntry {
   namespace: string;
   logicalPath: string;
   bytes: Uint8Array;
+  entryType?: "file" | "workspace-capsule" | "workspace-blob";
+  workspacePath?: string;
+  workspaceLayer?: "index" | "worktree";
+  fileMode?: number;
 }
 
 export interface SyncResult {
@@ -71,13 +83,14 @@ export class SyncEngine {
     const entries = previous?.entries.filter((entry) => !writableNamespaces.has(entry.namespace)) ?? [];
     const scannedKeys = new Set(scanned.map((file) => `${file.namespace}\0${file.logicalPath}`));
     const tombstones = previous?.tombstones.filter((item) =>
-      !writableNamespaces.has(item.namespace) || !scannedKeys.has(`${item.namespace}\0${item.logicalPath}`)
+      !writableNamespaces.has(item.namespace) ||
+      (!item.namespace.startsWith("workspace:") && !scannedKeys.has(`${item.namespace}\0${item.logicalPath}`))
     ) ?? [];
     const tombstoneKeys = new Set(tombstones.map((item) => `${item.namespace}\0${item.logicalPath}`));
     const deletedAt = new Date().toISOString();
     for (const entry of previous?.entries ?? []) {
       const key = `${entry.namespace}\0${entry.logicalPath}`;
-      if (writableNamespaces.has(entry.namespace) && !scannedKeys.has(key) && !tombstoneKeys.has(key)) {
+      if (writableNamespaces.has(entry.namespace) && !entry.namespace.startsWith("workspace:") && !scannedKeys.has(key) && !tombstoneKeys.has(key)) {
         tombstones.push({ namespace: entry.namespace, logicalPath: entry.logicalPath, deletedAt });
         tombstoneKeys.add(key);
       }
@@ -95,6 +108,10 @@ export class SyncEngine {
       entries.push({
         namespace: file.namespace,
         logicalPath: file.logicalPath,
+        entryType: file.entryType ?? "file",
+        ...(file.workspacePath ? { workspacePath: file.workspacePath } : {}),
+        ...(file.workspaceLayer ? { workspaceLayer: file.workspaceLayer } : {}),
+        ...(file.fileMode !== undefined ? { fileMode: file.fileMode } : {}),
         objectIds,
         totalSize: file.bytes.byteLength,
         contentDigest: await computeObjectId(keys.dedupKey, file.bytes),
@@ -174,6 +191,7 @@ export class SyncEngine {
     const byNamespace = new Map(selected.map((mapping) => [mapping.namespace, mapping]));
     const materialized: Array<{ mapping: RootMapping; path: string; bytes: Uint8Array; digest: string }> = [];
     const deletions: Array<{ mapping: RootMapping; path: string; logicalPath: string }> = [];
+    const workspacePayloads = new Map<string, { mapping: RootMapping; capsule?: CapturedWorkspace["capsule"]; blobs: WorkspaceBlob[] }>();
     let objectCount = 1;
     let byteCount = 0;
     for (const entry of manifest.entries) {
@@ -195,6 +213,25 @@ export class SyncEngine {
       let bytes = concatChunks(chunks);
       if (bytes.byteLength !== entry.totalSize || await computeObjectId(keys.dedupKey, bytes) !== entry.contentDigest) {
         throw new Error("downloaded file failed content verification");
+      }
+      if (mapping.id.startsWith("workspace_") && entry.entryType === "workspace-capsule") {
+        const payload = workspacePayloads.get(entry.namespace) ?? { mapping, blobs: [] };
+        payload.capsule = JSON.parse(new TextDecoder("utf8", { fatal: true, ignoreBOM: false }).decode(bytes)) as CapturedWorkspace["capsule"];
+        workspacePayloads.set(entry.namespace, payload);
+        continue;
+      }
+      if (mapping.id.startsWith("workspace_") && entry.entryType === "workspace-blob") {
+        if (!entry.workspacePath || !entry.workspaceLayer || entry.fileMode === undefined) throw new Error("workspace blob metadata is incomplete");
+        const payload = workspacePayloads.get(entry.namespace) ?? { mapping, blobs: [] };
+        payload.blobs.push({
+          layer: entry.workspaceLayer,
+          path: entry.workspacePath,
+          bytes,
+          mode: entry.fileMode,
+          oid: gitBlobOidFromLogicalPath(entry.logicalPath),
+        });
+        workspacePayloads.set(entry.namespace, payload);
+        continue;
       }
       const portable = portableSession(entry.logicalPath);
       if (portable && mapping.kind !== "drop") {
@@ -220,6 +257,19 @@ export class SyncEngine {
       });
     }
 
+    const readyWorkspaces: Array<{ mapping: RootMapping; captured: CapturedWorkspace }> = [];
+    for (const payload of workspacePayloads.values()) {
+      if (!payload.capsule) throw new Error("workspace capsule metadata is missing");
+      const captured = { capsule: payload.capsule, blobs: payload.blobs };
+      if (await workspaceMatchesCapsule(payload.mapping.path, captured)) continue;
+      try {
+        await assertWorkspaceDestination(payload.mapping.path, captured);
+      } catch {
+        throw new SyncConflict([payload.mapping.path]);
+      }
+      readyWorkspaces.push({ mapping: payload.mapping, captured });
+    }
+
     const conflicts: string[] = [];
     for (const item of materialized) {
       const current = await optionalFile(item.path);
@@ -241,12 +291,17 @@ export class SyncEngine {
       if (!prior || currentDigest !== prior) conflicts.push(item.path);
     }
     if (conflicts.length > 0) throw new SyncConflict(conflicts);
-    if (dryRun) return { outcome: "pulled", revisionId: head.revisionId, files: materialized.length + deletions.length, objects: objectCount, bytes: byteCount };
+    const workspaceFiles = readyWorkspaces.reduce((total, item) => total + item.captured.capsule.records.length, 0);
+    if (dryRun) return { outcome: "pulled", revisionId: head.revisionId, files: materialized.length + deletions.length + workspaceFiles, objects: objectCount, bytes: byteCount };
 
-    await applyFileTransaction({
-      writes: materialized.map((item) => ({ path: item.path, bytes: item.bytes })),
-      deletes: deletions.map((item) => item.path),
-    });
+    await applyWorkspaceTransaction(
+      readyWorkspaces.map((workspace) => ({ root: workspace.mapping.path, captured: workspace.captured })),
+      {
+        writes: materialized.map((item) => ({ path: item.path, bytes: item.bytes })),
+        deletes: deletions.map((item) => item.path),
+      },
+      { materialize: applyFileTransaction },
+    );
     for (const mapping of selected) {
       const digests: Record<string, string> = {};
       for (const item of materialized.filter((candidate) => candidate.mapping.namespace === mapping.namespace)) {
@@ -254,7 +309,7 @@ export class SyncEngine {
       }
       config.applied[mapping.namespace] = { revisionId: head.revisionId, digests };
     }
-    return { outcome: "pulled", revisionId: head.revisionId, files: materialized.length + deletions.length, objects: objectCount, bytes: byteCount };
+    return { outcome: "pulled", revisionId: head.revisionId, files: materialized.length + deletions.length + workspaceFiles, objects: objectCount, bytes: byteCount };
   }
 
   async #downloadManifest(objectId: string): Promise<VaultManifestV1> {
@@ -282,7 +337,7 @@ export class SyncEngine {
 }
 
 function workspaceMappings(config: LocalConfig): RootMapping[] {
-  return config.workspaces.map((workspace) => ({
+  return config.workspaces.filter((workspace) => workspace.sync !== "identity-only").map((workspace) => ({
     id: `workspace_${workspace.id}`,
     kind: "drop",
     mode: "two-way",
@@ -293,30 +348,32 @@ function workspaceMappings(config: LocalConfig): RootMapping[] {
 }
 
 async function scanGitOverlay(mapping: RootMapping): Promise<ScannedEntry[]> {
-  let names: string[];
-  try {
-    const [worktree, staged] = await Promise.all([
-      runFile("git", ["-C", mapping.path, "ls-files", "--modified", "--others", "--exclude-standard", "-z"], { encoding: "buffer", maxBuffer: 16 * 1024 * 1024 }),
-      runFile("git", ["-C", mapping.path, "diff", "--cached", "--name-only", "-z"], { encoding: "buffer", maxBuffer: 16 * 1024 * 1024 }),
-    ]);
-    names = [...new Set([...nulPaths(worktree.stdout), ...nulPaths(staged.stdout)])].sort((a, b) => a.localeCompare(b, "en"));
-  } catch {
-    return [];
-  }
-  const output: ScannedEntry[] = [];
-  for (const logicalPath of names) {
-    if (excludedBuiltIn(logicalPath)) continue;
-    const path = safeDestination(mapping.path, logicalPath);
-    const info = await lstat(path).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? undefined : Promise.reject(error));
-    if (!info?.isFile()) continue;
-    if (info.size > MAX_FILE_BYTES) throw new Error(`file exceeds the local safety limit: ${logicalPath}`);
-    output.push({ namespace: mapping.namespace, logicalPath, bytes: await readFile(path) });
-  }
-  return output;
+  const captured = await captureWorkspace(mapping.path);
+  const allowedPaths = new Set(captured.capsule.records.filter((record) => !excludedBuiltIn(record.path)).map((record) => record.path));
+  const capsule = { ...captured.capsule, records: captured.capsule.records.filter((record) => allowedPaths.has(record.path)) };
+  return [
+    {
+      namespace: mapping.namespace,
+      logicalPath: "$statecase/workspace/capsule.json",
+      entryType: "workspace-capsule",
+      bytes: encoder.encode(canonicalJson(capsule)),
+    },
+    ...captured.blobs.filter((blob) => allowedPaths.has(blob.path)).map((blob): ScannedEntry => ({
+      namespace: mapping.namespace,
+      logicalPath: `$statecase/workspace/blob/${blob.layer}/${blob.oid}/${Buffer.from(blob.path).toString("base64url")}`,
+      entryType: "workspace-blob",
+      workspacePath: blob.path,
+      workspaceLayer: blob.layer,
+      fileMode: blob.mode,
+      bytes: blob.bytes,
+    })),
+  ];
 }
 
-function nulPaths(value: string | Buffer): string[] {
-  return value.toString("utf8").split("\0").filter(Boolean);
+function gitBlobOidFromLogicalPath(path: string): string {
+  const match = /^\$statecase\/workspace\/blob\/(?:index|worktree)\/([0-9a-f]{40,64})\/[A-Za-z0-9_-]+$/u.exec(path);
+  if (!match) throw new Error("workspace blob identity is invalid");
+  return match[1];
 }
 
 async function cleanGitDestination(root: string, path: string): Promise<boolean> {

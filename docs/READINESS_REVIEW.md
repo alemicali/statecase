@@ -103,7 +103,7 @@ The first usable vertical slice is complete: manual first-device and
 second-device enrollment, encrypted recovery kit, account-scoped vaults,
 client-side encrypted/chunked object transfer, atomic optimistic commits,
 Codex/Claude complete-record handling, skill transfer, arbitrary Drops,
-logical workspace path rewriting, and modified/untracked Git overlay transfer.
+logical workspace path rewriting, and exact Git index/worktree overlay transfer.
 The single Cloudflare MVP stack is provisioned and private-signup allowlisted.
 
 The next foreground slice is implemented locally: `statecase run` supervises
@@ -124,8 +124,15 @@ systemd-user and launchd installers are implemented with safe ownership and
 uninstall semantics; actual Linux/macOS lifecycle UAT plus sleep/network-change
 integration are still required before background steady state is claimed.
 
+Exact workspace capsules now reproduce staged and unstaged bytes separately,
+deletions, additions, modes, safe symlinks, detached and unborn repositories,
+and uninitialized gitlinks. They reject malformed/corrupt input and dirty or
+mismatched destinations before apply, and roll back both the Git index and
+working tree on failure. Automatic baseline fetch, initialized submodule
+hydration, and LFS diagnostics remain explicit follow-on gates.
+
 Automated background steady state is not yet claimed. Real-OS daemon/service
-UAT, safe automatic merge, exact Git index/baseline capsules, retained
+UAT, safe automatic merge, retained
 snapshots/restore, scoped ephemeral bootstrap, device revocation/key rewrap,
 and complete historical Session Capsules remain blocking work for a public or
 unattended release.

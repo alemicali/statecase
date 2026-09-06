@@ -152,13 +152,62 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     await writeFile(join(source, "new.txt"), "untracked dependency\n");
     const remote = new MemoryRemote();
     const key = await randomKey();
-    await new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key).push(workspaceConfig(source));
-    await new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key).pull(workspaceConfig(target));
+    const sourceConfig = workspaceConfig(source);
+    const targetConfig = workspaceConfig(target);
+    const sourceEngine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    const targetEngine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    await sourceEngine.push(sourceConfig);
+    await targetEngine.pull(targetConfig);
     expect(await readFile(join(target, "tracked.txt"), "utf8")).toBe("work in progress\n");
     expect(await readFile(join(target, "new.txt"), "utf8")).toBe("untracked dependency\n");
   });
 
-  it("does not treat a dirty checkout as a safe Git baseline and ignores non-Git workspace scans", async () => {
+  it("restores the exact Git index separately from the working tree (WS-010..WS-016)", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-exact-git-"));
+    temporary.push(base);
+    const source = join(base, "home", "project");
+    const target = join(base, "srv", "project");
+    await initializeRepository(source);
+    await writeFile(join(source, "deleted.txt"), "baseline deletion target\n");
+    await runFile("git", ["-C", source, "add", "deleted.txt"]);
+    await runFile("git", ["-C", source, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "add deletion target"]);
+    await mkdir(join(base, "srv"), { recursive: true });
+    await runFile("git", ["clone", "-q", source, target]);
+
+    await writeFile(join(source, "tracked.txt"), "staged bytes\n");
+    await runFile("git", ["-C", source, "add", "tracked.txt"]);
+    await writeFile(join(source, "tracked.txt"), "worktree bytes\n");
+    await runFile("git", ["-C", source, "rm", "-q", "deleted.txt"]);
+    await writeFile(join(source, "script.sh"), "#!/bin/sh\nexit 0\n");
+    const { chmod } = await import("node:fs/promises");
+    await chmod(join(source, "script.sh"), 0o755);
+
+    const remote = new MemoryRemote();
+    const key = await randomKey();
+    const sourceConfig = workspaceConfig(source);
+    const targetConfig = workspaceConfig(target);
+    const sourceEngine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    const targetEngine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    await sourceEngine.push(sourceConfig);
+    await targetEngine.pull(targetConfig);
+
+    expect((await runFile("git", ["-C", target, "show", ":tracked.txt"])).stdout).toBe("staged bytes\n");
+    expect(await readFile(join(target, "tracked.txt"), "utf8")).toBe("worktree bytes\n");
+    await expect(readFile(join(target, "deleted.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await (await import("node:fs/promises")).lstat(join(target, "script.sh"))).mode & 0o111).not.toBe(0);
+    expect((await runFile("git", ["-C", target, "status", "--porcelain=v1", "-z"])).stdout)
+      .toBe((await runFile("git", ["-C", source, "status", "--porcelain=v1", "-z"])).stdout);
+
+    const unrelated = join(base, "unrelated-drop");
+    await mkdir(unrelated);
+    await writeFile(join(unrelated, "note.txt"), "other namespace");
+    await sourceEngine.push(config(unrelated));
+    await expect(targetEngine.pull(targetConfig)).resolves.toMatchObject({ outcome: "pulled" });
+    expect((await runFile("git", ["-C", target, "status", "--porcelain=v1", "-z"])).stdout)
+      .toBe((await runFile("git", ["-C", source, "status", "--porcelain=v1", "-z"])).stdout);
+  });
+
+  it("does not treat a dirty checkout as a safe Git baseline and fails closed on non-Git workspace scans", async () => {
     const base = await mkdtemp(join(tmpdir(), "statecase-dirty-git-"));
     temporary.push(base);
     const source = join(base, "source");
@@ -173,8 +222,8 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     await sourceEngine.push(workspaceConfig(source));
     await expect(sourceEngine.pull(workspaceConfig(target))).rejects.toBeInstanceOf(SyncConflict);
     const emptyRemote = new MemoryRemote();
-    expect(await new SyncEngine(new StatecaseClient("https://remote.test", "token", emptyRemote.fetch), "vlt_test", key).push(workspaceConfig(ordinary)))
-      .toMatchObject({ outcome: "pushed", files: 0 });
+    await expect(new SyncEngine(new StatecaseClient("https://remote.test", "token", emptyRemote.fetch), "vlt_test", key).push(workspaceConfig(ordinary)))
+      .rejects.toThrow("not a Git working tree");
   });
 
   it("handles empty heads, dry runs, and directional mapping policies without remote mutation", async () => {
@@ -241,7 +290,7 @@ function harnessConfig(path: string, workspacePath: string): LocalConfig {
   return {
     ...config(path),
     mappings: [{ id: "harness_codex_default", kind: "codex", mode: "two-way", name: "Codex", namespace: "harness:codex:default", path }],
-    workspaces: [{ id: "ws_test", path: workspacePath }],
+    workspaces: [{ id: "ws_test", path: workspacePath, sync: "identity-only" }],
   };
 }
 
