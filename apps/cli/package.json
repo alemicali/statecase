@@ -1,6 +1,6 @@
 {
   "name": "@statecase/cli",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0",
   "description": "Take your agents anywhere with encrypted portable operational context",
   "license": "MIT",
   "repository": {

@@ -16,11 +16,12 @@
     "cloud:dev": "wrangler dev --config apps/cloud/wrangler.jsonc",
     "cloud:deploy": "wrangler deploy --config apps/cloud/wrangler.jsonc",
     "cloud:types": "wrangler types --config apps/cloud/wrangler.jsonc apps/cloud/worker-configuration.d.ts",
-    "lint": "oxlint --deny-warnings packages apps test vitest.config.ts",
+    "lint": "oxlint --deny-warnings packages apps scripts test vitest.config.ts",
     "pack:cli": "npm pack --workspace @statecase/cli",
     "test": "vitest run",
     "test:package": "node scripts/smoke-package.mjs",
     "test:coverage": "vitest run --coverage",
+    "uat:remote": "node scripts/uat/daytona-product.mjs",
     "typecheck": "tsc --noEmit"
   },
   "engines": {

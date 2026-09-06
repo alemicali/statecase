@@ -1,6 +1,6 @@
 # Statecase product strategy
 
-Status: approved product direction; private manual-sync MVP implemented
+Status: approved product direction; implementation and release qualification in progress
 Last updated: 2026-09-05
 Owners: Statecase maintainers
 
@@ -240,14 +240,14 @@ native discovery mechanisms rather than injecting prompt text. See the
 
 ### Optional control panel
 
-The control panel is not required for MVP correctness. When added, it manages
+The control panel is not required for initial-release correctness. When added, it manages
 devices, bootstrap tokens, workspaces, sync health, retained snapshots, audit
 events, and revocation. It must not display decrypted session contents unless
 an explicitly designed client-side decryption experience is approved.
 
 ## Scope
 
-### MVP: sync foundation
+### Initial release: sync foundation
 
 - Linux and macOS persistent clients; Linux ephemeral containers.
 - Node.js CLI and a new `statecase` package identity.
@@ -275,7 +275,7 @@ an explicitly designed client-side decryption experience is approved.
 - Organization sharing, policy enforcement, and SSO/workload identity.
 - Selective client-side search/indexing across encrypted sessions.
 
-### Explicit non-goals for MVP
+### Explicit non-goals for the initial release
 
 - Hosting or proxying model inference.
 - Replacing Git hosting or synchronizing complete Git object databases. Git
@@ -404,13 +404,13 @@ products with separate trust boundaries, configuration, release cadence, and
 failure modes.
 
 Existing projects may inform product research, but code is adopted only later
-through an explicit dependency or a provenance-reviewed port. The MVP contains
+through an explicit dependency or a provenance-reviewed port. The initial release contains
 no legacy migration surface. This accepted decision is recorded in
 [ADR-0001](adr/0001-standalone-greenfield-product.md).
 
-## MVP Cloudflare topology
+## Initial Cloudflare topology
 
-The MVP uses one of each required remote Cloudflare resource in the existing
+The initial release uses one of each required remote Cloudflare resource in the existing
 Cloudflare account:
 
 - one Worker running the Hono API;
@@ -420,11 +420,11 @@ Cloudflare account:
   per vault.
 
 Local development uses Wrangler's local runtime and local stores. There is no
-separate remote development or staging stack during the MVP. Resource names
-MUST include an `mvp` environment marker so a later staging/production split
-can be introduced without renaming protocol identities or changing client-side
-vault IDs. This is accepted in
-[ADR-0002](adr/0002-single-cloudflare-mvp-stack.md).
+separate remote development or staging stack during release qualification.
+Resource names do not encode lifecycle stage; versions and deployment metadata
+do. A later staging/production split can be introduced without renaming
+protocol identities or changing client-side vault IDs. This is accepted in
+[ADR-0002](adr/0002-single-cloudflare-stack.md).
 
 ## Differentiation
 
@@ -440,7 +440,7 @@ combination of:
 
 ## Success metrics
 
-MVP is successful when:
+The initial release is successful when:
 
 - setup-to-first-safe-sync succeeds in under five minutes for a normal profile;
 - a no-change preflight completes with p95 under two seconds on a warm client;
@@ -466,7 +466,7 @@ a separate business decision before a hosted public launch.
 AgentStash and ClawStash remain independent backup tools. Statecase neither
 modifies their repositories nor reads their configuration during setup. A
 future import tool would require its own ADR, threat-model update, and UAT; it
-is not part of the MVP.
+is not part of the initial release.
 
 ## Principal risks and mitigations
 

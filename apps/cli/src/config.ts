@@ -52,7 +52,7 @@ export class ConfigStore {
   async loadConfig(): Promise<LocalConfig> {
     return readJson(join(this.home, "config.json"), {
       version: 1,
-      apiUrl: process.env.STATECASE_API_URL ?? "https://statecase-api-mvp.hi-0e6.workers.dev",
+      apiUrl: process.env.STATECASE_API_URL ?? "https://statecase-api.hi-0e6.workers.dev",
       mappings: [],
       workspaces: [],
       applied: {},

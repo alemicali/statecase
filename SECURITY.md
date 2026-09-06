@@ -1,6 +1,8 @@
 # Security policy
 
-Statecase is pre-alpha and must not be trusted with real agent state yet.
+Statecase is under active release qualification. Back up valuable agent state
+independently until the relevant platform and harness appear in the published
+compatibility matrix.
 
 Report vulnerabilities privately through GitHub Security Advisories for this
 repository. Do not open public issues containing credentials, session content,

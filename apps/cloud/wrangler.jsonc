@@ -1,27 +1,27 @@
 {
   "$schema": "../../node_modules/wrangler/config-schema.json",
-  "name": "statecase-api-mvp",
+  "name": "statecase-api",
   "main": "src/index.ts",
   "compatibility_date": "2026-09-01",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "vars": {
-    "STATECASE_ENV": "mvp",
+    "STATECASE_ENV": "production",
     "STATECASE_ALLOWED_EMAILS": "hi@lumea.dev",
-    "BETTER_AUTH_URL": "https://statecase-api-mvp.hi-0e6.workers.dev"
+    "BETTER_AUTH_URL": "https://statecase-api.hi-0e6.workers.dev"
   },
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "statecase-mvp",
-      "database_id": "dda02c36-f32b-458a-89b9-e3ed395a1482",
+      "database_name": "statecase",
+      "database_id": "e92ffa3c-dff8-4740-afe2-f7e84081b2b2",
       "migrations_dir": "migrations"
     }
   ],
   "r2_buckets": [
     {
       "binding": "BLOBS",
-      "bucket_name": "statecase-mvp"
+      "bucket_name": "statecase-vaults"
     }
   ],
   "durable_objects": {

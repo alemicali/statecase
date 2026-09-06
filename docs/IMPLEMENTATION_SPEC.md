@@ -1,6 +1,6 @@
 # Statecase synchronization implementation specification
 
-Status: normative design; private foreground-sync alpha partially implemented
+Status: normative design; implementation and release qualification in progress
 Last updated: 2026-09-06
 Related: [Product strategy](./PRODUCT_STRATEGY.md),
 [Test and UAT plan](./TEST_AND_UAT_PLAN.md),
@@ -9,7 +9,7 @@ Related: [Product strategy](./PRODUCT_STRATEGY.md),
 ## 1. Normative language and current-state warning
 
 `MUST`, `MUST NOT`, `SHOULD`, and `MAY` are normative. This document describes
-the target architecture. The current private MVP implements the encrypted
+the target architecture. The current implementation provides the encrypted
 manual CLI and supervised foreground vertical slices plus its single
 Cloudflare stack. Foreground `statecase run`, safe shims, tombstone propagation,
 transactional apply, the persistent daemon core, and native systemd/launchd
@@ -140,7 +140,7 @@ an explicit adapter policy requires an environment override.
 
 ### 4.4 Cloud API
 
-The MVP remote deployment contains exactly one Cloudflare Worker, one R2
+The initial remote deployment contains exactly one Cloudflare Worker, one R2
 bucket, one D1 database, and one Durable Objects namespace. The Worker hosts a
 Hono application. Hono handles routing,
 middleware, authentication, request validation, error mapping, and API
@@ -148,13 +148,14 @@ documentation. The CLI communicates through ordinary HTTPS. Hono RPC MAY be
 used by the TypeScript client, but the wire protocol MUST remain documented
 HTTP/JSON so another client language can be implemented.
 
-There is no remote staging environment in the MVP. Development and automated
+There is no remote staging environment during initial release qualification. Development and automated
 tests use Wrangler/local emulation; the single remote stack is treated as the
-MVP environment. All remote resource names carry an `mvp` marker. Configuration
-MUST keep binding names and resource IDs environment-driven so adding separate
+allowlisted release environment. Resource names do not encode release stage;
+artifact versions and deployment metadata do. Configuration MUST keep binding
+names and resource IDs environment-driven so adding separate
 staging and production stacks later requires no protocol or persisted-data
 format change. See
-[ADR-0002](adr/0002-single-cloudflare-mvp-stack.md).
+[ADR-0002](adr/0002-single-cloudflare-stack.md).
 
 Worker bindings:
 
@@ -416,7 +417,7 @@ Statecase stores its own state under `STATECASE_HOME`, defaulting to
 
 ```text
 config.json                non-secret profiles and mappings
-credentials.json           owner-only bearer session and vault keys (MVP)
+credentials.json           owner-only bearer session and vault keys (initial release)
 state.db                    WAL-enabled local operation journal
 cache/objects/              bounded encrypted/plaintext-safe cache by policy
 locks/                      instance locks
@@ -894,7 +895,7 @@ rewrite historical manifests during a schema migration; they create a new
 revision in the new format.
 
 Statecase has no legacy product configuration or backup-repository migration in
-the MVP. It MUST NOT inspect or mutate AgentStash or ClawStash configuration.
+the initial release. It MUST NOT inspect or mutate AgentStash or ClawStash configuration.
 Any future importer requires a separate ADR and remains a one-way, previewed,
 copy-only operation.
 

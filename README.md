@@ -10,8 +10,8 @@ designed for agents generally.
 
 ## Status
 
-Private alpha. The foreground portability path is implemented and the Cloudflare stack is
-live at `https://statecase-api-mvp.hi-0e6.workers.dev`: Better Auth device
+The foreground portability path is implemented and the Cloudflare service is
+live at `https://statecase-api.hi-0e6.workers.dev`: Better Auth device
 authorization, D1 identity/catalogue, R2 encrypted objects, Durable Object
 commits, local XChaCha20-Poly1305 encryption, passphrase-protected recovery
 kits, Codex/Claude session and skill adapters, exact Git index/worktree overlays, arbitrary
@@ -43,7 +43,8 @@ The approved direction lives in:
 - [Test and UAT plan](docs/TEST_AND_UAT_PLAN.md)
 - [Threat model](docs/THREAT_MODEL.md)
 - [Readiness review](docs/READINESS_REVIEW.md)
-- [Private MVP operations](docs/MVP_OPERATIONS.md)
+- [Operations](docs/OPERATIONS.md)
+- [Daytona and Cloudflare product UAT](docs/uat/2026-09-06-daytona-cloud.md)
 
 ## Repository shape
 
@@ -76,19 +77,19 @@ npm run build
 Node.js 22.12+ and system Git are required. Git provides workspace identity and
 working-tree overlays; Statecase never synchronizes Git credentials.
 
-Build an installable private-alpha tarball and smoke-test it in a clean prefix:
+Build an installable tarball and smoke-test it in a clean prefix:
 
 ```bash
 npm run pack:cli
-npm install --global ./statecase-cli-0.1.0-alpha.1.tgz
+npm install --global ./statecase-cli-0.1.0.tgz
 statecase --json status
 ```
 
 The package contains the compiled CLI and canonical Statecase skill; it does
-not depend on the private workspace packages at runtime. Tagged alpha releases
+not depend on the private workspace packages at runtime. Tagged releases
 attach the same tested tarball and checksum to GitHub Releases.
 
-## First private-MVP setup
+## First setup
 
 ```bash
 ./apps/cli/dist/bin.js login
@@ -184,7 +185,7 @@ delta records, but cannot replace a namespace head with an unrestricted write.
 Revoke the grant with `token revoke <id> --yes`; remove the bootstrap file from
 the secret-delivery system after successful redemption.
 
-Account creation is deliberately allowlisted for the private MVP. Never put
+Account creation is deliberately allowlisted. Never put
 `STATECASE_TOKEN`, `STATECASE_RECOVERY_PASSPHRASE`, or the recovery kit in a
 prompt, Git repository, shell history, or process argument.
 

@@ -4,12 +4,12 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
-- Package the alpha CLI as a self-contained npm tarball with its canonical
+- Package the CLI as a self-contained npm tarball with its canonical
   agent skill and runtime SQLite dependency.
 
 - Established the standalone greenfield repository, product specification,
   threat model, TDD/UAT plan, and repository governance.
-- Implemented the private manual-sync MVP: Cloudflare Worker/D1/R2/Durable
+- Implemented the initial manual-sync release: Cloudflare Worker/D1/R2/Durable
   Objects, Better Auth device flow, E2EE object protocol, hybrid chunking,
   local journal, Codex/Claude adapters, Drops, logical workspace path rewriting,
   Git working overlays, recovery kits, CLI, and agent-native skill.

@@ -4,7 +4,7 @@ Status: accepted and implemented for current-head synchronization
 
 ## Context
 
-The legacy alpha stores one encrypted manifest and one head for an entire
+The legacy protocol stores one encrypted manifest and one head for an entire
 vault. Because the Worker cannot decrypt that manifest, it cannot prove which
 workspace, Drop, or harness a client changed. Issuing a token described as
 "workspace scoped" against that protocol would therefore be misleading: the

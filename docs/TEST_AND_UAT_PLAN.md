@@ -1,6 +1,13 @@
 # Statecase TDD, verification, and UAT plan
 
 Status: required delivery plan
+
+Executed evidence: the
+[2026-09-06 Daytona and Cloudflare product UAT](uat/2026-09-06-daytona-cloud.md)
+passes the packaged CLI, real Codex/Claude shim, two-device authorization,
+encrypted Drop round-trip, deletion, conflict, and snapshot subset of this
+plan. Native macOS/Linux service-manager, ARM64, WSL2, large-scale performance,
+retention/GC, and destructive recovery drills remain open release gates.
 Last updated: 2026-09-05
 Related: [Implementation specification](./IMPLEMENTATION_SPEC.md)
 

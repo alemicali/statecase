@@ -66,7 +66,7 @@ failure opens/updates a tracked issue and blocks a release even if PR CI passed.
 ### Release candidate
 
 Run all deterministic, integration, fault, schema-evolution, recovery,
-security, and performance suites plus documented UAT. During the MVP, remote
+security, and performance suites plus documented UAT. During release qualification, remote
 smoke tests use a uniquely prefixed disposable vault in the single remote stack
 and never destructive shared fixtures. A separate staging/production promotion
 flow is required before public launch.

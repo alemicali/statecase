@@ -1,6 +1,6 @@
 # Statecase design readiness review
 
-Status: private foreground-sync alpha implemented and deployed; not ready for public
+Status: foreground sync implemented and deployed; release qualification in progress; not ready for public
 production launch
 Last updated: 2026-09-06
 
@@ -26,7 +26,7 @@ Last updated: 2026-09-06
 - Activity: parse harness/session events and reconcile filesystem/Git; OS-level
   read interception is optional and non-authoritative.
 - Identity: logical workspace/drop/session IDs with device-local path mappings.
-- Cloud: for the MVP, deploy one remote Cloudflare stack in the existing
+- Cloud: for the initial release, deploy one remote Cloudflare stack in the existing
   account: one Hono Worker, one R2 bucket, one D1 database, and one Durable
   Objects namespace (with one logical coordinator instance per vault). Local
   development is the only separate environment; there is no remote staging
@@ -50,7 +50,7 @@ Last updated: 2026-09-06
 - Agent-native behavior: skills invoke stable JSON CLI operations but are not
   the persistence mechanism.
 - Delivery: TDD, contract tests, fault injection, paranoid UAT, staged beta.
-- Repository security availability: the private MVP repository's current
+- Repository security availability: the private repository's current
   GitHub plan does not expose branch protection, CodeQL/code scanning,
   dependency review, secret scanning, or push protection. These controls are a
   mandatory pre-public-release gate, not silently waived.
@@ -83,12 +83,12 @@ milestone and must become an ADR:
 
 1. **Supported Codex/Claude version window and fixture acquisition process** —
    blocks compatibility claims.
-2. **Native Windows semantics** — deferred; WSL smoke support only for MVP.
+2. **Native Windows semantics** — deferred; WSL smoke support only for the initial release.
 3. **Hosted pricing, data-region, metadata retention, and legal terms** — blocks
    commercial launch, not OSS implementation.
 4. **Trademark/domain clearance for Statecase** — blocks brand investment, not
    technical work.
-5. **Control-panel decryption UX** — deferred; CLI is the MVP control plane.
+5. **Control-panel decryption UX** — deferred; CLI is the initial control plane.
 
 ## Scope completeness verdict
 
@@ -104,9 +104,9 @@ second-device enrollment, encrypted recovery kit, account-scoped vaults,
 client-side encrypted/chunked object transfer, atomic optimistic commits,
 Codex/Claude complete-record handling, skill transfer, arbitrary Drops,
 logical workspace path rewriting, and exact Git index/worktree overlay transfer.
-The single Cloudflare MVP stack is provisioned and private-signup allowlisted.
+The single Cloudflare release stack is provisioned and signup allowlisted.
 
-The CLI also packs as a self-contained `@statecase/cli` alpha tarball. Its
+The CLI also packs as a self-contained `@statecase/cli` tarball. Its
 runtime manifest contains only the external native SQLite dependency; bundled
 workspace code and the canonical agent skill are verified by a clean-prefix
 installation smoke test in the normal quality gate.
@@ -118,8 +118,15 @@ preservation, and durable queued retry. Statecase-owned transparent shims are
 atomically installed/verified/removed without overwriting unrelated binaries.
 Remote deletions now use manifest tombstones, unhydrated namespace pushes fail
 closed, and pull materialization rolls back as one transaction after injected
-mid-apply failure. Deployment of this slice follows isolated Docker and remote
-compatibility verification.
+mid-apply failure. This slice is deployed on the definitive Cloudflare resource
+names and has passed remote compatibility verification.
+
+The packaged `@statecase/cli@0.1.0` artifact also passed a credential-isolated
+Daytona/Cloudflare product UAT with real Codex and Claude binaries, two
+independently authorized devices, encrypted binary/UTF-8/hidden-file round
+trips, deletion propagation, stale-base conflict detection, protected conflict
+resolution, and named snapshots. See the
+[executed UAT report](uat/2026-09-06-daytona-cloud.md).
 
 The persistent daemon core is also implemented locally with a single-profile
 crash-recoverable lock, recursive filesystem hints, periodic source-of-truth

@@ -26,8 +26,8 @@ secrets vault requires a separate ADR and explicit opt-in.
 
 - Require every baseline to be pre-provisioned: safest but breaks transparent
   ephemeral hydration.
-- GitHub App cloning: useful for organizations, unnecessary for the personal
-  MVP and not provider-neutral.
+- GitHub App cloning: useful for organizations, unnecessary for the initial
+  personal release and not provider-neutral.
 - Default credential synchronization: rejected due to blast radius.
 
 ## Consequences

@@ -42,7 +42,7 @@ describe("Statecase in workerd (PR-001, PR-005, PR-010, PR-011, AU-001)", () => 
     expect(await response.json()).toMatchObject({ error: "invalid_client" });
   });
 
-  it("rejects account creation outside the private MVP allowlist", async () => {
+  it("rejects account creation outside the configured allowlist", async () => {
     const response = await exports.default.fetch("http://statecase.test/api/auth/sign-up/email", {
       method: "POST",
       headers: { "content-type": "application/json" },

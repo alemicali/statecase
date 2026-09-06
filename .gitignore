@@ -10,4 +10,5 @@ coverage/
 *.tsbuildinfo
 *.auth-state.json
 statecase-cli-*.tgz
+.package-smoke/
 .DS_Store
