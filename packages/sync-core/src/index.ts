@@ -1,4 +1,11 @@
-import { canonicalJson, commitRequestSchema, type CommitRequest, type VaultManifestV1 } from "@statecase/protocol";
+import {
+  canonicalJson,
+  commitRequestSchema,
+  scopedCommitRequestSchema,
+  type CommitRequest,
+  type ScopedCommitRequest,
+  type VaultManifestV1,
+} from "@statecase/protocol";
 
 type ManifestEntry = VaultManifestV1["entries"][number];
 type ManifestTombstone = VaultManifestV1["tombstones"][number];
@@ -149,8 +156,36 @@ interface StoredOperation {
   result: Extract<CommitResult, { outcome: "committed" }>;
 }
 
+export interface NamespaceHead {
+  namespace: string;
+  revisionId: string;
+  manifestObjectId: string;
+}
+
+export interface ScopedVaultHead {
+  revisionId: string;
+}
+
+export interface ScopedVaultRevision extends ScopedVaultHead {
+  previousRevisionId: string | null;
+  namespaces: NamespaceHead[];
+}
+
+export type ScopedCommitResult =
+  | { outcome: "committed"; revisionId: string; previousRevisionId: string | null }
+  | { outcome: "idempotency-conflict" }
+  | { outcome: "stale-namespace"; namespaces: string[] }
+  | { outcome: "append-violation"; namespace: string; pathIds: string[] };
+
+interface StoredScopedOperation {
+  fingerprint: string;
+  result: Extract<ScopedCommitResult, { outcome: "committed" }>;
+}
+
 const HEAD_KEY = "head";
 const SNAPSHOTS_KEY = "snapshots";
+const SCOPED_HEAD_KEY = "scoped:head";
+const NAMESPACE_NAMES_KEY = "scoped:namespaces";
 const MAX_SNAPSHOTS = 1_000;
 
 export class VaultCoordinatorCore {
@@ -166,6 +201,22 @@ export class VaultCoordinatorCore {
 
   async revision(revisionId: string): Promise<VaultRevision | null> {
     return (await this.#storage.get<VaultRevision>(`revision:${revisionId}`)) ?? null;
+  }
+
+  async namespaceHeads(allowedNamespaces?: ReadonlySet<string>): Promise<NamespaceHead[]> {
+    const names = (await this.#storage.get<string[]>(NAMESPACE_NAMES_KEY)) ?? [];
+    const selected = allowedNamespaces ? names.filter((namespace) => allowedNamespaces.has(namespace)) : names;
+    const heads = await Promise.all(selected.map((namespace) => this.#storage.get<NamespaceHead>(namespaceHeadKey(namespace))));
+    return heads.filter((head): head is NamespaceHead => head !== undefined)
+      .sort((left, right) => left.namespace.localeCompare(right.namespace, "en"));
+  }
+
+  async scopedHead(): Promise<ScopedVaultHead | null> {
+    return (await this.#storage.get<ScopedVaultHead>(SCOPED_HEAD_KEY)) ?? null;
+  }
+
+  async scopedRevision(revisionId: string): Promise<ScopedVaultRevision | null> {
+    return (await this.#storage.get<ScopedVaultRevision>(`scoped:revision:${revisionId}`)) ?? null;
   }
 
   async listSnapshots(): Promise<VaultSnapshot[]> {
@@ -225,6 +276,69 @@ export class VaultCoordinatorCore {
     });
     return result;
   }
+
+  /** Atomically advances only the namespaces named by a scoped commit. */
+  async commitNamespaces(unknownRequest: ScopedCommitRequest): Promise<ScopedCommitResult> {
+    const request = scopedCommitRequestSchema.parse(unknownRequest);
+    const fingerprint = await requestFingerprint(request);
+    const operationKey = `scoped:operation:${request.operationId}`;
+    const existing = await this.#storage.get<StoredScopedOperation>(operationKey);
+    if (existing) return existing.fingerprint === fingerprint ? existing.result : { outcome: "idempotency-conflict" };
+
+    const currentHeads = new Map<string, NamespaceHead | undefined>();
+    for (const update of request.updates) {
+      currentHeads.set(update.namespace, await this.#storage.get<NamespaceHead>(namespaceHeadKey(update.namespace)));
+    }
+    const stale = request.updates
+      .filter((update) => (currentHeads.get(update.namespace)?.revisionId ?? null) !== update.baseNamespaceRevisionId)
+      .map((update) => update.namespace)
+      .sort((left, right) => left.localeCompare(right, "en"));
+    if (stale.length > 0) return { outcome: "stale-namespace", namespaces: stale };
+
+    const nextPaths = new Map<string, Set<string>>();
+    for (const update of request.updates) {
+      const paths = new Set((await this.#storage.get<string[]>(namespacePathsKey(update.namespace))) ?? []);
+      if (update.mode === "append") {
+        const violations = update.pathClaims.filter((claim) => paths.has(claim.pathId)).map((claim) => claim.pathId)
+          .sort((left, right) => left.localeCompare(right, "en"));
+        if (violations.length > 0) return { outcome: "append-violation", namespace: update.namespace, pathIds: violations };
+      }
+      for (const claim of update.pathClaims) {
+        if (claim.mutation === "delete") paths.delete(claim.pathId);
+        else paths.add(claim.pathId);
+      }
+      nextPaths.set(update.namespace, paths);
+    }
+
+    const previousRevisionId = (await this.scopedHead())?.revisionId ?? null;
+    const result = { outcome: "committed" as const, revisionId: request.vaultRevisionId, previousRevisionId };
+    const names = new Set((await this.#storage.get<string[]>(NAMESPACE_NAMES_KEY)) ?? []);
+    const writes: Record<string, unknown> = {
+      [SCOPED_HEAD_KEY]: { revisionId: request.vaultRevisionId } satisfies ScopedVaultHead,
+      [operationKey]: { fingerprint, result } satisfies StoredScopedOperation,
+    };
+    for (const update of request.updates) {
+      names.add(update.namespace);
+      writes[namespaceHeadKey(update.namespace)] = {
+        namespace: update.namespace,
+        revisionId: update.namespaceRevisionId,
+        manifestObjectId: update.manifestObjectId,
+      } satisfies NamespaceHead;
+      writes[namespacePathsKey(update.namespace)] = [...nextPaths.get(update.namespace)!].sort((left, right) => left.localeCompare(right, "en"));
+    }
+    writes[NAMESPACE_NAMES_KEY] = [...names].sort((left, right) => left.localeCompare(right, "en"));
+    const projectedHeads = new Map((await this.namespaceHeads()).map((head) => [head.namespace, head]));
+    for (const update of request.updates) {
+      projectedHeads.set(update.namespace, writes[namespaceHeadKey(update.namespace)] as NamespaceHead);
+    }
+    writes[`scoped:revision:${request.vaultRevisionId}`] = {
+      revisionId: request.vaultRevisionId,
+      previousRevisionId,
+      namespaces: [...projectedHeads.values()].sort((left, right) => left.namespace.localeCompare(right.namespace, "en")),
+    } satisfies ScopedVaultRevision;
+    await this.#storage.putMany(writes);
+    return result;
+  }
 }
 
 export class InMemoryCoordinatorStorage implements CoordinatorStorage {
@@ -239,7 +353,15 @@ export class InMemoryCoordinatorStorage implements CoordinatorStorage {
   }
 }
 
-async function requestFingerprint(request: CommitRequest): Promise<string> {
+function namespaceHeadKey(namespace: string): string {
+  return `scoped:namespace:${namespace}:head`;
+}
+
+function namespacePathsKey(namespace: string): string {
+  return `scoped:namespace:${namespace}:paths`;
+}
+
+async function requestFingerprint(request: CommitRequest | ScopedCommitRequest): Promise<string> {
   const bytes = new TextEncoder().encode(canonicalJson(request));
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return toBase64Url(new Uint8Array(digest));

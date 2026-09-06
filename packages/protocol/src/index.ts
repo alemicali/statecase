@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export const PROTOCOL_VERSION = "1.0" as const;
+export const SCOPED_PROTOCOL_VERSION = "1.1" as const;
 
 export type CanonicalValue =
   | null
@@ -125,6 +126,47 @@ export const commitRequestSchema = z.object({
 
 export type CommitRequest = z.infer<typeof commitRequestSchema>;
 
+export const pathClaimSchema = z.object({
+  pathId: identifier,
+  mutation: z.enum(["add", "update", "delete"]),
+}).strict();
+
+export const namespaceUpdateSchema = z.object({
+  namespace: identifier,
+  baseNamespaceRevisionId: identifier.nullable(),
+  namespaceRevisionId: identifier,
+  manifestObjectId: identifier,
+  requiredObjectIds: z.array(identifier).max(10_000),
+  mode: z.enum(["replace", "append"]),
+  pathClaims: z.array(pathClaimSchema).max(100_000),
+}).strict().superRefine((update, context) => {
+  const pathIds = new Set<string>();
+  for (const [index, claim] of update.pathClaims.entries()) {
+    if (pathIds.has(claim.pathId)) context.addIssue({ code: "custom", message: "duplicate path claim", path: ["pathClaims", index, "pathId"] });
+    pathIds.add(claim.pathId);
+    if (update.mode === "append" && claim.mutation !== "add") {
+      context.addIssue({ code: "custom", message: "append updates may only add paths", path: ["pathClaims", index, "mutation"] });
+    }
+  }
+});
+
+export const scopedCommitRequestSchema = z.object({
+  protocolVersion: z.literal(SCOPED_PROTOCOL_VERSION),
+  operationId: identifier,
+  vaultRevisionId: identifier,
+  updates: z.array(namespaceUpdateSchema).min(1).max(1_000),
+}).strict().superRefine((request, context) => {
+  const namespaces = new Set<string>();
+  for (const [index, update] of request.updates.entries()) {
+    if (namespaces.has(update.namespace)) context.addIssue({ code: "custom", message: "duplicate namespace update", path: ["updates", index, "namespace"] });
+    namespaces.add(update.namespace);
+  }
+});
+
+export type PathClaim = z.infer<typeof pathClaimSchema>;
+export type NamespaceUpdate = z.infer<typeof namespaceUpdateSchema>;
+export type ScopedCommitRequest = z.infer<typeof scopedCommitRequestSchema>;
+
 export type ProtocolErrorCode =
   | "AUTH_REQUIRED"
   | "FORBIDDEN"
@@ -132,6 +174,7 @@ export type ProtocolErrorCode =
   | "INVALID_REQUEST"
   | "IDEMPOTENCY_CONFLICT"
   | "STALE_BASE"
+  | "APPEND_VIOLATION"
   | "OBJECT_MISSING"
   | "UNSUPPORTED_PROTOCOL";
 

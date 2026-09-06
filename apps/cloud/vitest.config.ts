@@ -14,7 +14,7 @@ export default defineConfig({
         bindings: {
           BETTER_AUTH_SECRET: "worker-test-secret-that-is-at-least-32-characters",
           BETTER_AUTH_URL: "http://localhost:8787",
-          STATECASE_ALLOWED_EMAILS: "runtime@statecase.test,approval@statecase.test",
+          STATECASE_ALLOWED_EMAILS: "runtime@statecase.test,approval@statecase.test,capability@statecase.test",
           TEST_MIGRATIONS: await readD1Migrations(join(directory, "migrations")),
         },
       },

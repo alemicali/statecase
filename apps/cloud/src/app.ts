@@ -2,8 +2,24 @@ import { Hono, type Context } from "hono";
 import { secureHeaders } from "hono/secure-headers";
 import { z } from "zod";
 
-import { commitRequestSchema, PROTOCOL_VERSION, type CommitRequest, type ProtocolErrorCode } from "@statecase/protocol";
-import type { CommitResult, CreateSnapshotResult, VaultHead, VaultRevision, VaultSnapshot } from "@statecase/sync-core";
+import {
+  commitRequestSchema,
+  PROTOCOL_VERSION,
+  scopedCommitRequestSchema,
+  type CommitRequest,
+  type ProtocolErrorCode,
+  type ScopedCommitRequest,
+} from "@statecase/protocol";
+import type {
+  CommitResult,
+  CreateSnapshotResult,
+  NamespaceHead,
+  ScopedCommitResult,
+  ScopedVaultHead,
+  VaultHead,
+  VaultRevision,
+  VaultSnapshot,
+} from "@statecase/sync-core";
 
 import { DEVICE_HTML, UI_CSS, UI_JAVASCRIPT } from "./ui.js";
 
@@ -15,6 +31,39 @@ export interface Principal {
   sessionId: string;
   deviceId: string;
   scopes: string[];
+  credentialType?: "device" | "capability";
+  capability?: {
+    id: string;
+    vaultId: string;
+    namespaces: string[];
+    actions: Array<"read" | "append">;
+  };
+}
+
+export interface CapabilitySummary {
+  id: string;
+  vaultId: string;
+  namespaces: string[];
+  actions: Array<"read" | "append">;
+  expiresAt: number;
+  redeemedAt?: number;
+  revokedAt?: number;
+  createdAt: number;
+}
+
+export interface CapabilityService {
+  create(principal: Principal, input: {
+    id: string;
+    vaultId: string;
+    tokenHash: string;
+    namespaces: string[];
+    actions: Array<"read" | "append">;
+    expiresAt: number;
+    keyEnvelope: string;
+  }): Promise<CapabilitySummary>;
+  list(principal: Principal): Promise<CapabilitySummary[]>;
+  revoke(principal: Principal, capabilityId: string): Promise<void>;
+  redeem(token: string): Promise<{ accessToken: string; expiresAt: number; vaultId: string; namespaces: string[]; actions: Array<"read" | "append">; keyEnvelope: string } | null>;
 }
 
 export interface AuthService {
@@ -26,10 +75,11 @@ export interface ObjectStore {
   putIfAbsent(
     vaultId: string,
     objectId: string,
-    body: ReadableStream<Uint8Array>,
+    body: ReadableStream<Uint8Array> | Uint8Array,
+    namespace?: string,
   ): Promise<{ created: boolean; size: number }>;
-  get(vaultId: string, objectId: string): Promise<Uint8Array | ReadableStream<Uint8Array> | null>;
-  exists(vaultId: string, objectId: string): Promise<boolean>;
+  get(vaultId: string, objectId: string, namespace?: string): Promise<Uint8Array | ReadableStream<Uint8Array> | null>;
+  exists(vaultId: string, objectId: string, namespace?: string): Promise<boolean>;
 }
 
 export interface Coordinator {
@@ -39,6 +89,9 @@ export interface Coordinator {
   listSnapshots(): Promise<VaultSnapshot[]>;
   createSnapshot(input: { id: string; name: string; createdAt: number }): Promise<CreateSnapshotResult>;
   deleteSnapshot(snapshotId: string): Promise<boolean>;
+  namespaceHeads(allowedNamespaces?: ReadonlySet<string>): Promise<NamespaceHead[]>;
+  scopedHead(): Promise<ScopedVaultHead | null>;
+  commitNamespaces(request: ScopedCommitRequest): Promise<ScopedCommitResult>;
 }
 
 export interface VaultSummary {
@@ -71,8 +124,10 @@ export interface CloudServices {
   auth: AuthService;
   objects: ObjectStore;
   authorizeVault(principal: Principal, vaultId: string, action: "read" | "write" | "admin"): Promise<boolean>;
+  authorizeNamespace(principal: Principal, vaultId: string, namespace: string, action: "read" | "append" | "write"): Promise<boolean>;
   coordinator(vaultId: string): Coordinator;
   control: ControlPlane;
+  capabilities: CapabilityService;
 }
 
 type AppEnvironment = { Variables: { principal: Principal } };
@@ -87,6 +142,14 @@ export function createCloudApp(services: CloudServices): Hono<AppEnvironment> {
   app.get("/device", (context) => context.html(DEVICE_HTML));
   app.get("/ui.css", (context) => context.body(UI_CSS, 200, { "content-type": "text/css; charset=utf-8" }));
   app.get("/ui.js", (context) => context.body(UI_JAVASCRIPT, 200, { "content-type": "text/javascript; charset=utf-8" }));
+  app.post("/api/bootstrap/redeem", async (context) => {
+    const body = await parseBody(context, z.object({ token: z.string().min(40).max(512) }).strict());
+    if (!body.success) return body.response;
+    const redeemed = await services.capabilities.redeem(body.data.token);
+    return redeemed
+      ? context.json(redeemed, 200, { "cache-control": "no-store", pragma: "no-cache" })
+      : jsonError(context, "AUTH_REQUIRED", "bootstrap capability is invalid, expired, revoked, or already used", 401);
+  });
   app.all("/api/auth/*", (context) => services.auth.handle(context.req.raw));
 
   app.use("/v1/*", async (context, next) => {
@@ -101,6 +164,17 @@ export function createCloudApp(services: CloudServices): Hono<AppEnvironment> {
     if (!(await allowed(services, context, vaultId, "read"))) return notFound(context);
     const head = await services.coordinator(vaultId).head();
     return context.json(head ?? { revisionId: null, manifestObjectId: null });
+  });
+
+  app.get("/v1/vaults/:vaultId/namespaces", async (context) => {
+    const vaultId = requireIdentifier(context.req.param("vaultId"));
+    const principal = context.get("principal");
+    if (principal.capability?.vaultId !== vaultId && !(await allowed(services, context, vaultId, "read"))) return notFound(context);
+    const heads = await services.coordinator(vaultId).namespaceHeads();
+    const decisions = await Promise.all(heads.map((head) =>
+      services.authorizeNamespace(context.get("principal"), vaultId, head.namespace, "read")));
+    const visible = heads.filter((_head, index) => decisions[index]);
+    return context.json({ revisionId: (await services.coordinator(vaultId).scopedHead())?.revisionId ?? null, namespaces: visible });
   });
 
   app.get("/v1/vaults/:vaultId/revisions/:revisionId", async (context) => {
@@ -161,6 +235,44 @@ export function createCloudApp(services: CloudServices): Hono<AppEnvironment> {
     return context.body(null, 204);
   });
 
+  app.post("/v1/tokens", async (context) => {
+    if (context.get("principal").capability) return notFound(context);
+    const body = await parseBody(context, z.object({
+      id: z.string().regex(identifier),
+      vaultId: z.string().regex(identifier),
+      tokenHash: z.string().regex(/^[A-Za-z0-9_-]{43}$/u),
+      namespaces: z.array(z.string().regex(identifier)).min(1).max(64),
+      actions: z.array(z.enum(["read", "append"])).min(1).max(2),
+      expiresAt: z.number().int().positive(),
+      keyEnvelope: z.string().min(1).max(128 * 1024),
+    }).strict().superRefine((input, refinement) => {
+      if (new Set(input.namespaces).size !== input.namespaces.length) refinement.addIssue({ code: "custom", message: "duplicate namespace" });
+      if (new Set(input.actions).size !== input.actions.length) refinement.addIssue({ code: "custom", message: "duplicate action" });
+      if (input.namespaces.some((namespace) => namespace === "secrets" || namespace.startsWith("secrets:"))) {
+        refinement.addIssue({ code: "custom", message: "ephemeral capabilities cannot access secrets" });
+      }
+      const now = Date.now();
+      if (input.expiresAt <= now || input.expiresAt > now + 24 * 60 * 60 * 1000) {
+        refinement.addIssue({ code: "custom", message: "capability expiry must be within 24 hours" });
+      }
+    }));
+    if (!body.success) return body.response;
+    if (!(await allowed(services, context, body.data.vaultId, "admin"))) return notFound(context);
+    return context.json(await services.capabilities.create(context.get("principal"), body.data), 201);
+  });
+
+  app.get("/v1/tokens", async (context) => {
+    if (context.get("principal").capability) return notFound(context);
+    return context.json({ tokens: await services.capabilities.list(context.get("principal")) });
+  });
+
+  app.delete("/v1/tokens/:tokenId", async (context) => {
+    if (context.get("principal").capability) return notFound(context);
+    const tokenId = requireIdentifier(context.req.param("tokenId"));
+    await services.capabilities.revoke(context.get("principal"), tokenId);
+    return context.body(null, 204);
+  });
+
   app.get("/v1/vaults", async (context) => {
     return context.json({ vaults: await services.control.listVaults(context.get("principal")) });
   });
@@ -184,8 +296,8 @@ export function createCloudApp(services: CloudServices): Hono<AppEnvironment> {
     if (declaredLength !== undefined && (!/^\d+$/u.test(declaredLength) || Number(declaredLength) > MAX_OBJECT_BYTES)) {
       return jsonError(context, "INVALID_REQUEST", "encrypted object exceeds the upload limit", 413);
     }
-    const body = context.req.raw.body ?? new Blob([]).stream();
-    const result = await services.objects.putIfAbsent(vaultId, objectId, limited(body, MAX_OBJECT_BYTES));
+    const body = await readLimited(context.req.raw.body ?? new Blob([]).stream(), MAX_OBJECT_BYTES);
+    const result = await services.objects.putIfAbsent(vaultId, objectId, body);
     return context.json({ created: result.created, objectId, size: result.size }, result.created ? 201 : 200);
   });
 
@@ -200,6 +312,33 @@ export function createCloudApp(services: CloudServices): Hono<AppEnvironment> {
         "cache-control": "private, max-age=31536000, immutable",
         "content-type": "application/octet-stream",
       },
+    });
+  });
+
+  app.put("/v1/vaults/:vaultId/namespaces/:namespace/objects/:objectId", async (context) => {
+    const vaultId = requireIdentifier(context.req.param("vaultId"));
+    const namespace = requireIdentifier(context.req.param("namespace"));
+    const objectId = requireIdentifier(context.req.param("objectId"));
+    if (!(await services.authorizeNamespace(context.get("principal"), vaultId, namespace, "write")) &&
+        !(await services.authorizeNamespace(context.get("principal"), vaultId, namespace, "append"))) return notFound(context);
+    const declaredLength = context.req.header("content-length");
+    if (declaredLength !== undefined && (!/^\d+$/u.test(declaredLength) || Number(declaredLength) > MAX_OBJECT_BYTES)) {
+      return jsonError(context, "INVALID_REQUEST", "encrypted object exceeds the upload limit", 413);
+    }
+    const body = await readLimited(context.req.raw.body ?? new Blob([]).stream(), MAX_OBJECT_BYTES);
+    const result = await services.objects.putIfAbsent(vaultId, objectId, body, namespace);
+    return context.json({ created: result.created, objectId, size: result.size }, result.created ? 201 : 200);
+  });
+
+  app.get("/v1/vaults/:vaultId/namespaces/:namespace/objects/:objectId", async (context) => {
+    const vaultId = requireIdentifier(context.req.param("vaultId"));
+    const namespace = requireIdentifier(context.req.param("namespace"));
+    const objectId = requireIdentifier(context.req.param("objectId"));
+    if (!(await services.authorizeNamespace(context.get("principal"), vaultId, namespace, "read"))) return notFound(context);
+    const value = await services.objects.get(vaultId, objectId, namespace);
+    if (!value) return notFound(context);
+    return new Response(value, {
+      headers: { "cache-control": "private, max-age=31536000, immutable", "content-type": "application/octet-stream" },
     });
   });
 
@@ -229,6 +368,30 @@ export function createCloudApp(services: CloudServices): Hono<AppEnvironment> {
         { error: { code: "STALE_BASE", currentRevisionId: result.currentRevisionId, message: "vault head advanced" } },
         409,
       );
+    }
+    return context.json(result);
+  });
+
+  app.post("/v1/vaults/:vaultId/namespace-commits", async (context) => {
+    const vaultId = requireIdentifier(context.req.param("vaultId"));
+    const body = await parseBody(context, scopedCommitRequestSchema);
+    if (!body.success) return body.response;
+    for (const update of body.data.updates) {
+      const action = update.mode === "append" ? "append" as const : "write" as const;
+      if (!(await services.authorizeNamespace(context.get("principal"), vaultId, update.namespace, action))) return notFound(context);
+      const required = new Set([update.manifestObjectId, ...update.requiredObjectIds]);
+      const availability = await Promise.all([...required].map((objectId) => services.objects.exists(vaultId, objectId, update.namespace)));
+      if (availability.some((exists) => !exists)) {
+        return jsonError(context, "OBJECT_MISSING", "one or more encrypted namespace objects are missing", 409);
+      }
+    }
+    const result = await services.coordinator(vaultId).commitNamespaces(body.data);
+    if (result.outcome === "idempotency-conflict") return jsonError(context, "IDEMPOTENCY_CONFLICT", "operation ID was already used for another payload", 409);
+    if (result.outcome === "stale-namespace") {
+      return context.json({ error: { code: "STALE_BASE", namespaces: result.namespaces, message: "one or more namespace heads advanced" } }, 409);
+    }
+    if (result.outcome === "append-violation") {
+      return context.json({ error: { code: "APPEND_VIOLATION", namespace: result.namespace, pathIds: result.pathIds, message: "append-only path identity already exists" } }, 409);
     }
     return context.json(result);
   });
@@ -275,15 +438,31 @@ function jsonError(
   return context.json({ error: { code, message } }, status);
 }
 
-function limited(source: ReadableStream<Uint8Array>, maximum: number): ReadableStream<Uint8Array> {
+async function readLimited(source: ReadableStream<Uint8Array>, maximum: number): Promise<Uint8Array> {
+  const reader = source.getReader();
+  const chunks: Uint8Array[] = [];
   let seen = 0;
-  return source.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
-    transform(chunk, controller) {
-      seen += chunk.byteLength;
-      if (seen > maximum) throw new BodyTooLarge();
-      controller.enqueue(chunk);
-    },
-  }));
+  try {
+    while (true) {
+      const item = await reader.read();
+      if (item.done) break;
+      seen += item.value.byteLength;
+      if (seen > maximum) {
+        await reader.cancel();
+        throw new BodyTooLarge();
+      }
+      chunks.push(item.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(seen);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
 }
 
 class BodyTooLarge extends Error {}

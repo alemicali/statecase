@@ -55,3 +55,13 @@ All notable changes to Statecase will be documented here.
   `workspace hydrate` restores its historical revision with strict, warning,
   or explicitly accepted best-effort behavior. The agent-native skill now uses
   this resume workflow.
+- Added the protocol 1.1 server foundation for real ephemeral isolation:
+  namespace-qualified encrypted R2 objects, atomically committed per-namespace
+  heads, disjoint-writer concurrency, and blinded append-identity enforcement.
+  Added D1-backed, single-use bootstrap grants with separately hashed access
+  credentials, 24-hour maximum expiry, explicit read/append namespace scopes,
+  secrets exclusion, revocation, creator-device cascading revocation, and
+  denial of legacy full-vault endpoints. A real workerd test covers concurrent
+  redemption, scoped R2/commit access, escalation attempts, and revocation.
+- Replaced the R2 upload transform with an 8 MiB bounded read so conditional
+  puts have the known length required by the real Cloudflare runtime.

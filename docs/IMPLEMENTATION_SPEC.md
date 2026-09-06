@@ -19,10 +19,13 @@ and uninitialized gitlinks. Durable revision pointers, protected snapshots,
 and selective restore to a staging target are implemented. Content-addressed
 three-way merge handles disjoint/identical namespace changes and preserves
 same-path conflicts; workspace transports are atomic and append-only mappings
-cannot mutate prior paths. Sections covering append-aware same-session merge,
-safe parsed text merge, retention pruning, in-place restore, scoped bootstrap,
-automatic baseline fetch, initialized submodule hydration, and complete Session
-Capsules remain target requirements, not current claims.
+cannot mutate prior paths. Immutable Session Capsules and historical closure
+hydration are implemented. The protocol 1.1 server foundation now provides
+namespace-isolated R2 objects, atomic namespace heads, and single-use scoped
+capability grants; CLI namespace manifests and scope-key bootstrap remain in
+progress. Sections covering append-aware same-session merge, safe parsed text
+merge, retention pruning, in-place restore, automatic baseline fetch, and
+initialized submodule hydration remain target requirements, not current claims.
 
 Persistent device identities, auth-session binding, device enumeration, and
 server-side revocation are implemented. Revocation blocks new service access

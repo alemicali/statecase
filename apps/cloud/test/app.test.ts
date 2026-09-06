@@ -6,6 +6,7 @@ import {
   ControlPlaneError,
   createCloudApp,
   type AuthService,
+  type CapabilityService,
   type CloudServices,
   type ControlPlane,
   type ObjectStore,
@@ -14,7 +15,7 @@ import {
 
 const principal: Principal = { accountId: "acct_01", sessionId: "ses_01", deviceId: "dev_01", scopes: ["sync"] };
 
-function fixture(options: { authenticated?: boolean; authorized?: boolean; adminAuthorized?: boolean } = {}) {
+function fixture(options: { authenticated?: boolean; authorized?: boolean; adminAuthorized?: boolean; namespace?: string } = {}) {
   const objects = new MemoryObjects();
   const coordinators = new Map<string, VaultCoordinatorCore>();
   const auth: AuthService = {
@@ -25,6 +26,8 @@ function fixture(options: { authenticated?: boolean; authorized?: boolean; admin
     auth,
     objects,
     authorizeVault: async (_principalValue, _vaultId, action) => options.authorized !== false && (action !== "admin" || options.adminAuthorized !== false),
+    authorizeNamespace: async (_principalValue, _vaultId, namespace) =>
+      options.authorized !== false && (!options.namespace || options.namespace === namespace),
     coordinator: (vaultId) => {
       let coordinator = coordinators.get(vaultId);
       if (!coordinator) {
@@ -34,6 +37,7 @@ function fixture(options: { authenticated?: boolean; authorized?: boolean; admin
       return coordinator;
     },
     control: new MemoryControl(),
+    capabilities: new MemoryCapabilities(),
   };
   return { app: createCloudApp(services), objects };
 }
@@ -112,6 +116,59 @@ describe("Cloud API contract (PR-001..PR-015)", () => {
       { id: "dev_01", name: "Laptop", status: "active" },
       { id: "dev_old", name: "Old laptop", status: "revoked" },
     ] });
+  });
+
+  it("creates, lists, redeems once, and revokes redacted ephemeral capabilities (AU-003..AU-007)", async () => {
+    const { app } = fixture();
+    const token = `stc_boot_${"a".repeat(43)}`;
+    const created = await app.request("/v1/tokens", {
+      method: "POST",
+      body: JSON.stringify({
+        id: "cap_01",
+        vaultId: "vlt_01",
+        tokenHash: await sha256(token),
+        namespaces: ["workspace:ws_01", "harness:codex:sandbox"],
+        actions: ["read", "append"],
+        expiresAt: Date.now() + 2 * 60 * 60 * 1000,
+        keyEnvelope: "opaque-client-encrypted-scope-keys",
+      }),
+    });
+    expect(created.status).toBe(201);
+    expect(JSON.stringify(await created.json())).not.toContain(token);
+    const listed = await (await app.request("/v1/tokens")).json() as { tokens: unknown[] };
+    expect(listed.tokens).toHaveLength(1);
+    expect(JSON.stringify(listed)).not.toContain("tokenHash");
+    expect(JSON.stringify(listed)).not.toContain("keyEnvelope");
+
+    const redeemed = await app.request("/api/bootstrap/redeem", { method: "POST", body: JSON.stringify({ token }) });
+    expect(redeemed.status).toBe(200);
+    expect(await redeemed.json()).toMatchObject({
+      accessToken: expect.stringMatching(/^stc_access_/u),
+      vaultId: "vlt_01",
+      namespaces: ["workspace:ws_01", "harness:codex:sandbox"],
+      actions: ["read", "append"],
+      keyEnvelope: "opaque-client-encrypted-scope-keys",
+    });
+    expect((await app.request("/api/bootstrap/redeem", { method: "POST", body: JSON.stringify({ token }) })).status).toBe(401);
+    expect((await app.request("/v1/tokens/cap_01", { method: "DELETE" })).status).toBe(204);
+    expect(await (await app.request("/v1/tokens")).json()).toMatchObject({ tokens: [{ id: "cap_01", revokedAt: expect.any(Number) }] });
+  });
+
+  it("rejects overlong, secret-bearing, duplicate, and unauthorized capability grants", async () => {
+    const valid = {
+      id: "cap_invalid",
+      vaultId: "vlt_01",
+      tokenHash: "a".repeat(43),
+      namespaces: ["workspace:ws_01"],
+      actions: ["read"],
+      expiresAt: Date.now() + 60_000,
+      keyEnvelope: "opaque",
+    };
+    expect((await fixture().app.request("/v1/tokens", { method: "POST", body: JSON.stringify({ ...valid, namespaces: ["secrets"] }) })).status).toBe(400);
+    expect((await fixture().app.request("/v1/tokens", { method: "POST", body: JSON.stringify({ ...valid, namespaces: ["workspace:ws_01", "workspace:ws_01"] }) })).status).toBe(400);
+    expect((await fixture().app.request("/v1/tokens", { method: "POST", body: JSON.stringify({ ...valid, actions: ["read", "read"] }) })).status).toBe(400);
+    expect((await fixture().app.request("/v1/tokens", { method: "POST", body: JSON.stringify({ ...valid, expiresAt: Date.now() + 25 * 60 * 60 * 1000 }) })).status).toBe(400);
+    expect((await fixture({ adminAuthorized: false }).app.request("/v1/tokens", { method: "POST", body: JSON.stringify(valid) })).status).toBe(404);
   });
 
   it("rejects invalid device and vault control payloads", async () => {
@@ -251,34 +308,110 @@ describe("Cloud API contract (PR-001..PR-015)", () => {
     expect(response.status).toBe(404);
     expect(await response.json()).toMatchObject({ error: { code: "NOT_FOUND" } });
   });
+
+  it("stores and commits scoped namespace objects without exposing another namespace (AU-005, PR-003)", async () => {
+    const { app } = fixture({ namespace: "workspace:ws_01" });
+    const allowedBase = "/v1/vaults/vlt_01/namespaces/workspace%3Aws_01/objects";
+    const forbiddenBase = "/v1/vaults/vlt_01/namespaces/drop%3Aprivate/objects";
+    expect((await app.request(`${allowedBase}/obj_manifest`, { method: "PUT", body: Uint8Array.of(1) })).status).toBe(201);
+    expect((await app.request(`${allowedBase}/obj_chunk`, { method: "PUT", body: Uint8Array.of(2) })).status).toBe(201);
+    expect((await app.request(`${forbiddenBase}/obj_hidden`, { method: "PUT", body: Uint8Array.of(3) })).status).toBe(404);
+    expect((await app.request(`${forbiddenBase}/obj_manifest`)).status).toBe(404);
+
+    const committed = await app.request("/v1/vaults/vlt_01/namespace-commits", {
+      method: "POST",
+      body: JSON.stringify(scopedCommit("op_scoped", "rev_scoped", "workspace:ws_01", null, "nrev_01", "append", "pth_01")),
+    });
+    expect(committed.status).toBe(200);
+    expect(await committed.json()).toMatchObject({ outcome: "committed", revisionId: "rev_scoped" });
+    expect(await (await app.request("/v1/vaults/vlt_01/namespaces")).json()).toEqual({
+      revisionId: "rev_scoped",
+      namespaces: [{ namespace: "workspace:ws_01", revisionId: "nrev_01", manifestObjectId: "obj_manifest" }],
+    });
+    expect(new Uint8Array(await (await app.request(`${allowedBase}/obj_chunk`)).arrayBuffer())).toEqual(Uint8Array.of(2));
+  });
+
+  it("checks scoped object availability, namespace freshness, and append identity reuse", async () => {
+    const { app } = fixture();
+    const base = "/v1/vaults/vlt_01/namespaces/harness%3Acodex%3Asandbox/objects";
+    const missing = await app.request("/v1/vaults/vlt_01/namespace-commits", {
+      method: "POST",
+      body: JSON.stringify(scopedCommit("op_missing", "rev_missing", "harness:codex:sandbox", null, "nrev_missing", "append", "pth_01")),
+    });
+    expect(missing.status).toBe(409);
+    expect(await missing.json()).toMatchObject({ error: { code: "OBJECT_MISSING" } });
+    await app.request(`${base}/obj_manifest`, { method: "PUT", body: Uint8Array.of(1) });
+    await app.request(`${base}/obj_chunk`, { method: "PUT", body: Uint8Array.of(2) });
+    expect((await app.request("/v1/vaults/vlt_01/namespace-commits", {
+      method: "POST",
+      body: JSON.stringify(scopedCommit("op_first", "rev_first", "harness:codex:sandbox", null, "nrev_01", "append", "pth_01")),
+    })).status).toBe(200);
+    const stale = await app.request("/v1/vaults/vlt_01/namespace-commits", {
+      method: "POST",
+      body: JSON.stringify(scopedCommit("op_stale", "rev_stale", "harness:codex:sandbox", null, "nrev_02", "append", "pth_02")),
+    });
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toMatchObject({ error: { code: "STALE_BASE" } });
+    const duplicate = await app.request("/v1/vaults/vlt_01/namespace-commits", {
+      method: "POST",
+      body: JSON.stringify(scopedCommit("op_duplicate", "rev_duplicate", "harness:codex:sandbox", "nrev_01", "nrev_02", "append", "pth_01")),
+    });
+    expect(duplicate.status).toBe(409);
+    expect(await duplicate.json()).toMatchObject({ error: { code: "APPEND_VIOLATION" } });
+  });
 });
 
 function commit(operationId: string, baseRevisionId: string | null, revisionId: string, manifestObjectId: string, requiredObjectIds: string[]) {
   return { protocolVersion: "1.0", operationId, baseRevisionId, revisionId, manifestObjectId, requiredObjectIds };
 }
 
+function scopedCommit(
+  operationId: string,
+  vaultRevisionId: string,
+  namespace: string,
+  baseNamespaceRevisionId: string | null,
+  namespaceRevisionId: string,
+  mode: "replace" | "append",
+  pathId: string,
+) {
+  return {
+    protocolVersion: "1.1",
+    operationId,
+    vaultRevisionId,
+    updates: [{
+      namespace,
+      baseNamespaceRevisionId,
+      namespaceRevisionId,
+      manifestObjectId: "obj_manifest",
+      requiredObjectIds: ["obj_chunk"],
+      mode,
+      pathClaims: [{ pathId, mutation: "add" }],
+    }],
+  };
+}
+
 class MemoryObjects implements ObjectStore {
   readonly #values = new Map<string, Uint8Array>();
 
-  async putIfAbsent(vaultId: string, objectId: string, body: ReadableStream<Uint8Array>): Promise<{ created: boolean; size: number }> {
-    const key = `${vaultId}/${objectId}`;
+  async putIfAbsent(vaultId: string, objectId: string, body: ReadableStream<Uint8Array> | Uint8Array, namespace?: string): Promise<{ created: boolean; size: number }> {
+    const key = `${vaultId}/${namespace ?? "$legacy"}/${objectId}`;
     const existing = this.#values.get(key);
     if (existing) return { created: false, size: existing.byteLength };
-    const bytes = new Uint8Array(await new Response(body).arrayBuffer());
+    const bytes = body instanceof Uint8Array ? body : new Uint8Array(await new Response(body).arrayBuffer());
     this.#values.set(key, bytes);
     return { created: true, size: bytes.byteLength };
   }
 
-  async get(vaultId: string, objectId: string): Promise<Uint8Array | null> {
-    return this.#values.get(`${vaultId}/${objectId}`) ?? null;
+  async get(vaultId: string, objectId: string, namespace?: string): Promise<Uint8Array | null> {
+    return this.#values.get(`${vaultId}/${namespace ?? "$legacy"}/${objectId}`) ?? null;
   }
 
-  async exists(vaultId: string, objectId: string): Promise<boolean> {
-    return this.#values.has(`${vaultId}/${objectId}`);
+  async exists(vaultId: string, objectId: string, namespace?: string): Promise<boolean> {
+    return this.#values.has(`${vaultId}/${namespace ?? "$legacy"}/${objectId}`);
   }
 
   bytes(vaultId: string, objectId: string): Uint8Array | undefined {
-    return this.#values.get(`${vaultId}/${objectId}`);
+    return this.#values.get(`${vaultId}/$legacy/${objectId}`);
   }
 }
 
@@ -316,4 +449,48 @@ class MemoryControl implements ControlPlane {
   async joinVault(_principalValue: Principal, vaultId: string): Promise<{ id: string; role: "owner" }> {
     return { id: vaultId, role: "owner" };
   }
+}
+
+class MemoryCapabilities implements CapabilityService {
+  readonly #records = new Map<string, {
+    summary: Awaited<ReturnType<CapabilityService["create"]>>;
+    tokenHash: string;
+    keyEnvelope: string;
+  }>();
+
+  async create(_principalValue: Principal, input: Parameters<CapabilityService["create"]>[1]): Promise<Awaited<ReturnType<CapabilityService["create"]>>> {
+    const summary = { id: input.id, vaultId: input.vaultId, namespaces: input.namespaces, actions: input.actions, expiresAt: input.expiresAt, createdAt: Date.now() };
+    this.#records.set(input.id, { summary, tokenHash: input.tokenHash, keyEnvelope: input.keyEnvelope });
+    return summary;
+  }
+
+  async list(): Promise<Awaited<ReturnType<CapabilityService["list"]>>> {
+    return [...this.#records.values()].map((record) => record.summary);
+  }
+
+  async revoke(_principalValue: Principal, capabilityId: string): Promise<void> {
+    const record = this.#records.get(capabilityId);
+    if (!record) throw new ControlPlaneError("not-found");
+    record.summary.revokedAt = Date.now();
+  }
+
+  async redeem(token: string): Promise<Awaited<ReturnType<CapabilityService["redeem"]>>> {
+    const hash = await sha256(token);
+    const record = [...this.#records.values()].find((candidate) => candidate.tokenHash === hash);
+    if (!record || record.summary.redeemedAt || record.summary.revokedAt || record.summary.expiresAt <= Date.now()) return null;
+    record.summary.redeemedAt = Date.now();
+    return {
+      accessToken: `stc_access_${"b".repeat(43)}`,
+      expiresAt: record.summary.expiresAt,
+      vaultId: record.summary.vaultId,
+      namespaces: record.summary.namespaces,
+      actions: record.summary.actions,
+      keyEnvelope: record.keyEnvelope,
+    };
+  }
+}
+
+async function sha256(value: string): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)));
+  return Buffer.from(digest).toString("base64url");
 }

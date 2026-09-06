@@ -115,6 +115,73 @@ describe("ordered vault commits (PR-002..PR-004, PR-010)", () => {
   });
 });
 
+describe("atomic namespace heads for scoped capabilities (AU-004..AU-007, PR-003)", () => {
+  const update = (namespace: string, revision: string, base: string | null = null) => ({
+    namespace,
+    baseNamespaceRevisionId: base,
+    namespaceRevisionId: revision,
+    manifestObjectId: `obj_${revision}`,
+    requiredObjectIds: [`chunk_${revision}`],
+    mode: "replace" as const,
+    pathClaims: [{ pathId: `pth_${revision}`, mutation: "add" as const }],
+  });
+
+  it("commits several namespace heads atomically and exposes no unrelated head through selection", async () => {
+    const coordinator = new VaultCoordinatorCore(new InMemoryCoordinatorStorage());
+    await expect(coordinator.commitNamespaces({
+      protocolVersion: "1.1",
+      operationId: "op_namespaces_01",
+      vaultRevisionId: "rev_vault_01",
+      updates: [update("harness:codex:default", "nrev_harness"), update("workspace:ws_01", "nrev_workspace")],
+    })).resolves.toEqual({ outcome: "committed", revisionId: "rev_vault_01", previousRevisionId: null });
+    expect(await coordinator.namespaceHeads()).toEqual([
+      { namespace: "harness:codex:default", revisionId: "nrev_harness", manifestObjectId: "obj_nrev_harness" },
+      { namespace: "workspace:ws_01", revisionId: "nrev_workspace", manifestObjectId: "obj_nrev_workspace" },
+    ]);
+    expect(await coordinator.namespaceHeads(new Set(["workspace:ws_01"]))).toEqual([
+      { namespace: "workspace:ws_01", revisionId: "nrev_workspace", manifestObjectId: "obj_nrev_workspace" },
+    ]);
+  });
+
+  it("allows disjoint offline namespace commits while rejecting a stale touched namespace", async () => {
+    const coordinator = new VaultCoordinatorCore(new InMemoryCoordinatorStorage());
+    await coordinator.commitNamespaces({ protocolVersion: "1.1", operationId: "op_a", vaultRevisionId: "rev_a", updates: [update("drop:a", "nrev_a")] });
+    await expect(coordinator.commitNamespaces({
+      protocolVersion: "1.1", operationId: "op_b", vaultRevisionId: "rev_b", updates: [update("drop:b", "nrev_b")],
+    })).resolves.toMatchObject({ outcome: "committed", revisionId: "rev_b", previousRevisionId: "rev_a" });
+    await expect(coordinator.commitNamespaces({
+      protocolVersion: "1.1", operationId: "op_stale", vaultRevisionId: "rev_stale", updates: [update("drop:a", "nrev_new", null)],
+    })).resolves.toEqual({ outcome: "stale-namespace", namespaces: ["drop:a"] });
+    expect((await coordinator.namespaceHeads()).find((head) => head.namespace === "drop:a")?.revisionId).toBe("nrev_a");
+  });
+
+  it("enforces append-only blinded path identities and keeps idempotency durable", async () => {
+    const storage = new InMemoryCoordinatorStorage();
+    const coordinator = new VaultCoordinatorCore(storage);
+    const firstAppend = {
+      protocolVersion: "1.1" as const,
+      operationId: "op_append_1",
+      vaultRevisionId: "rev_append_1",
+      updates: [{ ...update("harness:codex:sandbox", "nrev_1"), mode: "append" as const }],
+    };
+    const firstResult = await coordinator.commitNamespaces(firstAppend);
+    expect(firstResult).toMatchObject({ outcome: "committed" });
+    expect(await new VaultCoordinatorCore(storage).commitNamespaces(firstAppend)).toEqual(firstResult);
+    await expect(coordinator.commitNamespaces({
+      protocolVersion: "1.1",
+      operationId: "op_append_2",
+      vaultRevisionId: "rev_append_2",
+      updates: [{
+        ...update("harness:codex:sandbox", "nrev_2", "nrev_1"),
+        mode: "append",
+        pathClaims: [{ pathId: "pth_nrev_1", mutation: "add" }],
+      }],
+    })).resolves.toEqual({ outcome: "append-violation", namespace: "harness:codex:sandbox", pathIds: ["pth_nrev_1"] });
+    await expect(coordinator.commitNamespaces({ ...firstAppend, vaultRevisionId: "rev_other" }))
+      .resolves.toEqual({ outcome: "idempotency-conflict" });
+  });
+});
+
 describe("three-way namespace merge (SY-002..SY-009)", () => {
   it("merges disjoint additions and preserves both writers", () => {
     const result = mergeNamespace(state(), state(entry("remote.txt", "remote")), state(entry("local.txt", "local")), { atomic: false });

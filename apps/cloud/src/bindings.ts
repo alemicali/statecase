@@ -1,11 +1,14 @@
 import { DurableObject } from "cloudflare:workers";
 
-import type { CommitRequest } from "@statecase/protocol";
+import type { CommitRequest, ScopedCommitRequest } from "@statecase/protocol";
 import {
   VaultCoordinatorCore,
   type CommitResult,
   type CoordinatorStorage,
   type CreateSnapshotResult,
+  type NamespaceHead,
+  type ScopedCommitResult,
+  type ScopedVaultHead,
   type VaultHead,
   type VaultRevision,
   type VaultSnapshot,
@@ -14,6 +17,8 @@ import {
 import {
   ControlPlaneError,
   type AuthService,
+  type CapabilityService,
+  type CapabilitySummary,
   type CloudServices,
   type ControlPlane,
   type Coordinator,
@@ -63,15 +68,34 @@ export class VaultCoordinator extends DurableObject<StatecaseEnvironment> {
   async deleteSnapshot(snapshotId: string): Promise<boolean> {
     return this.#core.deleteSnapshot(snapshotId);
   }
+
+  async namespaceHeads(allowedNamespaces?: ReadonlySet<string>): Promise<NamespaceHead[]> {
+    return this.#core.namespaceHeads(allowedNamespaces);
+  }
+
+  async scopedHead(): Promise<ScopedVaultHead | null> {
+    return this.#core.scopedHead();
+  }
+
+  async commitNamespaces(request: ScopedCommitRequest): Promise<ScopedCommitResult> {
+    return this.#core.commitNamespaces(request);
+  }
 }
 
 export function createCloudServices(environment: StatecaseEnvironment): CloudServices {
   return {
     auth: cachedAuthService(environment),
     objects: new R2ObjectStore(environment.BLOBS),
-    authorizeVault: (principal, vaultId, action) => authorizeVault(environment.DB, principal, vaultId, action),
+    authorizeVault: (principal, vaultId, action) => principal.capability
+      ? Promise.resolve(false)
+      : authorizeVault(environment.DB, principal, vaultId, action),
+    authorizeNamespace: (principal, vaultId, namespace, action) => principal.capability
+      ? Promise.resolve(action !== "write" && principal.capability.vaultId === vaultId && principal.capability.namespaces.includes(namespace) &&
+          principal.capability.actions.includes(action))
+      : authorizeVault(environment.DB, principal, vaultId, action === "read" ? "read" : "write"),
     coordinator: (vaultId): Coordinator => environment.VAULTS.getByName(vaultId),
     control: new D1ControlPlane(environment.DB),
+    capabilities: new D1CapabilityService(environment.DB),
   };
 }
 
@@ -109,12 +133,13 @@ class R2ObjectStore implements ObjectStore {
   async putIfAbsent(
     vaultId: string,
     objectId: string,
-    body: ReadableStream<Uint8Array>,
+    body: ReadableStream<Uint8Array> | Uint8Array,
+    namespace?: string,
   ): Promise<{ created: boolean; size: number }> {
-    const key = objectKey(vaultId, objectId);
+    const key = objectKey(vaultId, objectId, namespace);
     const created = await this.#bucket.put(key, body, {
       onlyIf: { etagDoesNotMatch: "*" },
-      customMetadata: { format: "statecase-envelope-v1", objectId, vaultId },
+      customMetadata: { format: "statecase-envelope-v1", objectId, vaultId, ...(namespace ? { namespace } : {}) },
       httpMetadata: { contentType: "application/octet-stream" },
     });
     if (created) return { created: true, size: created.size };
@@ -123,13 +148,13 @@ class R2ObjectStore implements ObjectStore {
     return { created: false, size: existing.size };
   }
 
-  async get(vaultId: string, objectId: string): Promise<ReadableStream<Uint8Array> | null> {
-    const object = await this.#bucket.get(objectKey(vaultId, objectId));
+  async get(vaultId: string, objectId: string, namespace?: string): Promise<ReadableStream<Uint8Array> | null> {
+    const object = await this.#bucket.get(objectKey(vaultId, objectId, namespace));
     return object?.body ?? null;
   }
 
-  async exists(vaultId: string, objectId: string): Promise<boolean> {
-    return (await this.#bucket.head(objectKey(vaultId, objectId))) !== null;
+  async exists(vaultId: string, objectId: string, namespace?: string): Promise<boolean> {
+    return (await this.#bucket.head(objectKey(vaultId, objectId, namespace))) !== null;
   }
 }
 
@@ -252,6 +277,13 @@ class D1ControlPlane implements ControlPlane {
       this.#database.prepare(`
         UPDATE device_sessions SET revoked_at = COALESCE(revoked_at, ?) WHERE device_id = ? AND account_id = ?
       `).bind(now, deviceId, principal.accountId),
+      this.#database.prepare(`
+        UPDATE capability_grants SET revoked_at = COALESCE(revoked_at, ?) WHERE creator_device_id = ? AND account_id = ?
+      `).bind(now, deviceId, principal.accountId),
+      this.#database.prepare(`
+        UPDATE capability_sessions SET revoked_at = COALESCE(revoked_at, ?)
+        WHERE grant_id IN (SELECT id FROM capability_grants WHERE creator_device_id = ? AND account_id = ?)
+      `).bind(now, deviceId, principal.accountId),
       auditStatement(this.#database, principal, "device.revoke", "device", deviceId, now),
     ]);
   }
@@ -300,6 +332,160 @@ class D1ControlPlane implements ControlPlane {
   }
 }
 
+class D1CapabilityService implements CapabilityService {
+  readonly #database: D1Database;
+
+  constructor(database: D1Database) {
+    this.#database = database;
+  }
+
+  async create(principal: Principal, input: Parameters<CapabilityService["create"]>[1]): Promise<CapabilitySummary> {
+    const now = Date.now();
+    await this.#database.batch([
+      this.#database.prepare(`
+        INSERT INTO capability_grants (
+          id, account_id, creator_device_id, vault_id, token_hash, namespaces_json,
+          actions_json, key_envelope, expires_at, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        input.id,
+        principal.accountId,
+        principal.deviceId,
+        input.vaultId,
+        input.tokenHash,
+        JSON.stringify(input.namespaces),
+        JSON.stringify(input.actions),
+        input.keyEnvelope,
+        input.expiresAt,
+        now,
+      ),
+      auditStatement(this.#database, principal, "capability.create", "capability", input.id, now),
+    ]);
+    return {
+      id: input.id,
+      vaultId: input.vaultId,
+      namespaces: input.namespaces,
+      actions: input.actions,
+      expiresAt: input.expiresAt,
+      createdAt: now,
+    };
+  }
+
+  async list(principal: Principal): Promise<CapabilitySummary[]> {
+    const rows = await this.#database.prepare(`
+      SELECT id, vault_id, namespaces_json, actions_json, expires_at, redeemed_at, revoked_at, created_at
+      FROM capability_grants WHERE account_id = ? ORDER BY created_at DESC, id
+    `).bind(principal.accountId).all<CapabilityRow>();
+    return rows.results.map(capabilitySummary);
+  }
+
+  async revoke(principal: Principal, capabilityId: string): Promise<void> {
+    const existing = await this.#database.prepare(`
+      SELECT id FROM capability_grants WHERE id = ? AND account_id = ? LIMIT 1
+    `).bind(capabilityId, principal.accountId).first<{ id: string }>();
+    if (!existing) throw new ControlPlaneError("not-found");
+    const now = Date.now();
+    await this.#database.batch([
+      this.#database.prepare(`
+        UPDATE capability_grants SET revoked_at = COALESCE(revoked_at, ?) WHERE id = ? AND account_id = ?
+      `).bind(now, capabilityId, principal.accountId),
+      this.#database.prepare(`
+        UPDATE capability_sessions SET revoked_at = COALESCE(revoked_at, ?) WHERE grant_id = ?
+      `).bind(now, capabilityId),
+      auditStatement(this.#database, principal, "capability.revoke", "capability", capabilityId, now),
+    ]);
+  }
+
+  async redeem(token: string): Promise<Awaited<ReturnType<CapabilityService["redeem"]>>> {
+    const now = Date.now();
+    const tokenHash = await sha256Base64Url(token);
+    const grant = await this.#database.prepare(`
+      UPDATE capability_grants
+      SET redeemed_at = ?
+      WHERE token_hash = ? AND redeemed_at IS NULL AND revoked_at IS NULL AND expires_at > ?
+      RETURNING id, account_id, vault_id, namespaces_json, actions_json, key_envelope, expires_at
+    `).bind(now, tokenHash, now).first<CapabilityRedeemRow>();
+    if (!grant) return null;
+    const accessToken = `stc_access_${randomSecret()}`;
+    const accessHash = await sha256Base64Url(accessToken);
+    const sessionId = `cps_${crypto.randomUUID().replaceAll("-", "")}`;
+    await this.#database.prepare(`
+      INSERT INTO capability_sessions (id, grant_id, token_hash, expires_at, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).bind(sessionId, grant.id, accessHash, grant.expires_at, now).run();
+    return {
+      accessToken,
+      expiresAt: grant.expires_at,
+      vaultId: grant.vault_id,
+      namespaces: parseStringArray(grant.namespaces_json),
+      actions: parseCapabilityActions(grant.actions_json),
+      keyEnvelope: grant.key_envelope,
+    };
+  }
+}
+
+interface CapabilityRow {
+  id: string;
+  vault_id: string;
+  namespaces_json: string;
+  actions_json: string;
+  expires_at: number;
+  redeemed_at: number | null;
+  revoked_at: number | null;
+  created_at: number;
+}
+
+interface CapabilityRedeemRow {
+  id: string;
+  account_id: string;
+  vault_id: string;
+  namespaces_json: string;
+  actions_json: string;
+  key_envelope: string;
+  expires_at: number;
+}
+
+function capabilitySummary(row: CapabilityRow): CapabilitySummary {
+  return {
+    id: row.id,
+    vaultId: row.vault_id,
+    namespaces: parseStringArray(row.namespaces_json),
+    actions: parseCapabilityActions(row.actions_json),
+    expiresAt: row.expires_at,
+    ...(row.redeemed_at === null ? {} : { redeemedAt: row.redeemed_at }),
+    ...(row.revoked_at === null ? {} : { revokedAt: row.revoked_at }),
+    createdAt: row.created_at,
+  };
+}
+
+function parseStringArray(value: string): string[] {
+  const parsed = JSON.parse(value) as unknown;
+  if (!Array.isArray(parsed) || parsed.some((item) => typeof item !== "string")) throw new Error("invalid stored capability namespaces");
+  return parsed;
+}
+
+function parseCapabilityActions(value: string): Array<"read" | "append"> {
+  const parsed = parseStringArray(value);
+  if (parsed.some((item) => item !== "read" && item !== "append")) throw new Error("invalid stored capability actions");
+  return parsed as Array<"read" | "append">;
+}
+
+async function sha256Base64Url(value: string): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)));
+  return bytesToBase64Url(digest);
+}
+
+function randomSecret(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return bytesToBase64Url(bytes);
+}
+
+function bytesToBase64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
+}
+
 function auditStatement(
   database: D1Database,
   principal: Principal,
@@ -337,6 +523,7 @@ async function authorizeVault(
   return row.role === "owner" || row.role === "writer" || row.role === "append";
 }
 
-function objectKey(vaultId: string, objectId: string): string {
-  return `v1/vaults/${vaultId}/objects/${objectId.slice(0, 12)}/${objectId}`;
+function objectKey(vaultId: string, objectId: string, namespace?: string): string {
+  const scope = namespace ? `/namespaces/${namespace}` : "";
+  return `v1/vaults/${vaultId}${scope}/objects/${objectId.slice(0, 12)}/${objectId}`;
 }

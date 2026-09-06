@@ -6,6 +6,7 @@ import {
   manifestEntrySchema,
   manifestSchema,
   protocolError,
+  scopedCommitRequestSchema,
   sessionCapsuleSchema,
 } from "../src/index.js";
 
@@ -130,5 +131,32 @@ describe("wire schemas (PR-001, PR-014)", () => {
     };
     expect(manifestSchema.parse({ ...manifest, sessionCapsules: [capsule] }).sessionCapsules).toEqual([capsule]);
     expect(manifestSchema.parse(manifest)).toEqual(manifest);
+  });
+
+  it("validates atomic namespace updates and rejects duplicate scope or path claims", () => {
+    const request = {
+      protocolVersion: "1.1",
+      operationId: "op_scoped",
+      vaultRevisionId: "rev_scoped",
+      updates: [{
+        namespace: "workspace:ws_01",
+        baseNamespaceRevisionId: null,
+        namespaceRevisionId: "nrev_01",
+        manifestObjectId: "obj_manifest_01",
+        requiredObjectIds: ["obj_chunk_01"],
+        mode: "append",
+        pathClaims: [{ pathId: "pth_01", mutation: "add" }],
+      }],
+    };
+    expect(scopedCommitRequestSchema.parse(request)).toEqual(request);
+    expect(() => scopedCommitRequestSchema.parse({ ...request, updates: [...request.updates, request.updates[0]] })).toThrow();
+    expect(() => scopedCommitRequestSchema.parse({
+      ...request,
+      updates: [{ ...request.updates[0], pathClaims: [request.updates[0].pathClaims[0], request.updates[0].pathClaims[0]] }],
+    })).toThrow();
+    expect(() => scopedCommitRequestSchema.parse({
+      ...request,
+      updates: [{ ...request.updates[0], mode: "append", pathClaims: [{ pathId: "pth_01", mutation: "update" }] }],
+    })).toThrow();
   });
 });

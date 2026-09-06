@@ -13,7 +13,9 @@ describe("Statecase in workerd (PR-001, PR-005, PR-010, PR-011, AU-001)", () => 
   it("applies the complete D1 control and auth schema", async () => {
     const rows = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all<{ name: string }>();
     const names = rows.results.map((row) => row.name);
-    expect(names).toEqual(expect.arrayContaining(["vaults", "devices", "device_sessions", "bootstrap_tokens", "user", "session", "deviceCode"]));
+    expect(names).toEqual(expect.arrayContaining([
+      "vaults", "devices", "device_sessions", "bootstrap_tokens", "capability_grants", "capability_sessions", "user", "session", "deviceCode",
+    ]));
   });
 
   it("issues a real RFC 8628 device code for the registered CLI", async () => {
@@ -158,6 +160,109 @@ describe("Statecase in workerd (PR-001, PR-005, PR-010, PR-011, AU-001)", () => 
     expect(replay.status).toBe(400);
   });
 
+  it("enforces a real single-use, namespace-scoped append capability through D1 and R2 (AU-003..AU-007)", async () => {
+    const signup = await exports.default.fetch("http://statecase.test/api/auth/sign-up/email", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "capability@statecase.test", name: "Capability Operator", password: "a-strong-capability-password" }),
+    });
+    const deviceToken = signup.headers.get("set-auth-token");
+    expect(deviceToken).toBeTruthy();
+    const deviceHeaders = { authorization: `Bearer ${deviceToken}`, "content-type": "application/json" };
+    await exports.default.fetch("http://statecase.test/v1/devices/current", {
+      method: "POST", headers: deviceHeaders, body: JSON.stringify({ id: "dev_capability", name: "Capability issuer" }),
+    });
+    const createdVault = await exports.default.fetch("http://statecase.test/v1/vaults", {
+      method: "POST", headers: deviceHeaders, body: JSON.stringify({ name: "Scoped vault" }),
+    });
+    const vault = await createdVault.json() as { id: string };
+    const bootstrapToken = `stc_boot_${randomBase64Url(32)}`;
+    const capabilityId = "cap_runtime";
+    const namespace = "workspace:runtime";
+    const created = await exports.default.fetch("http://statecase.test/v1/tokens", {
+      method: "POST",
+      headers: deviceHeaders,
+      body: JSON.stringify({
+        id: capabilityId,
+        vaultId: vault.id,
+        tokenHash: await sha256Base64Url(bootstrapToken),
+        namespaces: [namespace],
+        actions: ["read", "append"],
+        expiresAt: Date.now() + 2 * 60 * 60 * 1000,
+        keyEnvelope: "opaque-e2ee-scope-keys",
+      }),
+    });
+    expect(created.status).toBe(201);
+    expect(JSON.stringify(await created.json())).not.toContain(bootstrapToken);
+
+    const redemptionRequest = () => exports.default.fetch("http://statecase.test/api/bootstrap/redeem", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: bootstrapToken }),
+    });
+    const redemptions = await Promise.all([redemptionRequest(), redemptionRequest()]);
+    expect(redemptions.map((response) => response.status).sort()).toEqual([200, 401]);
+    const redeemed = redemptions.find((response) => response.status === 200)!;
+    expect(redeemed.status).toBe(200);
+    expect(redeemed.headers.get("cache-control")).toBe("no-store");
+    const access = await redeemed.json() as { accessToken: string; keyEnvelope: string };
+    expect(access).toMatchObject({ accessToken: expect.stringMatching(/^stc_access_/u), keyEnvelope: "opaque-e2ee-scope-keys" });
+    expect((await redemptionRequest()).status).toBe(401);
+
+    const capabilityHeaders = { authorization: `Bearer ${access.accessToken}`, "content-type": "application/octet-stream" };
+    expect((await exports.default.fetch(`http://statecase.test/v1/vaults/${vault.id}/head`, { headers: capabilityHeaders })).status).toBe(404);
+    const allowedBase = `http://statecase.test/v1/vaults/${vault.id}/namespaces/${encodeURIComponent(namespace)}/objects`;
+    const forbiddenBase = `http://statecase.test/v1/vaults/${vault.id}/namespaces/${encodeURIComponent("drop:private")}/objects`;
+    const manifestPut = await exports.default.fetch(`${allowedBase}/obj_manifest`, { method: "PUT", headers: capabilityHeaders, body: Uint8Array.of(1) });
+    expect(manifestPut.status, await manifestPut.clone().text()).toBe(201);
+    expect((await exports.default.fetch(`${allowedBase}/obj_chunk`, { method: "PUT", headers: capabilityHeaders, body: Uint8Array.of(2) })).status).toBe(201);
+    expect((await exports.default.fetch(`${forbiddenBase}/obj_hidden`, { method: "PUT", headers: capabilityHeaders, body: Uint8Array.of(3) })).status).toBe(404);
+    expect((await exports.default.fetch(`http://statecase.test/v1/vaults/${vault.id}/namespace-commits`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${access.accessToken}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        protocolVersion: "1.1", operationId: "op_replace_denied", vaultRevisionId: "rev_replace_denied",
+        updates: [{
+          namespace, baseNamespaceRevisionId: null, namespaceRevisionId: "nrev_replace_denied",
+          manifestObjectId: "obj_manifest", requiredObjectIds: ["obj_chunk"], mode: "replace",
+          pathClaims: [{ pathId: "pth_replace_denied", mutation: "add" }],
+        }],
+      }),
+    })).status).toBe(404);
+    const committed = await exports.default.fetch(`http://statecase.test/v1/vaults/${vault.id}/namespace-commits`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${access.accessToken}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        protocolVersion: "1.1",
+        operationId: "op_capability_runtime",
+        vaultRevisionId: "rev_capability_runtime",
+        updates: [{
+          namespace,
+          baseNamespaceRevisionId: null,
+          namespaceRevisionId: "nrev_capability_runtime",
+          manifestObjectId: "obj_manifest",
+          requiredObjectIds: ["obj_chunk"],
+          mode: "append",
+          pathClaims: [{ pathId: "pth_capability_runtime", mutation: "add" }],
+        }],
+      }),
+    });
+    expect(committed.status).toBe(200);
+    expect(await committed.json()).toMatchObject({ outcome: "committed" });
+    expect((await exports.default.fetch(`http://statecase.test/v1/vaults/${vault.id}/namespace-commits`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${access.accessToken}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        protocolVersion: "1.1", operationId: "op_forbidden", vaultRevisionId: "rev_forbidden",
+        updates: [{
+          namespace: "drop:private", baseNamespaceRevisionId: null, namespaceRevisionId: "nrev_forbidden",
+          manifestObjectId: "obj_hidden", requiredObjectIds: [], mode: "append", pathClaims: [],
+        }],
+      }),
+    })).status).toBe(404);
+
+    expect((await exports.default.fetch(`http://statecase.test/v1/tokens/${capabilityId}`, { method: "DELETE", headers: deviceHeaders })).status).toBe(204);
+    expect((await exports.default.fetch(`${allowedBase}/obj_after_revoke`, { method: "PUT", headers: capabilityHeaders, body: Uint8Array.of(4) })).status).toBe(401);
+  });
+
   it("persists Durable Object commits across stubs", async () => {
     const vaults = env.VAULTS as DurableObjectNamespace<VaultCoordinator>;
     const firstStub = vaults.getByName("vlt_runtime");
@@ -192,3 +297,12 @@ describe("Statecase in workerd (PR-001, PR-005, PR-010, PR-011, AU-001)", () => 
     expect(new Uint8Array(await object!.arrayBuffer())).toEqual(Uint8Array.of(7, 8, 9));
   });
 });
+
+function randomBase64Url(size: number): string {
+  return Buffer.from(crypto.getRandomValues(new Uint8Array(size))).toString("base64url");
+}
+
+async function sha256Base64Url(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Buffer.from(digest).toString("base64url");
+}
