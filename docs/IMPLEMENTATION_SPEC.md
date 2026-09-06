@@ -293,6 +293,10 @@ interface SessionCapsuleV1 {
   sessionCapsuleId: string;
   sessionKey: string;
   harnessRevisionId: string;
+  harness: {
+    namespace: string;
+    logicalPath: string;
+  };
   workspace: {
     workspaceId: string;
     capsuleRevisionId: string;
@@ -316,6 +320,11 @@ interface DependencyReference {
 Session capsules are immutable. `resume latest` selects the newest compatible
 capsule; resuming a historical session selects its recorded closure rather than
 whatever workspace head happens to be current.
+
+The current writer creates all references in a new capsule against the same
+atomic vault revision. A client that encounters independently pinned component
+revisions MUST either materialize each referenced namespace from its recorded
+revision or fail closed; it MUST NOT substitute current heads.
 
 ### 5.3 Synchronized namespaces
 

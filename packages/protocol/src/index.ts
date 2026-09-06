@@ -66,6 +66,38 @@ export const conflictSchema = z.object({
   kind: z.enum(["modify-delete", "binary", "append-fork", "path-collision"]),
 }).strict();
 
+const gitObjectId = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u);
+
+export const dependencyReferenceSchema = z.object({
+  logicalPath: z.string().min(1).max(4096),
+  source: z.enum(["git-baseline", "workspace-overlay", "drop", "external"]),
+  contentDigest: identifier.optional(),
+  gitObjectId: gitObjectId.optional(),
+  required: z.boolean(),
+}).strict();
+
+export const sessionCapsuleSchema = z.object({
+  sessionCapsuleId: identifier,
+  sessionKey: z.string().min(1).max(2048),
+  harnessRevisionId: identifier,
+  harness: z.object({
+    namespace: z.string().min(1).max(1024),
+    logicalPath: z.string().min(1).max(4096),
+  }).strict(),
+  workspace: z.object({
+    workspaceId: identifier,
+    capsuleRevisionId: identifier,
+    baseCommit: gitObjectId.optional(),
+  }).strict(),
+  drops: z.array(z.object({ dropId: identifier, revisionId: identifier }).strict()).max(1_000),
+  dependencies: z.array(dependencyReferenceSchema).max(100_000),
+  createdAt: z.iso.datetime(),
+  createdByDeviceId: identifier,
+}).strict();
+
+export type DependencyReference = z.infer<typeof dependencyReferenceSchema>;
+export type SessionCapsuleV1 = z.infer<typeof sessionCapsuleSchema>;
+
 export const manifestSchema = z.object({
   schemaVersion: z.literal(1),
   vaultId: identifier,
@@ -77,6 +109,7 @@ export const manifestSchema = z.object({
   entries: z.array(manifestEntrySchema).max(100_000),
   tombstones: z.array(tombstoneSchema).max(100_000),
   conflicts: z.array(conflictSchema).max(100_000),
+  sessionCapsules: z.array(sessionCapsuleSchema).max(100_000).optional(),
 }).strict();
 
 export type VaultManifestV1 = z.infer<typeof manifestSchema>;

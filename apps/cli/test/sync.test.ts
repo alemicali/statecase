@@ -129,6 +129,10 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
       join(source, "sessions", "2026", "session.jsonl"),
       `${JSON.stringify({ type: "session_meta", payload: { cwd: sourceWorkspace, file: join(sourceWorkspace, "readme.md") } })}\n{"message":"still-writing"`,
     );
+    await writeFile(
+      join(source, "sessions", "2026", "legacy.jsonl"),
+      `${JSON.stringify({ type: "legacy_record", payload: { file: join(sourceWorkspace, "legacy.md") } })}\n`,
+    );
     const remote = new MemoryRemote();
     const key = await randomKey();
     const sourceConfig = harnessConfig(source, sourceWorkspace);
@@ -140,6 +144,113 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
       type: "session_meta",
       payload: { cwd: targetWorkspace, file: join(targetWorkspace, "readme.md") },
     });
+    expect(JSON.parse(await readFile(join(target, "sessions", "statecase", "ws_test", "legacy.jsonl"), "utf8"))).toEqual({
+      type: "legacy_record",
+      payload: { file: join(targetWorkspace, "legacy.md") },
+    });
+  });
+
+  it("pins structured session dependencies to the exact harness, workspace, and Drop revision (WS-019..WS-032)", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-session-capsule-"));
+    temporary.push(base);
+    const harness = join(base, "codex");
+    const workspace = join(base, "project");
+    const drop = join(base, "reference");
+    await initializeRepository(workspace);
+    await mkdir(join(harness, "sessions", "2026"), { recursive: true });
+    await mkdir(drop);
+    await writeFile(join(workspace, ".gitignore"), "ignored.txt\n");
+    await runFile("git", ["-C", workspace, "add", ".gitignore"]);
+    await runFile("git", ["-C", workspace, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "ignore fixture"]);
+    await writeFile(join(workspace, "changed.txt"), "uncommitted context\n");
+    await writeFile(join(workspace, "ignored.txt"), "must remain unresolved\n");
+    await writeFile(join(drop, "brief.md"), "portable brief\n");
+    await writeFile(join(drop, ".env"), "SECRET=must-not-upload\n");
+    const session = [
+      { type: "session_meta", payload: { cwd: workspace } },
+      { type: "tool_call", name: "read_file", arguments: { path: "tracked.txt" } },
+      { type: "tool_call", name: "edit_file", arguments: { path: "changed.txt" } },
+      { type: "tool_call", name: "read_file", arguments: { path: "ignored.txt" } },
+      { type: "tool_call", name: "read_file", arguments: { path: join(drop, "brief.md") } },
+      { type: "tool_call", name: "read_file", arguments: { path: join(drop, ".env") } },
+      { type: "tool_call", name: "read_file", arguments: { path: "/outside/not-mapped.txt" } },
+    ];
+    await writeFile(join(harness, "sessions", "2026", "native-01.jsonl"), `${session.map((record) => JSON.stringify(record)).join("\n")}\n`);
+    const local: LocalConfig = {
+      ...config(drop),
+      deviceId: "dev_source",
+      mappings: [
+        { id: "harness_codex_default", kind: "codex", mode: "two-way", name: "Codex", namespace: "harness:codex:default", path: harness },
+        { id: "drop_reference", kind: "drop", mode: "two-way", name: "Reference", namespace: "drop:drop_reference", path: drop },
+      ],
+      workspaces: [{ id: "ws_project", path: workspace }],
+    };
+    const remote = new MemoryRemote();
+    const key = await randomKey();
+    const engine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    const pushed = await engine.push(local);
+    const reports = await engine.dependencies();
+
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toMatchObject({
+      sessionKey: "vlt_test:codex:default:ws_project:native-01",
+      harnessRevisionId: pushed.revisionId,
+      workspace: { workspaceId: "ws_project", capsuleRevisionId: pushed.revisionId },
+      drops: [{ dropId: "drop_reference", revisionId: pushed.revisionId }],
+    });
+    expect(reports[0]!.dependencies).toEqual(expect.arrayContaining([
+      expect.objectContaining({ logicalPath: "tracked.txt", source: "git-baseline", gitObjectId: expect.stringMatching(/^[0-9a-f]{40}$/u), status: "resolved" }),
+      expect.objectContaining({ logicalPath: "changed.txt", source: "workspace-overlay", contentDigest: expect.any(String), status: "resolved" }),
+      expect.objectContaining({ logicalPath: "ignored.txt", source: "workspace-overlay", status: "unresolved" }),
+      expect.objectContaining({ logicalPath: "drop_reference/brief.md", source: "drop", contentDigest: expect.any(String), status: "resolved" }),
+      expect.objectContaining({ logicalPath: "drop_reference/.env", source: "drop", status: "unresolved" }),
+      expect.objectContaining({ logicalPath: "/outside/not-mapped.txt", source: "external", status: "unresolved" }),
+    ]));
+    expect(remote.plaintext).not.toContain("not-mapped.txt");
+    expect(remote.plaintext).not.toContain("portable brief");
+
+    await expect(engine.hydrate(local, reports[0]!.sessionCapsuleId, { mode: "strict", dryRun: true }))
+      .rejects.toMatchObject({
+        name: "SessionDependencyError",
+        unresolved: ["/outside/not-mapped.txt", "drop_reference/.env", "ignored.txt"],
+      });
+    await expect(engine.hydrate(local, reports[0]!.sessionCapsuleId, { mode: "best-effort", dryRun: true }))
+      .resolves.toMatchObject({
+        result: { outcome: "pulled", revisionId: pushed.revisionId },
+        warnings: ["/outside/not-mapped.txt", "drop_reference/.env", "ignored.txt"],
+      });
+    await expect(engine.hydrate({ ...local, mappings: [], workspaces: [] }, reports[0]!.sessionCapsuleId, { mode: "strict", dryRun: true }))
+      .rejects.toMatchObject({
+        unresolved: expect.arrayContaining(["mapping:harness:codex:default", "mapping:workspace:ws_project", "mapping:drop:drop_reference"]),
+      });
+    await expect(engine.hydrate(local, "cap_missing", { mode: "strict", dryRun: true })).rejects.toThrow("session capsule not found");
+
+    await writeFile(join(drop, "brief.md"), "newer brief that the old session never saw\n");
+    await engine.push(local);
+    const retained = (await engine.dependencies())[0]!;
+    expect(retained.harnessRevisionId).toBe(pushed.revisionId);
+
+    const targetHarness = join(base, "target-codex");
+    const targetWorkspace = join(base, "target-project");
+    const targetDrop = join(base, "target-reference");
+    await mkdir(targetHarness);
+    await mkdir(targetDrop);
+    await runFile("git", ["clone", "-q", workspace, targetWorkspace]);
+    const targetConfig: LocalConfig = {
+      ...local,
+      deviceId: "dev_target",
+      mappings: local.mappings.map((mapping) => ({
+        ...mapping,
+        path: mapping.kind === "drop" ? targetDrop : targetHarness,
+      })),
+      workspaces: [{ id: "ws_project", path: targetWorkspace }],
+      applied: {},
+    };
+    const hydrated = await engine.hydrate(targetConfig, retained.sessionCapsuleId, { mode: "warn" });
+    expect(hydrated.result.revisionId).toBe(pushed.revisionId);
+    expect(hydrated.warnings).toEqual(["/outside/not-mapped.txt", "drop_reference/.env", "ignored.txt"]);
+    expect(await readFile(join(targetDrop, "brief.md"), "utf8")).toBe("portable brief\n");
+    expect(await readFile(join(targetWorkspace, "changed.txt"), "utf8")).toBe("uncommitted context\n");
   });
 
   it("carries modified and untracked Git work over a clean baseline at a different path", async () => {
@@ -234,6 +345,7 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     const key = await randomKey();
     const engine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
     expect(await engine.pull(config(base))).toMatchObject({ outcome: "unchanged", revisionId: null });
+    expect(await engine.dependencies()).toEqual([]);
     const preview = await engine.push(config(base), true);
     expect(preview).toMatchObject({ outcome: "pushed", files: 1 });
     expect(remote.revisionId).toBeNull();

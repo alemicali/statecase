@@ -47,3 +47,11 @@ All notable changes to Statecase will be documented here.
 - Added explicit local conflict resolution guarded by a protected snapshot and
   an expected-head check, preventing a race from overwriting an unprotected
   newer revision.
+- Added encrypted immutable Session Capsules that bind changed native sessions
+  to exact harness, Git baseline, workspace-overlay, and Drop revisions.
+  Structured tool-event activity ignores prompt prose; excluded, ignored, and
+  external files remain explicit unresolved dependencies instead of being
+  silently copied. `workspace dependencies` inspects the closure and
+  `workspace hydrate` restores its historical revision with strict, warning,
+  or explicitly accepted best-effort behavior. The agent-native skill now uses
+  this resume workflow.

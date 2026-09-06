@@ -307,6 +307,51 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
     const workspaces = normalizeConfig(await store.loadConfig()).workspaces;
     emit(io, program, { workspaces }, workspaces.map((item) => `${item.id}\t${item.sync === "identity-only" ? "metadata-only" : "git-overlay"}\t${item.path}`).join("\n") || "No workspaces");
   });
+  workspace.command("dependencies")
+    .description("inspect the immutable dependency closure recorded for resumable sessions")
+    .option("--workspace <workspaceId>")
+    .option("--revision <revisionId>")
+    .action(async (options: { workspace?: string; revision?: string }) => {
+      const { config, secrets, client } = await requireSession(store, io.fetch);
+      const vaultId = selectedVault(config, secrets);
+      const key = Buffer.from(secrets.vaultKeys[vaultId], "base64url");
+      try {
+        const reports = (await new SyncEngine(client, vaultId, key).dependencies(options.revision))
+          .filter((report) => !options.workspace || report.workspace.workspaceId === options.workspace);
+        const unresolved = reports.reduce((total, report) =>
+          total + report.dependencies.filter((dependency) => dependency.status === "unresolved").length, 0);
+        emit(io, program, { reports, unresolved }, reports.length === 0
+          ? "No resumable session capsules"
+          : `${reports.length} session capsule${reports.length === 1 ? "" : "s"}; ${unresolved} unresolved dependenc${unresolved === 1 ? "y" : "ies"}`);
+      } finally {
+        key.fill(0);
+      }
+    });
+  workspace.command("hydrate")
+    .description("materialize the exact dependency closure pinned by a session capsule")
+    .requiredOption("--session <sessionCapsuleId>")
+    .option("--mode <mode>", "strict, warn, or best-effort", "warn")
+    .option("--dry-run")
+    .action(async (options: { session: string; mode: string; dryRun?: boolean }) => {
+      if (options.mode !== "strict" && options.mode !== "warn" && options.mode !== "best-effort") {
+        throw new StatecaseUsageError("hydration mode must be strict, warn, or best-effort", 2);
+      }
+      const { config, secrets, client } = await requireSession(store, io.fetch);
+      const vaultId = selectedVault(config, secrets);
+      const key = Buffer.from(secrets.vaultKeys[vaultId], "base64url");
+      try {
+        const hydrated = await new SyncEngine(client, vaultId, key).hydrate(config, options.session, {
+          mode: options.mode,
+          dryRun: options.dryRun,
+        });
+        if (!options.dryRun) await store.saveConfig(config);
+        if (options.mode === "warn" && hydrated.warnings.length > 0) requestedExitCode = 8;
+        emit(io, program, { sessionCapsuleId: options.session, mode: options.mode, dryRun: Boolean(options.dryRun), ...hydrated },
+          `${options.dryRun ? "Would hydrate" : "Hydrated"} ${hydrated.report.sessionKey} from ${hydrated.result.revisionId}; ${hydrated.warnings.length} warning${hydrated.warnings.length === 1 ? "" : "s"}`);
+      } finally {
+        key.fill(0);
+      }
+    });
 
   program.command("setup")
     .requiredOption("--harness <names>", "codex, claude, or comma-separated values")

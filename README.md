@@ -17,7 +17,10 @@ commits, local XChaCha20-Poly1305 encryption, passphrase-protected recovery
 kits, Codex/Claude session and skill adapters, exact Git index/worktree overlays, arbitrary
 Drops, logical workspace remapping, deletion tombstones, transactional local
 materialization, a crash-safe runtime journal, transparent harness shims, and
-the canonical agent skill. `statecase run codex|claude` performs a bounded
+the canonical agent skill. Immutable Session Capsules bind native sessions to
+their exact harness, Git baseline, workspace overlay, and Drop revision;
+unavailable/external context is reported instead of silently copied.
+`statecase run codex|claude` performs a bounded
 preflight pull, supervises the unmodified harness, publishes periodically, and
 attempts a final flush without preventing offline use or changing the child
 exit status.
@@ -26,8 +29,9 @@ The persistent daemon can run with `statecase daemon foreground` or be installed
 as a systemd user service / macOS LaunchAgent. Real-OS service UAT, append-aware
 same-session merge, automatic missing-baseline fetch, initialized-submodule
 hydration, automatic retention/in-place restore, scoped ephemeral capabilities,
-post-revocation key rewrapping, and full historical Session Capsules remain
-release gates. This is not yet a public-production release.
+post-revocation key rewrapping, key rotation, and real-version Codex/Claude
+fixture certification remain release gates. This is not yet a
+public-production release.
 
 The approved direction lives in:
 
@@ -125,6 +129,19 @@ the last revision each device actually applied. Same-path divergence fails with
 explicit paths. After inspecting the remote side through staging restore, an
 intentional local winner can be published with `conflicts resolve --mapping
 <id> --strategy local --yes`; Statecase first protects the exact remote head.
+
+Before resuming an older session on another machine, inspect and hydrate its
+recorded closure rather than pulling whichever workspace happens to be latest:
+
+```bash
+./apps/cli/dist/bin.js --json workspace dependencies
+./apps/cli/dist/bin.js --json workspace hydrate --session <capsule-id> --mode strict --dry-run
+./apps/cli/dist/bin.js --json workspace hydrate --session <capsule-id> --mode strict
+```
+
+`warn` reports a partial resume with exit code `8`; `best-effort` is available
+only as an explicit acceptance of missing context. Map a reported external
+dependency as a Drop and checkpoint it before expecting a strict resume.
 
 Account creation is deliberately allowlisted for the private MVP. Never put
 `STATECASE_TOKEN`, `STATECASE_RECOVERY_PASSPHRASE`, or the recovery kit in a

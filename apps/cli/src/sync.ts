@@ -5,10 +5,16 @@ import { promisify } from "node:util";
 
 import { classifyClaudePath, claudeProjectDirectory } from "@statecase/adapter-claude";
 import { classifyCodexPath } from "@statecase/adapter-codex";
-import { scanCompleteJsonl } from "@statecase/adapter-common";
+import { extractActivityReferences, scanCompleteJsonl, sessionWorkingDirectory, type ActivityReference } from "@statecase/adapter-common";
 import { chunkBytes, concatChunks } from "@statecase/chunking";
 import { computeObjectId, decryptEnvelope, deriveScopeKey, encryptEnvelope } from "@statecase/crypto";
-import { canonicalJson, manifestSchema, type VaultManifestV1 } from "@statecase/protocol";
+import {
+  canonicalJson,
+  manifestSchema,
+  type DependencyReference,
+  type SessionCapsuleV1,
+  type VaultManifestV1,
+} from "@statecase/protocol";
 import { appendOnlyViolations, mergeNamespace, namespaceStateEquals, type NamespaceState } from "@statecase/sync-core";
 import {
   applyWorkspaceTransaction,
@@ -36,6 +42,15 @@ interface ScannedEntry {
   workspacePath?: string;
   workspaceLayer?: "index" | "worktree";
   fileMode?: number;
+  session?: {
+    nativeSessionId: string;
+    workspaceId?: string;
+    activity: ActivityReference[];
+  };
+}
+
+export interface DependencyReport extends SessionCapsuleV1 {
+  dependencies: Array<DependencyReference & { status: "resolved" | "unresolved"; reason?: string }>;
 }
 
 export interface SyncResult {
@@ -53,6 +68,13 @@ export class SyncConflict extends Error {
   }
 }
 
+export class SessionDependencyError extends Error {
+  constructor(readonly unresolved: string[]) {
+    super(`session dependency closure is incomplete (${unresolved.length} unresolved)`);
+    this.name = "SessionDependencyError";
+  }
+}
+
 export class SyncEngine {
   constructor(
     readonly client: StatecaseClient,
@@ -67,6 +89,10 @@ export class SyncEngine {
     dryRun = false,
     options: { resolveLocalNamespaces?: ReadonlySet<string>; expectedHeadRevisionId?: string } = {},
   ): Promise<SyncResult> {
+    const operationId = randomId("op");
+    const revisionId = randomId("rev");
+    const createdAt = new Date().toISOString();
+    const createdByDeviceId = config.deviceId ?? (config.deviceName ? safeIdentifier(config.deviceName, "device") : "device_unknown");
     const writable = [
       ...config.mappings.filter((mapping) => mapping.mode !== "consume"),
       ...workspaceMappings(config),
@@ -172,10 +198,21 @@ export class SyncEngine {
     entries.sort(compareEntries);
     tombstones.sort((left, right) => left.namespace.localeCompare(right.namespace, "en") || left.logicalPath.localeCompare(right.logicalPath, "en"));
     const conflicts = previous?.conflicts ?? [];
-    if (previous && canonicalJson({ entries, tombstones, conflicts }) === canonicalJson({
+    const sessionCapsules = await buildSessionCapsules({
+      vaultId: this.vaultId,
+      revisionId,
+      createdAt,
+      createdByDeviceId,
+      config,
+      scanned,
+      entries,
+      previous,
+    });
+    if (previous && canonicalJson({ entries, tombstones, conflicts, sessionCapsules }) === canonicalJson({
       entries: previous.entries,
       tombstones: previous.tombstones,
       conflicts: previous.conflicts,
+      sessionCapsules: previous.sessionCapsules ?? [],
     })) {
       await this.#markApplied(config, writable.filter((mapping) => completelyLocalNamespaces.has(mapping.namespace)), scanned, head.revisionId!);
       return { outcome: "unchanged", revisionId: head.revisionId, files: 0, objects: 0, bytes: 0 };
@@ -193,19 +230,18 @@ export class SyncEngine {
       envelopes.set(objectId, envelope);
       transferredBytes += envelope.byteLength;
     }
-    const operationId = randomId("op");
-    const revisionId = randomId("rev");
     const manifest: VaultManifestV1 = {
       schemaVersion: 1,
       vaultId: this.vaultId,
       revisionId,
       parentRevisionIds: head.revisionId ? [head.revisionId] : [],
-      createdAt: new Date().toISOString(),
-      createdByDeviceId: config.deviceId ?? (config.deviceName ? safeIdentifier(config.deviceName, "device") : "device_unknown"),
+      createdAt,
+      createdByDeviceId,
       operationId,
       entries,
       tombstones,
       conflicts,
+      sessionCapsules,
     };
     const manifestBytes = encoder.encode(canonicalJson(manifest));
     const manifestKeys = await deriveScopeKey(this.vaultKey, "manifest");
@@ -230,6 +266,84 @@ export class SyncEngine {
     });
     await this.#markApplied(config, writable.filter((mapping) => completelyLocalNamespaces.has(mapping.namespace)), scanned, revisionId);
     return { outcome: "pushed", revisionId, files: scanned.length, objects: envelopes.size + 1, bytes: transferredBytes + manifestEnvelope.byteLength };
+  }
+
+  async dependencies(historicalRevisionId?: string): Promise<DependencyReport[]> {
+    const pointer = historicalRevisionId
+      ? await this.client.revision(this.vaultId, historicalRevisionId)
+      : await this.client.head(this.vaultId);
+    if (!pointer.revisionId || !pointer.manifestObjectId) return [];
+    const manifest = await this.#downloadManifest(pointer.manifestObjectId);
+    const manifests = new Map<string, VaultManifestV1>([[manifest.revisionId, manifest]]);
+    const loadRevision = async (revisionId: string): Promise<VaultManifestV1 | undefined> => {
+      const cached = manifests.get(revisionId);
+      if (cached) return cached;
+      try {
+        const revision = await this.client.revision(this.vaultId, revisionId);
+        const loaded = await this.#downloadManifest(revision.manifestObjectId);
+        if (loaded.revisionId !== revisionId) return undefined;
+        manifests.set(revisionId, loaded);
+        return loaded;
+      } catch {
+        return undefined;
+      }
+    };
+    const reports: DependencyReport[] = [];
+    for (const capsule of manifest.sessionCapsules ?? []) {
+      const harnessManifest = await loadRevision(capsule.harnessRevisionId);
+      const workspaceManifest = await loadRevision(capsule.workspace.capsuleRevisionId);
+      const dropManifests = new Map<string, VaultManifestV1 | undefined>();
+      for (const drop of capsule.drops) dropManifests.set(drop.dropId, await loadRevision(drop.revisionId));
+      const dependencies = capsule.dependencies.map((dependency) => {
+        const unresolved = dependencyResolutionFailure(dependency, capsule, harnessManifest, workspaceManifest, dropManifests);
+        return { ...dependency, status: unresolved ? "unresolved" as const : "resolved" as const, ...(unresolved ? { reason: unresolved } : {}) };
+      });
+      reports.push({ ...capsule, dependencies });
+    }
+    return reports.sort((left, right) => left.sessionKey.localeCompare(right.sessionKey, "en"));
+  }
+
+  async hydrate(
+    config: LocalConfig,
+    sessionCapsuleId: string,
+    options: { mode?: "strict" | "warn" | "best-effort"; dryRun?: boolean } = {},
+  ): Promise<{ result: SyncResult; report: DependencyReport; warnings: string[] }> {
+    const mode = options.mode ?? "warn";
+    const report = (await this.dependencies()).find((candidate) => candidate.sessionCapsuleId === sessionCapsuleId);
+    if (!report) throw new Error(`session capsule not found: ${sessionCapsuleId}`);
+    const pinnedRevisions = new Set([
+      report.harnessRevisionId,
+      report.workspace.capsuleRevisionId,
+      ...report.drops.map((drop) => drop.revisionId),
+    ]);
+    if (pinnedRevisions.size !== 1) throw new Error("multi-revision session hydration is not supported by this client version");
+
+    const warnings = report.dependencies
+      .filter((dependency) => dependency.required && dependency.status === "unresolved")
+      .map((dependency) => dependency.logicalPath);
+    const harnessMapping = config.mappings.find((mapping) => mapping.namespace === report.harness.namespace);
+    if (!harnessMapping) warnings.push(`mapping:${report.harness.namespace}`);
+    const workspace = config.workspaces.find((candidate) => candidate.id === report.workspace.workspaceId);
+    if (!workspace) warnings.push(`mapping:workspace:${report.workspace.workspaceId}`);
+    const dropIds = new Set(report.drops.map((drop) => drop.dropId));
+    for (const dropId of dropIds) {
+      if (!config.mappings.some((mapping) => mapping.kind === "drop" && mapping.id === dropId)) warnings.push(`mapping:drop:${dropId}`);
+    }
+    warnings.sort((left, right) => left.localeCompare(right, "en"));
+    if (mode === "strict" && warnings.length > 0) throw new SessionDependencyError(warnings);
+
+    const scoped = structuredClone(config);
+    scoped.applied = {};
+    scoped.mappings = config.mappings
+      .filter((mapping) => mapping.namespace === report.harness.namespace || (mapping.kind === "drop" && dropIds.has(mapping.id)))
+      .map((mapping) => ({ ...mapping, mode: "consume" as const }));
+    scoped.workspaces = workspace ? [{ ...workspace, sync: "git" }] : [];
+    const revisionId = [...pinnedRevisions][0]!;
+    const result = await this.pull(scoped, options.dryRun ?? false, revisionId);
+    if (!options.dryRun) {
+      for (const [namespace, applied] of Object.entries(scoped.applied)) config.applied[namespace] = applied;
+    }
+    return { result, report, warnings };
   }
 
   async pull(config: LocalConfig, dryRun = false, historicalRevisionId?: string): Promise<SyncResult> {
@@ -391,6 +505,199 @@ export class SyncEngine {
   }
 }
 
+async function buildSessionCapsules(input: {
+  vaultId: string;
+  revisionId: string;
+  createdAt: string;
+  createdByDeviceId: string;
+  config: LocalConfig;
+  scanned: ScannedEntry[];
+  entries: VaultManifestV1["entries"];
+  previous?: VaultManifestV1;
+}): Promise<SessionCapsuleV1[]> {
+  const scannedSessions = input.scanned.filter((entry) => entry.session?.workspaceId);
+  const writableHarnessNamespaces = new Set(input.config.mappings
+    .filter((mapping) => mapping.kind !== "drop" && mapping.mode !== "consume")
+    .map((mapping) => mapping.namespace));
+  const liveSessionIdentities = new Set(scannedSessions.map((entry) => `${entry.namespace}\0${entry.logicalPath}`));
+  const capsules = (input.previous?.sessionCapsules ?? []).filter((capsule) =>
+    !writableHarnessNamespaces.has(capsule.harness.namespace) ||
+    liveSessionIdentities.has(`${capsule.harness.namespace}\0${capsule.harness.logicalPath}`));
+
+  for (const scanned of scannedSessions) {
+    const session = scanned.session!;
+    const workspaceId = session.workspaceId!;
+    const profile = scanned.namespace.split(":").slice(2).join(":") || "default";
+    const harness = scanned.namespace.split(":")[1] ?? "unknown";
+    const sessionKey = `${input.vaultId}:${harness}:${profile}:${workspaceId}:${session.nativeSessionId}`;
+    const priorCapsuleIndex = capsules.findIndex((capsule) => capsule.sessionKey === sessionKey);
+    const priorEntry = input.previous?.entries.find((entry) => entry.namespace === scanned.namespace && entry.logicalPath === scanned.logicalPath);
+    const currentEntry = input.entries.find((entry) => entry.namespace === scanned.namespace && entry.logicalPath === scanned.logicalPath);
+    if (priorCapsuleIndex >= 0 && priorEntry?.contentDigest === currentEntry?.contentDigest) continue;
+
+    const workspace = input.config.workspaces.find((candidate) => candidate.id === workspaceId);
+    if (!workspace) continue;
+    const captured = workspaceCaptureFromScan(input.scanned, workspaceId);
+    const dependencies = await resolveActivityDependencies(session.activity, workspaceId, input.config, input.entries, input.scanned, captured);
+    const drops = [...new Set(dependencies
+      .filter((dependency) => dependency.source === "drop")
+      .map((dependency) => dependency.logicalPath.split("/")[0]!))]
+      .sort((left, right) => left.localeCompare(right, "en"))
+      .map((dropId) => ({ dropId, revisionId: input.revisionId }));
+    const capsule: SessionCapsuleV1 = {
+      sessionCapsuleId: randomId("cap"),
+      sessionKey,
+      harnessRevisionId: input.revisionId,
+      harness: { namespace: scanned.namespace, logicalPath: scanned.logicalPath },
+      workspace: {
+        workspaceId,
+        capsuleRevisionId: input.revisionId,
+        ...(captured?.capsule.baseCommit ? { baseCommit: captured.capsule.baseCommit } : {}),
+      },
+      drops,
+      dependencies,
+      createdAt: input.createdAt,
+      createdByDeviceId: input.createdByDeviceId,
+    };
+    if (priorCapsuleIndex >= 0) capsules.splice(priorCapsuleIndex, 1, capsule);
+    else capsules.push(capsule);
+  }
+  return capsules.sort((left, right) => left.sessionKey.localeCompare(right.sessionKey, "en"));
+}
+
+function workspaceCaptureFromScan(scanned: readonly ScannedEntry[], workspaceId: string): CapturedWorkspace | undefined {
+  const entry = scanned.find((candidate) =>
+    candidate.namespace === `workspace:${workspaceId}` && candidate.entryType === "workspace-capsule");
+  if (!entry) return undefined;
+  return {
+    capsule: JSON.parse(new TextDecoder("utf8", { fatal: true, ignoreBOM: false }).decode(entry.bytes)) as CapturedWorkspace["capsule"],
+    blobs: [],
+  };
+}
+
+async function resolveActivityDependencies(
+  activity: readonly ActivityReference[],
+  sessionWorkspaceId: string,
+  config: LocalConfig,
+  entries: VaultManifestV1["entries"],
+  scanned: readonly ScannedEntry[],
+  captured: CapturedWorkspace | undefined,
+): Promise<DependencyReference[]> {
+  const output: DependencyReference[] = [];
+  const seen = new Set<string>();
+  const roots = [
+    ...config.workspaces.filter((workspace) => workspace.id === sessionWorkspaceId)
+      .map((workspace) => ({ kind: "workspace" as const, id: workspace.id, root: resolve(workspace.path) })),
+    ...config.mappings.filter((mapping) => mapping.kind === "drop").map((mapping) => ({ kind: "drop" as const, id: mapping.id, root: resolve(mapping.path), namespace: mapping.namespace })),
+  ].sort((left, right) => right.root.length - left.root.length);
+
+  for (const reference of activity) {
+    const owner = roots.find((candidate) => pathWithin(candidate.root, reference.path));
+    let dependency: DependencyReference;
+    if (!owner) {
+      dependency = { logicalPath: reference.path, source: "external", required: true };
+    } else {
+      const logicalPath = relative(owner.root, reference.path).split(sep).join("/");
+      if (!logicalPath || logicalPath.startsWith("../")) continue;
+      if (owner.kind === "drop") {
+        const entry = entries.find((candidate) => candidate.namespace === owner.namespace && candidate.logicalPath === logicalPath);
+        dependency = {
+          logicalPath: `${owner.id}/${logicalPath}`,
+          source: "drop",
+          ...(entry ? { contentDigest: entry.contentDigest } : {}),
+          required: true,
+        };
+      } else {
+        const matchingCapture = captured ?? workspaceCaptureFromScan(scanned, owner.id);
+        const record = matchingCapture?.capsule.records.find((candidate) => candidate.path === logicalPath);
+        const oid = record?.worktree.state === "content" || record?.worktree.state === "submodule"
+          ? record.worktree.oid
+          : record?.worktree.state === "index" && (record.index.state === "content" || record.index.state === "submodule")
+            ? record.index.oid
+            : undefined;
+        const overlayEntry = oid ? entries.find((candidate) =>
+          candidate.namespace === `workspace:${owner.id}` && candidate.entryType === "workspace-blob" &&
+          candidate.workspacePath === logicalPath && gitBlobOidFromLogicalPath(candidate.logicalPath) === oid) : undefined;
+        if (record) {
+          dependency = {
+            logicalPath,
+            source: "workspace-overlay",
+            ...(overlayEntry ? { contentDigest: overlayEntry.contentDigest } : {}),
+            ...(oid ? { gitObjectId: oid } : {}),
+            required: true,
+          };
+        } else {
+          const gitObjectId = matchingCapture?.capsule.baseCommit
+            ? await baselineObjectId(owner.root, matchingCapture.capsule.baseCommit, logicalPath)
+            : undefined;
+          dependency = {
+            logicalPath,
+            source: gitObjectId ? "git-baseline" : "workspace-overlay",
+            ...(gitObjectId ? { gitObjectId } : {}),
+            required: true,
+          };
+        }
+      }
+    }
+    const identity = `${dependency.source}\0${dependency.logicalPath}`;
+    if (!seen.has(identity)) {
+      seen.add(identity);
+      output.push(dependency);
+    }
+  }
+  return output.sort((left, right) => left.logicalPath.localeCompare(right.logicalPath, "en") || left.source.localeCompare(right.source, "en"));
+}
+
+async function baselineObjectId(root: string, commit: string, logicalPath: string): Promise<string | undefined> {
+  try {
+    const { stdout } = await runFile("git", ["-C", root, "ls-tree", "-z", commit, "--", logicalPath], { encoding: "buffer" });
+    const match = /^(?:[0-7]{6})\s+(?:blob|commit)\s+([0-9a-f]{40,64})\t/u.exec(Buffer.from(stdout).toString("utf8"));
+    return match?.[1];
+  } catch {
+    return undefined;
+  }
+}
+
+function pathWithin(root: string, candidate: string): boolean {
+  const absolute = resolve(candidate);
+  return absolute === root || absolute.startsWith(`${root}${sep}`);
+}
+
+function dependencyResolutionFailure(
+  dependency: DependencyReference,
+  capsule: SessionCapsuleV1,
+  harnessManifest: VaultManifestV1 | undefined,
+  workspaceManifest: VaultManifestV1 | undefined,
+  dropManifests: ReadonlyMap<string, VaultManifestV1 | undefined>,
+): string | undefined {
+  if (!harnessManifest?.entries.some((entry) =>
+    entry.namespace === capsule.harness.namespace && entry.logicalPath === capsule.harness.logicalPath)) {
+    return "pinned harness revision is unavailable or does not contain the session";
+  }
+  if (dependency.source === "external") return "path is outside every mapped workspace and Drop";
+  if (dependency.source === "git-baseline") {
+    if (!dependency.gitObjectId) return "Git object identity was not captured";
+    const workspaceCapsule = workspaceManifest?.entries.find((entry) =>
+      entry.namespace === `workspace:${capsule.workspace.workspaceId}` && entry.entryType === "workspace-capsule");
+    return workspaceCapsule ? undefined : "pinned workspace capsule revision is unavailable";
+  }
+  if (dependency.source === "workspace-overlay") {
+    if (!dependency.contentDigest) return "referenced workspace content was excluded or absent at checkpoint time";
+    const exists = workspaceManifest?.entries.some((entry) =>
+      entry.namespace === `workspace:${capsule.workspace.workspaceId}` && entry.entryType === "workspace-blob" &&
+      entry.workspacePath === dependency.logicalPath && entry.contentDigest === dependency.contentDigest);
+    return exists ? undefined : "pinned workspace overlay object is unavailable";
+  }
+  const separator = dependency.logicalPath.indexOf("/");
+  const dropId = separator < 0 ? dependency.logicalPath : dependency.logicalPath.slice(0, separator);
+  const logicalPath = separator < 0 ? "" : dependency.logicalPath.slice(separator + 1);
+  const manifest = dropManifests.get(dropId);
+  if (!dependency.contentDigest) return "referenced Drop content was excluded or absent at checkpoint time";
+  const exists = manifest?.entries.some((entry) =>
+    entry.namespace === `drop:${dropId}` && entry.logicalPath === logicalPath && entry.contentDigest === dependency.contentDigest);
+  return exists ? undefined : "pinned Drop revision is unavailable or does not contain the referenced content";
+}
+
 function workspaceMappings(config: LocalConfig): RootMapping[] {
   return config.workspaces.filter((workspace) => workspace.sync !== "identity-only").map((workspace) => ({
     id: `workspace_${workspace.id}`,
@@ -487,12 +794,27 @@ async function walk(
       throw new Error(`file changed while being scanned: ${logicalPath}`);
     }
     if (classification === "session") {
-      bytes = scanCompleteJsonl(bytes).acceptedPrefix;
+      const sessionScan = scanCompleteJsonl(bytes);
+      bytes = sessionScan.acceptedPrefix;
       if (bytes.byteLength === 0) continue;
-      const portable = portabilizeSession(bytes, workspaces);
+      const cwd = sessionWorkingDirectory(sessionScan.records);
+      const primaryWorkspaceId = cwd
+        ? [...workspaces].sort((left, right) => right.path.length - left.path.length)
+          .find((workspace) => pathWithin(resolve(workspace.path), cwd))?.id
+        : undefined;
+      const portable = portabilizeSession(bytes, workspaces, primaryWorkspaceId);
       bytes = portable.bytes;
       if (portable.workspaceId) {
-        output.push({ namespace: mapping.namespace, logicalPath: `portable-sessions/${portable.workspaceId}/${basename(logicalPath)}`, bytes });
+        output.push({
+          namespace: mapping.namespace,
+          logicalPath: `portable-sessions/${portable.workspaceId}/${basename(logicalPath)}`,
+          bytes,
+          session: {
+            nativeSessionId: basename(logicalPath).replace(/\.jsonl$/u, ""),
+            workspaceId: portable.workspaceId,
+            activity: extractActivityReferences(sessionScan.records),
+          },
+        });
         continue;
       }
     }
@@ -500,12 +822,17 @@ async function walk(
   }
 }
 
-function portabilizeSession(bytes: Uint8Array, workspaces: LocalConfig["workspaces"]): { bytes: Uint8Array; workspaceId?: string } {
+function portabilizeSession(
+  bytes: Uint8Array,
+  workspaces: LocalConfig["workspaces"],
+  primaryWorkspaceId?: string,
+): { bytes: Uint8Array; workspaceId?: string } {
   const decoder = new TextDecoder("utf8", { fatal: true, ignoreBOM: false });
   const records = decoder.decode(bytes).trimEnd().split("\n").map((line) => JSON.parse(line) as unknown);
   const matched = new Set<string>();
   const transformed = records.map((record) => transformStrings(record, (value) => {
-    const workspace = [...workspaces].sort((a, b) => b.path.length - a.path.length).find((item) => {
+    const candidates = primaryWorkspaceId ? workspaces.filter((item) => item.id === primaryWorkspaceId) : workspaces;
+    const workspace = [...candidates].sort((a, b) => b.path.length - a.path.length).find((item) => {
       const root = resolve(item.path);
       return value === root || value.startsWith(`${root}${sep}`);
     });

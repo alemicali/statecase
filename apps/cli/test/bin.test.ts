@@ -47,6 +47,8 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
     expect(await command(io, "--json", "drop", "add", source, "--name", "working-context")).toBe(0);
     const drop = JSON.parse(output.at(-1)!) as { id: string };
     expect(await command(io, "--json", "push")).toBe(0);
+    expect(await command(io, "--json", "workspace", "dependencies")).toBe(0);
+    expect(JSON.parse(output.at(-1)!)).toEqual({ reports: [], unresolved: 0 });
     expect(await command(io, "--json", "snapshot", "create", "Before second device")).toBe(0);
     const snapshot = JSON.parse(output.at(-1)!) as { id: string };
     expect(await command(io, "--json", "snapshot", "list")).toBe(0);

@@ -6,6 +6,7 @@ import {
   manifestEntrySchema,
   manifestSchema,
   protocolError,
+  sessionCapsuleSchema,
 } from "../src/index.js";
 
 describe("canonical protocol encoding (SY-001, PR-001)", () => {
@@ -92,5 +93,42 @@ describe("wire schemas (PR-001, PR-014)", () => {
       message: "login required",
       status: 401,
     });
+  });
+
+  it("accepts a closed session dependency graph and rejects incomplete identities", () => {
+    const capsule = {
+      sessionCapsuleId: "cap_01",
+      sessionKey: "vlt_01:codex:default:ws_01:native_01",
+      harnessRevisionId: "rev_01",
+      harness: { namespace: "harness:codex:default", logicalPath: "portable-sessions/ws_01/native_01.jsonl" },
+      workspace: { workspaceId: "ws_01", capsuleRevisionId: "rev_01", baseCommit: "a".repeat(40) },
+      drops: [{ dropId: "drop_docs", revisionId: "rev_01" }],
+      dependencies: [
+        { logicalPath: "src/index.ts", source: "git-baseline", gitObjectId: "b".repeat(40), required: true },
+        { logicalPath: "drop_docs/brief.md", source: "drop", contentDigest: "digest_01", required: true },
+        { logicalPath: "/outside/private.txt", source: "external", required: true },
+      ],
+      createdAt: "2026-09-06T10:00:00.000Z",
+      createdByDeviceId: "dev_01",
+    };
+    expect(sessionCapsuleSchema.parse(capsule)).toEqual(capsule);
+    expect(() => sessionCapsuleSchema.parse({ ...capsule, sessionCapsuleId: "" })).toThrow();
+    expect(() => sessionCapsuleSchema.parse({ ...capsule, dependencies: [{ ...capsule.dependencies[0], source: "unknown" }] })).toThrow();
+  });
+
+  it("carries session capsules in a manifest without changing legacy manifest parsing", () => {
+    const capsule = {
+      sessionCapsuleId: "cap_01",
+      sessionKey: "vlt_01:claude:default:ws_01:native_01",
+      harnessRevisionId: "rev_01",
+      harness: { namespace: "harness:claude:default", logicalPath: "portable-sessions/ws_01/native_01.jsonl" },
+      workspace: { workspaceId: "ws_01", capsuleRevisionId: "rev_01" },
+      drops: [],
+      dependencies: [],
+      createdAt: "2026-09-06T10:00:00.000Z",
+      createdByDeviceId: "dev_01",
+    };
+    expect(manifestSchema.parse({ ...manifest, sessionCapsules: [capsule] }).sessionCapsules).toEqual([capsule]);
+    expect(manifestSchema.parse(manifest)).toEqual(manifest);
   });
 });
