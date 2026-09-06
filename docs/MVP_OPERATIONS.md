@@ -3,7 +3,7 @@
 Status: deployed private stack
 Last verified: 2026-09-06
 
-Current Worker version: `a5c9354c-1867-4d0a-89ad-28cd525a8953`.
+Current Worker version: `3c9b903e-30cb-43d0-9325-6e73d8501ce1`.
 Remote D1 migrations through `0003_device_sessions.sql` are applied.
 
 ## Remote inventory
