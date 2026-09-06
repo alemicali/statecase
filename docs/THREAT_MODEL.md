@@ -232,7 +232,7 @@ authorization, materialization, deletion/GC, and bootstrap threat surfaces.
 | --- | --- |
 | Compromised authorized endpoint | disclosed limitation; least scope/revocation |
 | Cloud metadata leakage | minimize, document, define retention before beta |
-| Unavailable Git baseline | strict dependency report/manual provisioning |
+| Unavailable Git baseline | explicit ask/auto/never policy; bounded system-Git fetch; redacted failure; atomic rollback |
 | Uncatchable sandbox kill | periodic push; bounded but non-zero loss window |
 | Harness format changes | fixtures, fail closed, compatibility window pending |
 | User explicitly includes secrets in Drop | warning/scanner/separate scope; user choice |

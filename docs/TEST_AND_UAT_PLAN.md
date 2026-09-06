@@ -6,9 +6,12 @@ Executed evidence: the
 [2026-09-06 Daytona and Cloudflare product UAT](uat/2026-09-06-daytona-cloud.md)
 passes the packaged CLI, real Codex/Claude shim, two-device authorization,
 encrypted Drop round-trip, deletion, conflict, and snapshot subset of this
-plan. Native macOS/Linux service-manager, ARM64, WSL2, large-scale performance,
+plan. The
+[2026-09-07 Git-baseline Daytona UAT](uat/2026-09-07-git-baseline-daytona.md)
+also qualifies explicit ask/auto policy and shallow-clone acquisition against
+the live service. Native macOS/Linux service-manager, ARM64, WSL2, large-scale performance,
 retention/GC, and destructive recovery drills remain open release gates.
-Last updated: 2026-09-05
+Last updated: 2026-09-07
 Related: [Implementation specification](./IMPLEMENTATION_SPEC.md)
 
 ## 1. Quality objective
@@ -183,7 +186,9 @@ policy; they are never uploaded merely because they are present.
   safe symlink, and submodule states round-trip.
 - `WS-014`: detached HEAD and unborn branch have deterministic behavior.
 - `WS-015`: shallow clone missing base commit fetches through configured Git
-  flow or returns `BASELINE_UNAVAILABLE` without partial apply.
+  flow or returns `BASELINE_UNAVAILABLE` without partial apply; an unreachable
+  later workspace rolls back earlier automatic checkouts and leaks no remote
+  URL or credential-shaped diagnostic.
 - `WS-016`: dirty destination produces a conflict preview and remains unchanged.
 - `WS-017`: Git LFS pointer and absent LFS content are reported distinctly.
 - `WS-018`: nested repository/submodule boundaries do not leak files.
@@ -404,7 +409,9 @@ all excluded categories are explained.
 
 Work in `/Users/test/src/project`, create a Codex session, modify/stage/create
 files, and sync. On Linux map the same workspace to `/srv/work/project`, obtain
-the pinned Git baseline, hydrate, and resume.
+the pinned Git baseline from a shallow clone using `--git-fetch auto`, hydrate,
+and resume. Repeat with `ask` and verify no fetch or checkout occurs before
+explicit approval.
 
 Acceptance: same logical workspace/session; exact index/worktree bytes; no
 requirement for matching absolute paths; Session Capsule dependency closure is

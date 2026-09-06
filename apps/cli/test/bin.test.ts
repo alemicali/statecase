@@ -108,9 +108,11 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
     expect(JSON.parse(output.at(-1)!)).toMatchObject({ devices: expect.any(Array) });
     expect(await command(io, "--json", "device", "revoke", "dev_other")).toBe(2);
     expect(await command(io, "--json", "device", "revoke", "dev_other", "--yes")).toBe(0);
-    expect(await command(io, "--json", "workspace", "attach", "--path", source, "--id", "ws_test", "--mode", "metadata-only")).toBe(0);
-    expect(JSON.parse(output.at(-1)!)).toMatchObject({ id: "ws_test", mode: "metadata-only" });
+    expect(await command(io, "--json", "workspace", "attach", "--path", source, "--id", "ws_test", "--mode", "metadata-only", "--git-fetch", "auto")).toBe(0);
+    expect(JSON.parse(output.at(-1)!)).toMatchObject({ id: "ws_test", mode: "metadata-only", gitFetch: "auto" });
     expect(await command(io, "--json", "workspace", "list")).toBe(0);
+    expect(JSON.parse(output.at(-1)!)).toMatchObject({ workspaces: [{ id: "ws_test", gitFetch: "auto" }] });
+    expect(await command(io, "--json", "workspace", "attach", "--path", source, "--id", "ws_bad", "--mode", "metadata-only", "--git-fetch", "sometimes")).toBe(2);
 
     process.env.STATECASE_HOME = machineB;
     expect(await command(io, "--json", "login", "--non-interactive", "--device-name", "vps")).toBe(0);

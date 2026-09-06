@@ -23,6 +23,8 @@ On a trusted full-access device, create a least-privilege grant with `statecase 
 
 In a fresh sandbox profile, redeem through an injected `STATECASE_BOOTSTRAP_TOKEN` or `statecase bootstrap --token-file <secret-mount> --non-interactive`. Do not put the token itself in a command argument. Then attach only the authorized workspace IDs, map only the authorized Drop IDs, run `statecase --json pull`, and launch through `statecase run <harness> -- <args>` when supervised synchronization is desired.
 
+For a fresh Git checkout that may be shallow, attach the workspace with `--git-fetch auto` only when the operator or deployment policy has authorized device-local Git network access. Statecase uses that checkout's existing `origin` and system credential helper; it never supplies or synchronizes Git credentials. Use `--git-fetch never` when provisioning guarantees the commit is already local.
+
 A scoped client has no vault root key. Treat an authorization error for an unlisted namespace as an intended boundary, not as a reason to inspect credentials or fall back to raw copy/Git. After successful redemption, tell the operator or deployment system to remove the one-time bootstrap secret. A trusted device can inspect and revoke grants with `statecase token list` and `statecase token revoke <id> --yes`.
 
 ## Safe workflow
@@ -50,6 +52,7 @@ Use `strict` for unattended work. In an interactive workflow, `warn` may materia
 
 - Exit `3`: authentication or enrollment is required; ask the operator to complete it outside chat.
 - Exit `5`: preserve both sides and report the conflicting paths. Do not overwrite them.
+- `BASELINE_UNAVAILABLE` with exit `5`: if policy is `ask`, request approval to fetch with system Git or have the operator provision the commit. After approval, reattach the same ID/path with `--git-fetch auto` and retry. Never ask for Git credentials in chat and never change a `never` policy without explicit direction.
 - Exit `6`: stop. Treat this as an integrity or cryptographic failure.
 - Exit `7`: keep local work intact and retry later with bounded backoff.
 - Exit `8`: the requested work completed only partially or with unresolved context; report the warnings and do not claim an exact resume.

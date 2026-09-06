@@ -359,6 +359,43 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     expect(await readFile(join(target, "new.txt"), "utf8")).toBe("untracked dependency\n");
   });
 
+  it("recovers a missing baseline through the configured origin during a real pull (WS-015)", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-sync-shallow-"));
+    temporary.push(base);
+    const source = join(base, "source");
+    const bare = join(base, "remote.git");
+    const target = join(base, "target");
+    await initializeRepository(source);
+    await runFile("git", ["init", "--bare", "-q", bare]);
+    await runFile("git", ["-C", source, "branch", "-M", "main"]);
+    await runFile("git", ["-C", source, "remote", "add", "origin", `file://${bare}`]);
+    await runFile("git", ["-C", source, "push", "-q", "-u", "origin", "main"]);
+    const baseline = (await runFile("git", ["-C", source, "rev-parse", "HEAD"])).stdout.trim();
+
+    await writeFile(join(source, "tracked.txt"), "portable shallow overlay\n");
+    await writeFile(join(source, "untracked.txt"), "portable untracked bytes\n");
+    const remote = new MemoryRemote();
+    const key = await randomKey();
+    const sourceEngine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    await sourceEngine.push(workspaceConfig(source));
+
+    await runFile("git", ["-C", source, "reset", "--hard", "-q", "HEAD"]);
+    await writeFile(join(source, "tracked.txt"), "new upstream head\n");
+    await runFile("git", ["-C", source, "add", "tracked.txt"]);
+    await runFile("git", ["-C", source, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "new upstream head"]);
+    await runFile("git", ["-C", source, "push", "-q", "origin", "main"]);
+    await runFile("git", ["clone", "-q", "--depth", "1", "--branch", "main", `file://${bare}`, target]);
+    await expect(runFile("git", ["-C", target, "cat-file", "-e", `${baseline}^{commit}`])).rejects.toBeInstanceOf(Error);
+
+    const targetConfig = workspaceConfig(target);
+    targetConfig.workspaces[0]!.gitFetch = "auto";
+    const targetEngine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    await expect(targetEngine.pull(targetConfig)).resolves.toMatchObject({ outcome: "pulled" });
+    expect((await runFile("git", ["-C", target, "rev-parse", "HEAD"])).stdout.trim()).toBe(baseline);
+    expect(await readFile(join(target, "tracked.txt"), "utf8")).toBe("portable shallow overlay\n");
+    expect(await readFile(join(target, "untracked.txt"), "utf8")).toBe("portable untracked bytes\n");
+  });
+
   it("restores the exact Git index separately from the working tree (WS-010..WS-016)", async () => {
     const base = await mkdtemp(join(tmpdir(), "statecase-exact-git-"));
     temporary.push(base);

@@ -24,6 +24,9 @@ const machineA = join(root, "machine-a");
 const machineB = join(root, "machine-b");
 const source = join(root, "source");
 const target = join(root, "target");
+const gitSource = join(root, "git-source");
+const gitRemote = join(root, "git-remote.git");
+const gitTarget = join(root, "git-target");
 const recoveryFile = join(root, "recovery", "uat.statecase-recovery.json");
 
 await Promise.all([
@@ -107,6 +110,44 @@ assert.equal(statusB.selectedVaultId, vault.id);
 run(machineA, ["doctor"]);
 run(machineB, ["doctor"]);
 
+await mkdir(gitSource, { recursive: true });
+await writeFile(join(gitSource, "tracked.txt"), "Git baseline A\n");
+git(["init", "-q", gitSource]);
+git(["-C", gitSource, "add", "tracked.txt"]);
+git(["-C", gitSource, "-c", "user.name=Statecase UAT", "-c", "user.email=uat@statecase.invalid", "commit", "-qm", "baseline A"]);
+git(["init", "--bare", "-q", gitRemote]);
+git(["-C", gitSource, "branch", "-M", "main"]);
+git(["-C", gitSource, "remote", "add", "origin", `file://${gitRemote}`]);
+git(["-C", gitSource, "push", "-q", "-u", "origin", "main"]);
+const gitBaseline = git(["-C", gitSource, "rev-parse", "HEAD"]).stdout.trim();
+await writeFile(join(gitSource, "tracked.txt"), "portable Git overlay\n");
+await writeFile(join(gitSource, "untracked.txt"), "portable untracked file\n");
+run(machineA, ["workspace", "attach", "--id", "ws_daytona", "--path", gitSource, "--mode", "git-overlay", "--git-fetch", "never"]);
+run(machineA, ["push"]);
+
+git(["-C", gitSource, "reset", "--hard", "-q", "HEAD"]);
+await writeFile(join(gitSource, "tracked.txt"), "Git baseline B\n");
+git(["-C", gitSource, "add", "tracked.txt"]);
+git(["-C", gitSource, "-c", "user.name=Statecase UAT", "-c", "user.email=uat@statecase.invalid", "commit", "-qm", "baseline B"]);
+git(["-C", gitSource, "push", "-q", "origin", "main"]);
+git(["clone", "-q", "--depth", "1", "--branch", "main", `file://${gitRemote}`, gitTarget]);
+const targetHead = git(["-C", gitTarget, "rev-parse", "HEAD"]).stdout.trim();
+assert.notEqual(targetHead, gitBaseline);
+assert.notEqual(git(["-C", gitTarget, "cat-file", "-e", `${gitBaseline}^{commit}`], false).status, 0);
+
+run(machineB, ["workspace", "attach", "--id", "ws_daytona", "--path", gitTarget, "--mode", "git-overlay", "--git-fetch", "ask"]);
+const approvalRequired = runRaw(machineB, ["pull"]);
+assert.equal(approvalRequired.status, 5, `ask policy returned ${approvalRequired.status}: ${approvalRequired.stderr}`);
+assert.match(approvalRequired.stderr, /BASELINE_UNAVAILABLE/u);
+assert.equal(git(["-C", gitTarget, "rev-parse", "HEAD"]).stdout.trim(), targetHead);
+assert.notEqual(git(["-C", gitTarget, "cat-file", "-e", `${gitBaseline}^{commit}`], false).status, 0);
+
+run(machineB, ["workspace", "attach", "--id", "ws_daytona", "--path", gitTarget, "--mode", "git-overlay", "--git-fetch", "auto"]);
+run(machineB, ["pull"]);
+assert.equal(git(["-C", gitTarget, "rev-parse", "HEAD"]).stdout.trim(), gitBaseline);
+assert.equal(await readFile(join(gitTarget, "tracked.txt"), "utf8"), "portable Git overlay\n");
+assert.equal(await readFile(join(gitTarget, "untracked.txt"), "utf8"), "portable untracked file\n");
+
 console.log(JSON.stringify({
   result: "pass",
   apiUrl,
@@ -118,6 +159,7 @@ console.log(JSON.stringify({
   conflictDetectedWithExitCode: 5,
   conflictResolvedWithProtectedSnapshot: true,
   namedSnapshotCreated: true,
+  shallowGitBaselineAcquisition: "ask-preserved-auto-restored",
   codexAndClaudeHomesRemainIsolated: true,
 }, null, 2));
 
@@ -139,6 +181,16 @@ function runRaw(statecaseHome, args, secrets = {}) {
   if (secrets.recoveryPassphrase) env.STATECASE_RECOVERY_PASSPHRASE = secrets.recoveryPassphrase;
   const result = spawnSync(cli, ["--json", ...args], { encoding: "utf8", env });
   assert.equal(result.error, undefined, `${args.join(" ")} could not start: ${result.error?.message}`);
+  return result;
+}
+
+function git(args, expectSuccess = true) {
+  const result = spawnSync("git", args, {
+    encoding: "utf8",
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "Never" },
+  });
+  assert.equal(result.error, undefined, `git ${args.join(" ")} could not start: ${result.error?.message}`);
+  if (expectSuccess) assert.equal(result.status, 0, `git ${args.join(" ")} failed (${result.status}): ${result.stderr}`);
   return result;
 }
 

@@ -8,6 +8,7 @@ const MAX_GIT_OUTPUT = 64 * 1024 * 1024;
 const MAX_FILE_BYTES = 256 * 1024 * 1024;
 const MAX_CAPSULE_BYTES = 4 * 1024 * 1024 * 1024;
 const MAX_CAPSULE_RECORDS = 100_000;
+const GIT_FETCH_TIMEOUT_MS = 60_000;
 const GIT_OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 const REGULAR_MODES = new Set([0o100644, 0o100755]);
 const CONTENT_MODES = new Set([...REGULAR_MODES, 0o120000]);
@@ -15,6 +16,19 @@ const CONTENT_MODES = new Set([...REGULAR_MODES, 0o120000]);
 export type IndexState = "base" | "absent" | "content" | "submodule";
 export type WorktreeState = "index" | "absent" | "content" | "submodule";
 export type WorkspaceLayer = "index" | "worktree";
+export type GitFetchPolicy = "ask" | "auto" | "never";
+
+export class WorkspaceBaselineUnavailable extends Error {
+  readonly code = "BASELINE_UNAVAILABLE" as const;
+
+  constructor(
+    readonly baseCommit: string | null,
+    readonly reason: "approval-required" | "policy-disabled" | "no-origin" | "fetch-failed" | "checkout-failed" | "unborn-mismatch",
+  ) {
+    super(baselineUnavailableMessage(reason));
+    this.name = "WorkspaceBaselineUnavailable";
+  }
+}
 
 export interface WorkspaceRecord {
   path: string;
@@ -53,6 +67,7 @@ export interface WorkspaceMaterializer {
 export interface WorkspaceApplication {
   root: string;
   captured: CapturedWorkspace;
+  gitFetch?: GitFetchPolicy;
 }
 
 export interface WorkspaceFileTransaction {
@@ -99,9 +114,9 @@ export async function captureWorkspace(rootValue: string): Promise<CapturedWorks
 export async function applyWorkspaceCapsule(
   rootValue: string,
   captured: CapturedWorkspace,
-  options: { materialize: WorkspaceMaterializer },
+  options: { materialize: WorkspaceMaterializer; gitFetch?: GitFetchPolicy },
 ): Promise<void> {
-  await applyWorkspaceTransaction([{ root: rootValue, captured }], { writes: [], deletes: [] }, options);
+  await applyWorkspaceTransaction([{ root: rootValue, captured, gitFetch: options.gitFetch }], { writes: [], deletes: [] }, options);
 }
 
 /** Applies ordinary files and one or more Git overlays as one filesystem revision. */
@@ -112,22 +127,35 @@ export async function applyWorkspaceTransaction(
 ): Promise<void> {
   const roots = applications.map((application) => resolve(application.root));
   if (new Set(roots).size !== roots.length) throw new Error("duplicate workspace transaction root");
-  await Promise.all(applications.map((application, index) => assertWorkspaceDestination(roots[index]!, application.captured)));
-  const prepared = await Promise.all(applications.map(async (application, index) => {
-    const root = roots[index]!;
-    const indexPathValue = (await gitText(root, ["rev-parse", "--git-path", "index"])).trim();
-    const indexPath = isAbsolute(indexPathValue) ? indexPathValue : resolve(root, indexPathValue);
-    const originalIndex = await readFile(indexPath).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? undefined : Promise.reject(error));
-    return {
-      root,
-      captured: application.captured,
-      indexPath,
-      originalIndex,
-      blobMap: new Map(application.captured.blobs.map((blob) => [blobKey(blob.layer, blob.path), blob])),
-    };
-  }));
+  const inspections = await Promise.all(applications.map((application, index) => inspectWorkspaceDestination(
+    roots[index]!,
+    application.captured,
+    application.gitFetch ?? "ask",
+  )));
+  const baselineChanges: BaselineChange[] = [];
+  const prepared: Array<{
+    root: string;
+    captured: CapturedWorkspace;
+    indexPath: string;
+    originalIndex: Uint8Array | undefined;
+    blobMap: Map<string, WorkspaceBlob>;
+  }> = [];
 
   try {
+    for (const inspection of inspections) baselineChanges.push(await acquireWorkspaceBaseline(inspection));
+    for (const [index, application] of applications.entries()) {
+      const root = roots[index]!;
+      const indexPathValue = (await gitText(root, ["rev-parse", "--git-path", "index"])).trim();
+      const indexPath = isAbsolute(indexPathValue) ? indexPathValue : resolve(root, indexPathValue);
+      const originalIndex = await readFile(indexPath).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? undefined : Promise.reject(error));
+      prepared.push({
+        root,
+        captured: application.captured,
+        indexPath,
+        originalIndex,
+        blobMap: new Map(application.captured.blobs.map((blob) => [blobKey(blob.layer, blob.path), blob])),
+      });
+    }
     const transaction: WorkspaceFileTransaction = {
       writes: [...initial.writes],
       symlinks: [...(initial.symlinks ?? [])],
@@ -160,27 +188,72 @@ export async function applyWorkspaceTransaction(
         failures.push(restoreError);
       }
     }
+    for (const baseline of [...baselineChanges].reverse()) {
+      try {
+        await rollbackWorkspaceBaseline(baseline);
+      } catch (restoreError) {
+        failures.push(restoreError);
+      }
+    }
     if (failures.length > 0) throw new AggregateError([error, ...failures], "workspace apply failed and index rollback was incomplete");
     throw error;
   }
 }
 
-export async function assertWorkspaceDestination(rootValue: string, captured: CapturedWorkspace): Promise<void> {
+interface BaselineInspection {
+  root: string;
+  baseCommit: string | null;
+  currentCommit: string | null;
+  currentRef: string | null;
+  fetch: boolean;
+  checkout: boolean;
+}
+
+interface BaselineChange {
+  root: string;
+  changed: boolean;
+  originalCommit: string | null;
+  originalRef: string | null;
+}
+
+export async function assertWorkspaceDestination(
+  rootValue: string,
+  captured: CapturedWorkspace,
+  options: { gitFetch?: GitFetchPolicy } = {},
+): Promise<void> {
+  await inspectWorkspaceDestination(rootValue, captured, options.gitFetch ?? "never");
+}
+
+export async function inspectWorkspaceDestination(
+  rootValue: string,
+  captured: CapturedWorkspace,
+  gitFetch: GitFetchPolicy = "ask",
+): Promise<BaselineInspection> {
   const root = resolve(rootValue);
   validateCaptured(captured);
   if ((await gitText(root, ["rev-parse", "--is-inside-work-tree"]).catch(() => "false")).trim() !== "true") {
     throw new Error(`workspace is not a Git working tree: ${root}`);
   }
   const currentBase = await gitText(root, ["rev-parse", "--verify", "HEAD"]).then((value) => value.trim(), () => null);
-  if (currentBase !== captured.capsule.baseCommit) throw new Error("workspace baseline does not match the capsule");
+  const currentRef = await gitText(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]).then((value) => value.trim(), () => null);
+  if ((await gitBuffer(root, ["status", "--porcelain=v1", "-z"])).byteLength > 0) {
+    throw new Error("workspace destination is dirty; refusing to apply capsule");
+  }
   for (const blob of captured.blobs) {
     const oid = (await gitInput(root, ["hash-object", "--stdin"], blob.bytes)).toString("utf8").trim();
     if (oid !== blob.oid) throw new Error(`workspace blob digest does not match: ${blob.path}`);
     if (blob.mode === 0o120000) safeSymlinkTarget(root, destinationPath(root, blob.path), blob.bytes);
   }
-  if ((await gitBuffer(root, ["status", "--porcelain=v1", "-z"])).byteLength > 0) {
-    throw new Error("workspace destination is dirty; refusing to apply capsule");
+  if (currentBase === captured.capsule.baseCommit) {
+    return { root, baseCommit: captured.capsule.baseCommit, currentCommit: currentBase, currentRef, fetch: false, checkout: false };
   }
+  if (gitFetch !== "auto") {
+    throw new WorkspaceBaselineUnavailable(captured.capsule.baseCommit, gitFetch === "ask" ? "approval-required" : "policy-disabled");
+  }
+  if (!captured.capsule.baseCommit) throw new WorkspaceBaselineUnavailable(null, "unborn-mismatch");
+  const present = await gitObjectExists(root, captured.capsule.baseCommit);
+  if (!present && !await hasOrigin(root)) throw new WorkspaceBaselineUnavailable(captured.capsule.baseCommit, "no-origin");
+  return { root, baseCommit: captured.capsule.baseCommit, currentCommit: currentBase, currentRef, fetch: !present, checkout: true };
 }
 
 export async function workspaceMatchesCapsule(rootValue: string, expected: CapturedWorkspace): Promise<boolean> {
@@ -440,12 +513,97 @@ async function restoreIndex(path: string, bytes: Uint8Array | undefined): Promis
   await chmod(path, 0o600);
 }
 
+async function acquireWorkspaceBaseline(inspection: BaselineInspection): Promise<BaselineChange> {
+  const change: BaselineChange = {
+    root: inspection.root,
+    changed: false,
+    originalCommit: inspection.currentCommit,
+    originalRef: inspection.currentRef,
+  };
+  if (!inspection.checkout || !inspection.baseCommit) return change;
+  if (inspection.fetch) {
+    await fetchWorkspaceBaseline(inspection.root, inspection.baseCommit);
+    if (!await gitObjectExists(inspection.root, inspection.baseCommit)) {
+      throw new WorkspaceBaselineUnavailable(inspection.baseCommit, "fetch-failed");
+    }
+  }
+  try {
+    await gitText(inspection.root, ["checkout", "--quiet", "--detach", inspection.baseCommit]);
+    change.changed = true;
+    return change;
+  } catch {
+    await rollbackWorkspaceBaseline({ ...change, changed: true }).catch(() => undefined);
+    throw new WorkspaceBaselineUnavailable(inspection.baseCommit, "checkout-failed");
+  }
+}
+
+async function rollbackWorkspaceBaseline(change: BaselineChange): Promise<void> {
+  if (!change.changed) return;
+  if (change.originalCommit) {
+    if (change.originalRef) await gitText(change.root, ["checkout", "--quiet", change.originalRef]);
+    else await gitText(change.root, ["checkout", "--quiet", "--detach", change.originalCommit]);
+    return;
+  }
+  if (!change.originalRef) throw new Error("cannot restore an unborn workspace without its original branch");
+  const tracked = nulPaths(await gitBuffer(change.root, ["ls-files", "-z"]));
+  await gitText(change.root, ["read-tree", "--empty"]);
+  for (const path of tracked) await rm(destinationPath(change.root, path), { force: true });
+  await gitText(change.root, ["symbolic-ref", "HEAD", `refs/heads/${change.originalRef}`]);
+}
+
+async function fetchWorkspaceBaseline(root: string, baseCommit: string): Promise<void> {
+  const environment = {
+    ...process.env,
+    GIT_TERMINAL_PROMPT: "0",
+    GCM_INTERACTIVE: "Never",
+  };
+  const execute = (args: string[]) => run("git", ["-C", root, ...args], {
+    encoding: "utf8",
+    env: environment,
+    maxBuffer: MAX_GIT_OUTPUT,
+    timeout: GIT_FETCH_TIMEOUT_MS,
+    killSignal: "SIGKILL",
+  }).then(() => true, () => false);
+  if (await execute(["fetch", "--no-tags", "--no-write-fetch-head", "origin", baseCommit])) return;
+  const shallow = (await gitText(root, ["rev-parse", "--is-shallow-repository"]).catch(() => "false")).trim() === "true";
+  const fetched = shallow
+    ? await execute(["fetch", "--no-tags", "--unshallow", "origin"])
+    : await execute(["fetch", "--no-tags", "origin"]);
+  if (!fetched || !await gitObjectExists(root, baseCommit)) {
+    throw new WorkspaceBaselineUnavailable(baseCommit, "fetch-failed");
+  }
+}
+
+async function gitObjectExists(root: string, commit: string): Promise<boolean> {
+  return gitText(root, ["cat-file", "-e", `${commit}^{commit}`]).then(() => true, () => false);
+}
+
+async function hasOrigin(root: string): Promise<boolean> {
+  return gitText(root, ["remote", "get-url", "origin"]).then((value) => value.trim().length > 0, () => false);
+}
+
+function baselineUnavailableMessage(reason: WorkspaceBaselineUnavailable["reason"]): string {
+  const guidance: Record<WorkspaceBaselineUnavailable["reason"], string> = {
+    "approval-required": "operator approval is required before Statecase may fetch it; fetch it with system Git or reattach this workspace with --git-fetch auto",
+    "policy-disabled": "automatic Git fetch is disabled; provision the commit with system Git or change this workspace's fetch policy",
+    "no-origin": "no origin is configured; provision the commit locally or configure a device-local Git origin",
+    "fetch-failed": "system Git could not obtain it; verify this device's Git credentials and remote availability",
+    "checkout-failed": "system Git obtained it but could not check it out safely",
+    "unborn-mismatch": "an unborn capsule cannot replace a repository that already has a commit",
+  };
+  return `BASELINE_UNAVAILABLE: workspace baseline does not match the capsule; ${guidance[reason]}`;
+}
+
 async function gitText(root: string, args: string[]): Promise<string> {
   return (await run("git", ["-C", root, ...args], { encoding: "utf8", maxBuffer: MAX_GIT_OUTPUT })).stdout;
 }
 
 async function gitBuffer(root: string, args: string[]): Promise<Buffer> {
-  return (await run("git", ["-C", root, ...args], { encoding: "buffer", maxBuffer: MAX_GIT_OUTPUT })).stdout;
+  return (await run("git", ["-C", root, ...args], {
+    encoding: "buffer",
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+    maxBuffer: MAX_GIT_OUTPUT,
+  })).stdout;
 }
 
 function gitInput(root: string, args: string[], input: Uint8Array): Promise<Buffer> {

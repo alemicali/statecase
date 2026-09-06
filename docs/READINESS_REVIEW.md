@@ -2,7 +2,7 @@
 
 Status: foreground sync implemented and deployed; release qualification in progress; not ready for public
 production launch
-Last updated: 2026-09-06
+Last updated: 2026-09-07
 
 ## Decisions now clear
 
@@ -140,8 +140,15 @@ Exact workspace capsules now reproduce staged and unstaged bytes separately,
 deletions, additions, modes, safe symlinks, detached and unborn repositories,
 and uninitialized gitlinks. They reject malformed/corrupt input and dirty or
 mismatched destinations before apply, and roll back both the Git index and
-working tree on failure. Automatic baseline fetch, initialized submodule
-hydration, and LFS diagnostics remain explicit follow-on gates.
+working tree on failure. A per-workspace `ask|auto|never` policy now controls
+missing-baseline acquisition through device-local system Git. Auto mode uses
+only the checkout's existing `origin`, disables interactive credential prompts,
+redacts Git failures, supports shallow clones, and rolls every earlier checkout
+back if a later workspace cannot be prepared. Initialized submodule hydration
+and LFS diagnostics remain explicit follow-on gates. The packaged path passed
+the
+[Daytona Git-baseline acquisition UAT](uat/2026-09-07-git-baseline-daytona.md)
+against the live Cloudflare service.
 
 Persistent installations now keep a stable device ID independent of absolute
 paths and Better Auth session rotation. D1 binds each service session to that

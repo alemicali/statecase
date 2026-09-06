@@ -6,7 +6,14 @@ import { promisify } from "node:util";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { applyWorkspaceCapsule, applyWorkspaceTransaction, assertWorkspaceDestination, captureWorkspace, workspaceMatchesCapsule } from "../src/index.js";
+import {
+  applyWorkspaceCapsule,
+  applyWorkspaceTransaction,
+  assertWorkspaceDestination,
+  captureWorkspace,
+  WorkspaceBaselineUnavailable,
+  workspaceMatchesCapsule,
+} from "../src/index.js";
 
 const run = promisify(execFile);
 const temporary: string[] = [];
@@ -70,6 +77,144 @@ describe("exact Git workspace capsules (WS-010..WS-018, WS-025..WS-026)", () => 
     await git(dirtyTarget, "add", "tracked.txt");
     await git(dirtyTarget, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "different");
     await expect(applyWorkspaceCapsule(dirtyTarget, captured, { materialize })).rejects.toThrow("baseline does not match");
+  });
+
+  it("fetches a missing shallow baseline only under explicit auto policy (WS-015)", async () => {
+    const source = await repository("fetch-source");
+    const remote = await bareRepository("fetch-remote");
+    await git(source, "remote", "add", "origin", `file://${remote}`);
+    await git(source, "branch", "-M", "main");
+    await git(source, "push", "-u", "origin", "main");
+    const baseline = (await git(source, "rev-parse", "HEAD")).trim();
+
+    await writeFile(join(source, "tracked.txt"), "portable uncommitted overlay\n");
+    const captured = await captureWorkspace(source);
+    const expectedStatus = await git(source, "status", "--porcelain=v1", "-z");
+    await git(source, "reset", "--hard", "-q", "HEAD");
+    await writeFile(join(source, "tracked.txt"), "new upstream head\n");
+    await git(source, "add", "tracked.txt");
+    await git(source, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "new head");
+    await git(source, "push", "origin", "main");
+
+    const denied = await shallowClone(remote, "fetch-denied");
+    const deniedHead = (await git(denied, "rev-parse", "HEAD")).trim();
+    const deniedIndex = await readFile(join(denied, ".git", "index"));
+    await expect(applyWorkspaceCapsule(denied, captured, { materialize, gitFetch: "ask" }))
+      .rejects.toMatchObject({ name: "WorkspaceBaselineUnavailable", code: "BASELINE_UNAVAILABLE", reason: "approval-required" });
+    await expect(applyWorkspaceCapsule(denied, captured, { materialize, gitFetch: "never" }))
+      .rejects.toMatchObject({ name: "WorkspaceBaselineUnavailable", code: "BASELINE_UNAVAILABLE", reason: "policy-disabled" });
+    expect((await git(denied, "rev-parse", "HEAD")).trim()).toBe(deniedHead);
+    expect(await readFile(join(denied, ".git", "index"))).toEqual(deniedIndex);
+    await expect(git(denied, "cat-file", "-e", `${baseline}^{commit}`)).rejects.toBeInstanceOf(Error);
+
+    const target = await shallowClone(remote, "fetch-auto");
+    await applyWorkspaceCapsule(target, captured, { materialize, gitFetch: "auto" });
+    expect((await git(target, "rev-parse", "HEAD")).trim()).toBe(baseline);
+    expect(await readFile(join(target, "tracked.txt"), "utf8")).toBe("portable uncommitted overlay\n");
+    expect(await git(target, "status", "--porcelain=v1", "-z")).toBe(expectedStatus);
+  });
+
+  it("reports an unreachable baseline without leaking Git errors or partially switching HEAD", async () => {
+    const source = await repository("unreachable-source");
+    const captured = await captureWorkspace(source);
+    const target = await unbornRepository("unreachable-target");
+    await writeFile(join(target, "unrelated.txt"), "independent history\n");
+    await git(target, "add", "unrelated.txt");
+    await git(target, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "independent");
+    await git(target, "remote", "add", "origin", "https://credential-do-not-print@example.invalid/private/repo.git");
+    const head = (await git(target, "rev-parse", "HEAD")).trim();
+
+    let failure: unknown;
+    try {
+      await applyWorkspaceCapsule(target, captured, { materialize, gitFetch: "auto" });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(WorkspaceBaselineUnavailable);
+    expect((failure as Error).message).toContain("BASELINE_UNAVAILABLE");
+    expect((failure as Error).message).not.toContain("credential-do-not-print");
+    expect((await git(target, "rev-parse", "HEAD")).trim()).toBe(head);
+    expect(await git(target, "status", "--porcelain=v1")).toBe("");
+  });
+
+  it("rolls back an automatic baseline checkout when materialization fails", async () => {
+    const source = await repository("checkout-rollback-source");
+    const baseline = (await git(source, "rev-parse", "HEAD")).trim();
+    await writeFile(join(source, "tracked.txt"), "overlay before failure\n");
+    const captured = await captureWorkspace(source);
+    await git(source, "reset", "--hard", "-q", "HEAD");
+    await writeFile(join(source, "tracked.txt"), "later head\n");
+    await git(source, "add", "tracked.txt");
+    await git(source, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "later");
+    const later = (await git(source, "rev-parse", "HEAD")).trim();
+    expect(later).not.toBe(baseline);
+
+    await expect(applyWorkspaceCapsule(source, captured, {
+      gitFetch: "auto",
+      materialize: async () => { throw new Error("injected materialization failure"); },
+    })).rejects.toThrow("injected materialization failure");
+    expect((await git(source, "rev-parse", "HEAD")).trim()).toBe(later);
+    expect(await git(source, "status", "--porcelain=v1")).toBe("");
+    expect(await readFile(join(source, "tracked.txt"), "utf8")).toBe("later head\n");
+  });
+
+  it("rolls back earlier baseline checkouts when a later workspace cannot fetch", async () => {
+    const first = await repository("multi-fetch-first");
+    const firstBaseline = (await git(first, "rev-parse", "HEAD")).trim();
+    await writeFile(join(first, "tracked.txt"), "first overlay\n");
+    const firstCaptured = await captureWorkspace(first);
+    await git(first, "reset", "--hard", "-q", "HEAD");
+    await writeFile(join(first, "tracked.txt"), "first later head\n");
+    await git(first, "add", "tracked.txt");
+    await git(first, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "later");
+    const firstLater = (await git(first, "rev-parse", "HEAD")).trim();
+    expect(firstLater).not.toBe(firstBaseline);
+
+    const secondSource = await repository("multi-fetch-second-source");
+    await writeFile(join(secondSource, "tracked.txt"), "second overlay\n");
+    const secondCaptured = await captureWorkspace(secondSource);
+    const secondTarget = await unbornRepository("multi-fetch-second-target");
+    await writeFile(join(secondTarget, "unrelated.txt"), "independent history\n");
+    await git(secondTarget, "add", "unrelated.txt");
+    await git(secondTarget, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "independent");
+    await git(secondTarget, "remote", "add", "origin", "https://unreachable.invalid/statecase/test.git");
+    const secondHead = (await git(secondTarget, "rev-parse", "HEAD")).trim();
+    let materializations = 0;
+
+    await expect(applyWorkspaceTransaction(
+      [
+        { root: first, captured: firstCaptured, gitFetch: "auto" },
+        { root: secondTarget, captured: secondCaptured, gitFetch: "auto" },
+      ],
+      { writes: [], deletes: [] },
+      { materialize: async () => { materializations += 1; } },
+    )).rejects.toMatchObject({ name: "WorkspaceBaselineUnavailable", code: "BASELINE_UNAVAILABLE" });
+
+    expect(materializations).toBe(0);
+    expect((await git(first, "rev-parse", "HEAD")).trim()).toBe(firstLater);
+    expect(await git(first, "status", "--porcelain=v1")).toBe("");
+    expect(await readFile(join(first, "tracked.txt"), "utf8")).toBe("first later head\n");
+    expect((await git(secondTarget, "rev-parse", "HEAD")).trim()).toBe(secondHead);
+    expect(await git(secondTarget, "status", "--porcelain=v1")).toBe("");
+  });
+
+  it("restores an unborn destination when apply fails after automatic acquisition", async () => {
+    const source = await repository("unborn-acquisition-source");
+    await writeFile(join(source, "tracked.txt"), "overlay destined to fail\n");
+    const captured = await captureWorkspace(source);
+    const target = await unbornRepository("unborn-acquisition-target");
+    await git(target, "remote", "add", "origin", source);
+    const originalRef = (await git(target, "symbolic-ref", "--short", "HEAD")).trim();
+
+    await expect(applyWorkspaceCapsule(target, captured, {
+      gitFetch: "auto",
+      materialize: async () => { throw new Error("injected unborn failure"); },
+    })).rejects.toThrow("injected unborn failure");
+
+    await expect(git(target, "rev-parse", "--verify", "HEAD")).rejects.toBeInstanceOf(Error);
+    expect((await git(target, "symbolic-ref", "--short", "HEAD")).trim()).toBe(originalRef);
+    expect(await git(target, "status", "--porcelain=v1")).toBe("");
+    await expect(readFile(join(target, "tracked.txt"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("restores the original Git index when filesystem materialization fails", async () => {
@@ -324,6 +469,21 @@ async function unbornRepository(name: string): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), `statecase-workspace-${name}-`));
   temporary.push(root);
   await git(root, "init", "-q");
+  return root;
+}
+
+async function bareRepository(name: string): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), `statecase-workspace-${name}-`));
+  temporary.push(root);
+  await git(root, "init", "--bare", "-q");
+  return root;
+}
+
+async function shallowClone(remote: string, name: string): Promise<string> {
+  const parent = await mkdtemp(join(tmpdir(), `statecase-workspace-${name}-`));
+  temporary.push(parent);
+  const root = join(parent, "checkout");
+  await run("git", ["clone", "--quiet", "--depth", "1", "--branch", "main", `file://${remote}`, root]);
   return root;
 }
 

@@ -30,7 +30,7 @@ as an immutable delta that persistent devices can reconcile.
 
 The persistent daemon can run with `statecase daemon foreground` or be installed
 as a systemd user service / macOS LaunchAgent. Real-OS service UAT, append-aware
-same-session merge, automatic missing-baseline fetch, initialized-submodule
+same-session merge, initialized-submodule
 hydration, automatic retention/in-place restore, post-revocation key rewrapping,
 key rotation, and real-version Codex/Claude fixture certification remain
 release gates. This is not yet a
@@ -45,6 +45,7 @@ The approved direction lives in:
 - [Readiness review](docs/READINESS_REVIEW.md)
 - [Operations](docs/OPERATIONS.md)
 - [Daytona and Cloudflare product UAT](docs/uat/2026-09-06-daytona-cloud.md)
+- [Daytona Git-baseline acquisition UAT](docs/uat/2026-09-07-git-baseline-daytona.md)
 
 ## Repository shape
 
@@ -97,7 +98,7 @@ read -rsp 'Recovery passphrase: ' STATECASE_RECOVERY_PASSPHRASE && export STATEC
 printf '\n'
 ./apps/cli/dist/bin.js vault create personal --recovery-file "$PWD/personal.statecase-recovery.json"
 unset STATECASE_RECOVERY_PASSPHRASE
-./apps/cli/dist/bin.js workspace attach --auto --path /path/to/checkout --mode git-overlay
+./apps/cli/dist/bin.js workspace attach --auto --path /path/to/checkout --mode git-overlay --git-fetch ask
 ./apps/cli/dist/bin.js setup --harness codex,claude --transparent
 # Prepend the path printed by setup to PATH, then verify both shims:
 ./apps/cli/dist/bin.js shim verify codex
@@ -114,6 +115,15 @@ Use the generated shims, the installed daemon, or invoke `statecase run codex
 -- <args>` / `statecase run claude -- <args>` explicitly.
 `statecase bypass codex -- <args>` starts the recorded real executable without
 synchronization.
+
+Workspace baseline acquisition is a device-local policy. `--git-fetch ask`
+(the default) exits with code `5` and `BASELINE_UNAVAILABLE` before network or
+workspace mutation when the exact commit is absent or different; fetch the
+commit yourself or explicitly reattach with `--git-fetch auto`. `auto` invokes
+system Git against that checkout's existing `origin`, with interactive Git
+prompts disabled, and then checks out the exact commit before applying the
+encrypted overlay. `never` always requires manual provisioning. Statecase does
+not store, transfer, or print the remote URL or Git credentials.
 
 For a persistent process under an existing supervisor:
 
@@ -174,7 +184,7 @@ Inject that file or `STATECASE_BOOTSTRAP_TOKEN` into a fresh
 
 ```bash
 ./apps/cli/dist/bin.js bootstrap --token-file /run/secrets/statecase-bootstrap --non-interactive
-./apps/cli/dist/bin.js workspace attach --id ws_project --path "$PWD" --mode git-overlay
+./apps/cli/dist/bin.js workspace attach --id ws_project --path "$PWD" --mode git-overlay --git-fetch auto
 ./apps/cli/dist/bin.js setup --harness codex
 ./apps/cli/dist/bin.js pull
 ```

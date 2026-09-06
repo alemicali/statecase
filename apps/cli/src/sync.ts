@@ -20,10 +20,12 @@ import {
 import { appendOnlyViolations, mergeNamespace, namespaceStateEquals, type NamespaceState } from "@statecase/sync-core";
 import {
   applyWorkspaceTransaction,
-  assertWorkspaceDestination,
   captureWorkspace,
+  inspectWorkspaceDestination,
   type CapturedWorkspace,
+  type GitFetchPolicy,
   type WorkspaceBlob,
+  WorkspaceBaselineUnavailable,
   workspaceMatchesCapsule,
 } from "@statecase/workspace";
 
@@ -719,17 +721,20 @@ export class SyncEngine {
       });
     }
 
-    const readyWorkspaces: Array<{ mapping: RootMapping; captured: CapturedWorkspace }> = [];
+    const readyWorkspaces: Array<{ mapping: RootMapping; captured: CapturedWorkspace; gitFetch: GitFetchPolicy }> = [];
     for (const payload of workspacePayloads.values()) {
       if (!payload.capsule) throw new Error("workspace capsule metadata is missing");
       const captured = { capsule: payload.capsule, blobs: payload.blobs };
       if (await workspaceMatchesCapsule(payload.mapping.path, captured)) continue;
+      const workspaceId = payload.mapping.namespace.slice("workspace:".length);
+      const gitFetch = config.workspaces.find((workspace) => workspace.id === workspaceId)?.gitFetch ?? "ask";
       try {
-        await assertWorkspaceDestination(payload.mapping.path, captured);
-      } catch {
+        await inspectWorkspaceDestination(payload.mapping.path, captured, gitFetch);
+      } catch (error) {
+        if (error instanceof WorkspaceBaselineUnavailable) throw error;
         throw new SyncConflict([payload.mapping.path]);
       }
-      readyWorkspaces.push({ mapping: payload.mapping, captured });
+      readyWorkspaces.push({ mapping: payload.mapping, captured, gitFetch });
     }
 
     const conflicts: string[] = [];
@@ -757,7 +762,7 @@ export class SyncEngine {
     if (dryRun) return { outcome: "pulled", revisionId: remoteRevisionId, files: materialized.length + deletions.length + workspaceFiles, objects: objectCount, bytes: byteCount };
 
     await applyWorkspaceTransaction(
-      readyWorkspaces.map((workspace) => ({ root: workspace.mapping.path, captured: workspace.captured })),
+      readyWorkspaces.map((workspace) => ({ root: workspace.mapping.path, captured: workspace.captured, gitFetch: workspace.gitFetch })),
       {
         writes: materialized.map((item) => ({ path: item.path, bytes: item.bytes })),
         deletes: deletions.map((item) => item.path),

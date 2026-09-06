@@ -15,8 +15,13 @@ portability would greatly increase compromise impact.
 
 Use the system Git executable and existing device-local credential helpers.
 Never serialize Git credentials. Baseline acquisition has
-`--git-fetch=ask|auto|never`; interactive persistent clients default to `ask`,
-and explicitly configured ephemeral automation may use `auto`.
+`--git-fetch ask|auto|never`; persistent clients default to `ask`, and explicitly
+configured ephemeral automation may use `auto`. `ask` produces an actionable
+`BASELINE_UNAVAILABLE` result before network or workspace mutation so a person
+or agent can request approval; reattaching with `auto` records that approval for
+the device. `never` requires manual provisioning. Auto mode invokes system Git
+against the existing local `origin`, disables terminal credential prompts, uses
+a bounded fetch, and never surfaces raw Git/remote diagnostics.
 
 Do not synchronize Codex, Claude, Git, or model-provider credentials in v1.
 Classify them as excluded even when a broad harness root is selected. A future
@@ -47,5 +52,5 @@ Adding an opt-in secrets compartment later does not alter normal scopes.
 
 ## Verification
 
-Git helper/redaction tests, absent-baseline modes, secrets canaries, and
-ephemeral bootstrap UAT must pass.
+Git policy, shallow-fetch, failure-redaction, cross-workspace rollback, secrets
+canaries, and ephemeral bootstrap UAT must pass.

@@ -32,6 +32,10 @@ All notable changes to Statecase will be documented here.
   destination cleanliness before mutation, with index/filesystem rollback.
 - Added explicit `git-overlay` and `metadata-only` workspace attachment modes;
   Git mode now fails at setup instead of failing later during synchronization.
+- Added per-device `ask|auto|never` Git baseline acquisition. Auto mode obtains
+  missing commits from the checkout's existing `origin` with bounded,
+  non-interactive system Git; shallow clones are supported, raw remote errors
+  are redacted, and multi-workspace acquisition rolls back atomically.
 - Added stable installation identities, server-side auth-session binding,
   account device listing, and explicit device revocation. Revocation atomically
   disables vault memberships and every bound login session; a revoked session

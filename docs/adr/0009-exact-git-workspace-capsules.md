@@ -21,10 +21,14 @@ identified by Git object ID; deletions and untracked files are explicit. File
 modes and safe relative symlinks are preserved. Absolute paths and `.git`
 contents never enter the capsule.
 
-Pull requires an existing clean Git working tree at the exact baseline. The
+Pull requires an existing clean Git working tree. When its baseline differs,
+the device-local `ask|auto|never` policy from ADR-0007 governs acquisition.
+Auto mode uses system Git and the checkout's existing `origin`, without
+serializing a remote or credentials, then checks out the exact baseline. The
 entire capsule, every state transition, mode, path, object ID, blob reference,
 size bound, and symlink target is validated before mutation. The original Git
-index is backed up and restored if index or filesystem materialization fails.
+baseline and index are restored if acquisition or filesystem materialization
+fails, including failure after an earlier workspace in a multi-workspace pull.
 Reapplying an already materialized capsule is a semantic no-op even if JSON
 object keys or blob entries arrived in a different canonical order.
 
@@ -47,9 +51,9 @@ transactional submodule hydration design is implemented.
 
 Clean tracked content is obtained from Git and consumes no Statecase storage.
 Only non-reproducible work-in-progress bytes are uploaded. A receiver must have
-the baseline commit and a clean checkout; automatic system-Git fetch remains a
-separate feature governed by the accepted credential policy. Capsules can be
-larger than session metadata, so per-file and aggregate bounds are enforced.
+a clean checkout and must either have the baseline commit or permit device-local
+system-Git acquisition. Capsules can be larger than session metadata, so
+per-file and aggregate bounds are enforced.
 
 ## Security and privacy impact
 
@@ -63,4 +67,5 @@ object-ID substitution. Initialized nested repositories are never traversed.
 Tests cover clean baselines; staged/unstaged divergence; additions, deletions,
 binary and empty files; executable bits; relative symlinks; detached and unborn
 repositories; gitlinks; dirty/baseline conflicts; canonical ordering; malformed
-metadata; corrupt bytes; inbound path/symlink attacks; and injected rollback.
+metadata; corrupt bytes; inbound path/symlink attacks; shallow-clone acquisition;
+unreachable/redacted origins; and injected single- and multi-workspace rollback.

@@ -369,10 +369,14 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
     .option("--auto", "derive identity from the Git origin")
     .option("--name <name>")
     .option("--mode <mode>", "git-overlay or metadata-only", "git-overlay")
-    .action(async (options: { path: string; id?: string; auto?: boolean; name?: string; mode: string }) => {
+    .option("--git-fetch <policy>", "ask, auto, or never", "ask")
+    .action(async (options: { path: string; id?: string; auto?: boolean; name?: string; mode: string; gitFetch: string }) => {
       const path = resolve(options.path);
       if (options.mode !== "git-overlay" && options.mode !== "metadata-only") {
         throw new StatecaseUsageError("workspace mode must be git-overlay or metadata-only", 2);
+      }
+      if (options.gitFetch !== "ask" && options.gitFetch !== "auto" && options.gitFetch !== "never") {
+        throw new StatecaseUsageError("--git-fetch must be ask, auto, or never", 2);
       }
       if (options.mode === "git-overlay") {
         const inside = await promisify(execFile)("git", ["-C", path, "rev-parse", "--is-inside-work-tree"], { encoding: "utf8" })
@@ -388,13 +392,19 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
       if (!id || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u.test(id)) throw new StatecaseUsageError("provide --id or use --auto in a Git checkout", 2);
       const config = normalizeConfig(await store.loadConfig());
       config.workspaces = config.workspaces.filter((item) => item.id !== id && resolve(item.path) !== path);
-      config.workspaces.push({ id, path, sync: options.mode === "metadata-only" ? "identity-only" : "git", ...(options.name ? { name: options.name } : {}) });
+      config.workspaces.push({
+        id,
+        path,
+        sync: options.mode === "metadata-only" ? "identity-only" : "git",
+        gitFetch: options.gitFetch,
+        ...(options.name ? { name: options.name } : {}),
+      });
       await store.saveConfig(config);
-      emit(io, program, { id, path, mode: options.mode }, `Attached ${id} to ${path} (${options.mode})`);
+      emit(io, program, { id, path, mode: options.mode, gitFetch: options.gitFetch }, `Attached ${id} to ${path} (${options.mode}; Git fetch ${options.gitFetch})`);
     });
   workspace.command("list").action(async () => {
     const workspaces = normalizeConfig(await store.loadConfig()).workspaces;
-    emit(io, program, { workspaces }, workspaces.map((item) => `${item.id}\t${item.sync === "identity-only" ? "metadata-only" : "git-overlay"}\t${item.path}`).join("\n") || "No workspaces");
+    emit(io, program, { workspaces }, workspaces.map((item) => `${item.id}\t${item.sync === "identity-only" ? "metadata-only" : "git-overlay"}\t${item.gitFetch ?? "ask"}\t${item.path}`).join("\n") || "No workspaces");
   });
   workspace.command("dependencies")
     .description("inspect the immutable dependency closure recorded for resumable sessions")

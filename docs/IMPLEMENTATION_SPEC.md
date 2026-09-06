@@ -1,7 +1,7 @@
 # Statecase synchronization implementation specification
 
 Status: normative design; implementation and release qualification in progress
-Last updated: 2026-09-06
+Last updated: 2026-09-07
 Related: [Product strategy](./PRODUCT_STRATEGY.md),
 [Test and UAT plan](./TEST_AND_UAT_PLAN.md),
 [Threat model](./THREAT_MODEL.md)
@@ -24,7 +24,7 @@ hydration are implemented. Protocol 1.1 provides namespace-isolated R2
 objects, immutable per-namespace revision chains, atomic namespace heads,
 single-use scoped capability grants, client-encrypted scope-key bootstrap, and
 rootless read+append synchronization. Sections covering append-aware same-session merge, safe parsed text
-merge, retention pruning, in-place restore, automatic baseline fetch, and
+merge, retention pruning, in-place restore, and
 initialized submodule hydration remain target requirements, not current claims.
 
 Persistent device identities, auth-session binding, device enumeration, and
@@ -559,9 +559,14 @@ must be explicit, local, and auditable.
 Hydration requires the exact base commit. If it is already present, no tracked
 baseline bytes are transferred. Otherwise Statecase invokes a user-configured
 Git fetch/clone workflow or reports `BASELINE_UNAVAILABLE`; it MUST NOT embed
-Git credentials in a manifest. The overlay is applied in a staging worktree,
-validated, then moved/applied transactionally. Existing divergent local changes
-produce a previewable conflict and are never overwritten.
+Git credentials in a manifest. The implemented `ask|auto|never` policy is
+device-local and per workspace. `ask` and `never` fail before Git network or
+workspace mutation; `auto` invokes system Git with interactive prompts disabled
+against the checkout's existing `origin`, attempts the exact object before a
+bounded fallback fetch, and emits only redacted diagnostics. All workspaces are
+preflighted first. Acquired checkouts and indexes roll back in reverse order if
+any later acquisition or materialization fails. Existing divergent local
+changes produce a previewable conflict and are never overwritten.
 
 Modes:
 
@@ -771,7 +776,7 @@ statecase logout
 statecase vault create|list|select
 statecase setup [--harness ...] [--transparent] [--dry-run]
 statecase bootstrap [--token-file ...] [--non-interactive]
-statecase workspace attach [--id ...] [--path ...] [--auto] [--mode git-overlay|metadata-only]
+statecase workspace attach [--id ...] [--path ...] [--auto] [--mode git-overlay|metadata-only] [--git-fetch ask|auto|never]
 statecase workspace list|move|detach
 statecase workspace capsule|dependencies|hydrate
 statecase drop add|map|list|remove|status
