@@ -60,6 +60,10 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
     expect(await readFile(join(restoreTarget, "context.txt"), "utf8")).toBe("context from machine A\n");
     expect(await command(io, "--json", "restore", "--revision", remote.revisionId!, "--mapping", drop.id, "--target", restoreTarget)).toBe(2);
     expect(await command(io, "--json", "restore", "--revision", remote.revisionId!, "--mapping", "missing", "--target", join(base, "missing"))).toBe(2);
+    expect(await command(io, "--json", "conflicts", "resolve", "--mapping", drop.id, "--strategy", "local")).toBe(2);
+    expect(await command(io, "--json", "conflicts", "resolve", "--mapping", drop.id, "--strategy", "remote", "--yes")).toBe(2);
+    expect(await command(io, "--json", "conflicts", "resolve", "--mapping", drop.id, "--strategy", "local", "--yes")).toBe(0);
+    expect(JSON.parse(output.at(-1)!)).toMatchObject({ mappingId: drop.id, strategy: "local", protectedSnapshotId: expect.stringMatching(/^snp_/u) });
     expect(await command(io, "--json", "status")).toBe(0);
     expect(await command(io, "--json", "doctor")).toBe(0);
     expect(await command(io, "--json", "device", "list")).toBe(0);

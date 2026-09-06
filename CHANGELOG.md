@@ -38,3 +38,12 @@ All notable changes to Statecase will be documented here.
   management, and selective historical restore into an explicit staging
   target. Historical materialization leaves the remote head unchanged and uses
   the same integrity, path, conflict, and transaction checks as normal pull.
+- Added deterministic three-way namespace merging for offline writers:
+  disjoint and identical edits converge, one-sided changes win over their known
+  base, same-path and modify/delete divergence remains explicit, and workspace
+  capsules merge atomically. Local state is not falsely marked applied when a
+  merge retained remote content that still needs hydration. Append-only
+  mappings reject overwrite, deletion, and tombstone resurrection.
+- Added explicit local conflict resolution guarded by a protected snapshot and
+  an expected-head check, preventing a race from overwriting an unprotected
+  newer revision.

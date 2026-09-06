@@ -1,4 +1,117 @@
-import { canonicalJson, commitRequestSchema, type CommitRequest } from "@statecase/protocol";
+import { canonicalJson, commitRequestSchema, type CommitRequest, type VaultManifestV1 } from "@statecase/protocol";
+
+type ManifestEntry = VaultManifestV1["entries"][number];
+type ManifestTombstone = VaultManifestV1["tombstones"][number];
+
+export interface NamespaceState {
+  entries: ManifestEntry[];
+  tombstones: ManifestTombstone[];
+}
+
+export type NamespaceMergeResult =
+  | { outcome: "merged"; state: NamespaceState }
+  | { outcome: "conflict"; paths: string[] };
+
+type PathState = { kind: "entry"; value: ManifestEntry } | { kind: "tombstone"; value: ManifestTombstone };
+
+/** Deterministic content-addressed three-way merge; it never chooses a winner for concurrent same-path edits. */
+export function mergeNamespace(
+  base: NamespaceState,
+  remote: NamespaceState,
+  local: NamespaceState,
+  options: { atomic: boolean },
+): NamespaceMergeResult {
+  if (options.atomic) {
+    if (namespaceStateEquals(local, base)) return { outcome: "merged", state: normalizedState(remote) };
+    if (namespaceStateEquals(remote, base)) return { outcome: "merged", state: normalizedState(local) };
+    if (namespaceStateEquals(local, remote)) return { outcome: "merged", state: normalizedState(remote) };
+    return { outcome: "conflict", paths: allPaths(base, remote, local) };
+  }
+
+  const basePaths = pathStates(base);
+  const remotePaths = pathStates(remote);
+  const localPaths = pathStates(local);
+  const entries: ManifestEntry[] = [];
+  const tombstones: ManifestTombstone[] = [];
+  const conflicts: string[] = [];
+  for (const path of allPaths(base, remote, local)) {
+    const baseState = basePaths.get(path);
+    const remoteState = remotePaths.get(path);
+    const localState = localPaths.get(path);
+    let selected: PathState | undefined;
+    if (pathStateEquals(localState, baseState)) selected = remoteState;
+    else if (pathStateEquals(remoteState, baseState)) selected = localState;
+    else if (pathStateEquals(localState, remoteState)) selected = remoteState;
+    else {
+      conflicts.push(path);
+      continue;
+    }
+    if (selected?.kind === "entry") entries.push(selected.value);
+    if (selected?.kind === "tombstone") tombstones.push(selected.value);
+  }
+  if (conflicts.length > 0) return { outcome: "conflict", paths: conflicts };
+  return { outcome: "merged", state: normalizedState({ entries, tombstones }) };
+}
+
+export function namespaceStateEquals(left: NamespaceState, right: NamespaceState): boolean {
+  const leftPaths = pathStates(left);
+  const rightPaths = pathStates(right);
+  const paths = new Set([...leftPaths.keys(), ...rightPaths.keys()]);
+  return [...paths].every((path) => pathStateEquals(leftPaths.get(path), rightPaths.get(path)));
+}
+
+/** Returns paths where an append-only writer would mutate or erase prior state. */
+export function appendOnlyViolations(base: NamespaceState, local: NamespaceState): string[] {
+  const basePaths = pathStates(base);
+  const localPaths = pathStates(local);
+  const violations: string[] = [];
+  for (const path of new Set([...basePaths.keys(), ...localPaths.keys()])) {
+    const before = basePaths.get(path);
+    const after = localPaths.get(path);
+    if (!before) {
+      if (after?.kind === "tombstone") violations.push(path);
+      continue;
+    }
+    if (before.kind === "tombstone") {
+      if (after?.kind === "entry") violations.push(path);
+      continue;
+    }
+    if (!after || after.kind !== "entry" || !pathStateEquals(before, after)) violations.push(path);
+  }
+  return violations.sort((left, right) => left.localeCompare(right, "en"));
+}
+
+function pathStates(state: NamespaceState): Map<string, PathState> {
+  const paths = new Map<string, PathState>();
+  for (const entry of state.entries) {
+    if (paths.has(entry.logicalPath)) throw new Error(`duplicate namespace path: ${entry.logicalPath}`);
+    paths.set(entry.logicalPath, { kind: "entry", value: entry });
+  }
+  for (const tombstone of state.tombstones) {
+    if (paths.has(tombstone.logicalPath)) throw new Error(`duplicate namespace path: ${tombstone.logicalPath}`);
+    paths.set(tombstone.logicalPath, { kind: "tombstone", value: tombstone });
+  }
+  return paths;
+}
+
+function pathStateEquals(left: PathState | undefined, right: PathState | undefined): boolean {
+  if (!left || !right) return left === right;
+  if (left.kind !== right.kind) return false;
+  if (left.kind === "tombstone") return true;
+  return canonicalJson(left.value) === canonicalJson((right as Extract<PathState, { kind: "entry" }>).value);
+}
+
+function allPaths(...states: NamespaceState[]): string[] {
+  return [...new Set(states.flatMap((state) => [...state.entries, ...state.tombstones].map((item) => item.logicalPath)))]
+    .sort((left, right) => left.localeCompare(right, "en"));
+}
+
+function normalizedState(state: NamespaceState): NamespaceState {
+  return {
+    entries: [...state.entries].sort((left, right) => left.logicalPath.localeCompare(right.logicalPath, "en")),
+    tombstones: [...state.tombstones].sort((left, right) => left.logicalPath.localeCompare(right.logicalPath, "en")),
+  };
+}
 
 export interface CoordinatorStorage {
   get<T>(key: string): Promise<T | undefined>;

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import fc from "fast-check";
 
-import { InMemoryCoordinatorStorage, VaultCoordinatorCore } from "../src/index.js";
+import { appendOnlyViolations, InMemoryCoordinatorStorage, mergeNamespace, namespaceStateEquals, VaultCoordinatorCore } from "../src/index.js";
 
 const first = {
   protocolVersion: "1.0" as const,
@@ -113,3 +114,77 @@ describe("ordered vault commits (PR-002..PR-004, PR-010)", () => {
     expect(await coordinator.head()).toEqual({ revisionId: "rev_02", manifestObjectId: "obj_manifest_02" });
   });
 });
+
+describe("three-way namespace merge (SY-002..SY-009)", () => {
+  it("merges disjoint additions and preserves both writers", () => {
+    const result = mergeNamespace(state(), state(entry("remote.txt", "remote")), state(entry("local.txt", "local")), { atomic: false });
+    expect(result).toMatchObject({ outcome: "merged" });
+    if (result.outcome !== "merged") return;
+    expect(result.state.entries.map((item) => item.logicalPath)).toEqual(["local.txt", "remote.txt"]);
+    expect(namespaceStateEquals(result.state, state(entry("local.txt", "local"), entry("remote.txt", "remote")))).toBe(true);
+  });
+
+  it("takes the only changed side and recognizes identical concurrent content", () => {
+    const base = state(entry("file.txt", "base"));
+    const remote = state(entry("file.txt", "remote"));
+    const local = state(entry("file.txt", "local"));
+    expect(mergeNamespace(base, remote, base, { atomic: false })).toMatchObject({ outcome: "merged", state: remote });
+    expect(mergeNamespace(base, base, local, { atomic: false })).toMatchObject({ outcome: "merged", state: local });
+    expect(mergeNamespace(base, remote, remote, { atomic: false })).toMatchObject({ outcome: "merged", state: remote });
+  });
+
+  it("reports same-path changes and modify/delete without choosing a winner", () => {
+    const base = state(entry("file.txt", "base"));
+    expect(mergeNamespace(base, state(entry("file.txt", "remote")), state(entry("file.txt", "local")), { atomic: false }))
+      .toEqual({ outcome: "conflict", paths: ["file.txt"] });
+    expect(mergeNamespace(base, state(entry("file.txt", "remote")), deleted("file.txt"), { atomic: false }))
+      .toEqual({ outcome: "conflict", paths: ["file.txt"] });
+  });
+
+  it("treats a workspace transport namespace atomically", () => {
+    const base = state(entry("capsule", "base"));
+    expect(mergeNamespace(base, state(entry("capsule", "remote")), state(entry("blob", "local")), { atomic: true }))
+      .toEqual({ outcome: "conflict", paths: ["blob", "capsule"] });
+    expect(mergeNamespace(base, state(entry("capsule", "remote")), base, { atomic: true }))
+      .toMatchObject({ outcome: "merged", state: state(entry("capsule", "remote")) });
+  });
+
+  it("rejects append-only overwrite, delete, and tombstone resurrection", () => {
+    const base = { ...state(entry("kept.txt", "base"), entry("deleted.txt", "old")), tombstones: deleted("gone.txt").tombstones };
+    const local = state(entry("kept.txt", "changed"), entry("new.txt", "new"), entry("gone.txt", "resurrected"));
+    expect(appendOnlyViolations(base, local)).toEqual(["deleted.txt", "gone.txt", "kept.txt"]);
+    expect(appendOnlyViolations(base, state(entry("kept.txt", "base"), entry("deleted.txt", "old"), entry("new.txt", "new")))).toEqual([]);
+  });
+
+  it("converges deterministically for randomized disjoint offline additions", () => {
+    fc.assert(fc.property(
+      fc.uniqueArray(fc.integer({ min: 0, max: 100 }), { maxLength: 30 }),
+      fc.uniqueArray(fc.integer({ min: 0, max: 100 }), { maxLength: 30 }),
+      (remoteValues, localValues) => {
+        const remote = state(...remoteValues.map((value) => entry(`remote/${value}`, `r${value}`)));
+        const local = state(...localValues.map((value) => entry(`local/${value}`, `l${value}`)));
+        const forward = mergeNamespace(state(), remote, local, { atomic: false });
+        const reverse = mergeNamespace(state(), local, remote, { atomic: false });
+        expect(forward.outcome).toBe("merged");
+        expect(reverse.outcome).toBe("merged");
+        if (forward.outcome === "merged" && reverse.outcome === "merged") {
+          expect(namespaceStateEquals(forward.state, reverse.state)).toBe(true);
+        }
+      },
+    ), { numRuns: 250 });
+  });
+});
+
+const namespace = "drop:shared";
+
+function entry(logicalPath: string, digest: string) {
+  return { namespace, logicalPath, entryType: "file" as const, objectIds: [`obj_${digest}`], totalSize: 1, contentDigest: `digest_${digest}` };
+}
+
+function state(...entries: ReturnType<typeof entry>[]) {
+  return { entries, tombstones: [] as Array<{ namespace: string; logicalPath: string; deletedAt: string }> };
+}
+
+function deleted(logicalPath: string) {
+  return { entries: [] as ReturnType<typeof entry>[], tombstones: [{ namespace, logicalPath, deletedAt: "2026-09-06T00:00:00.000Z" }] };
+}

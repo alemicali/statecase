@@ -208,6 +208,50 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
       }
     });
 
+  const conflicts = program.command("conflicts").description("resolve explicit concurrent-change conflicts");
+  conflicts.command("resolve")
+    .requiredOption("--mapping <mappingId>", "Drop/harness mapping ID or workspace ID")
+    .requiredOption("--strategy <strategy>", "local")
+    .option("--yes", "confirm that local state may supersede the remote namespace")
+    .action(async (options: { mapping: string; strategy: string; yes?: boolean }) => {
+      if (options.strategy !== "local") throw new StatecaseUsageError("the implemented conflict strategy is local; use restore to inspect the remote variant", 2);
+      if (!options.yes) throw new StatecaseUsageError("local conflict resolution requires --yes", 2);
+      const { config, secrets, client } = await requireSession(store, io.fetch);
+      const vaultId = selectedVault(config, secrets);
+      const mapping = config.mappings.find((item) => item.id === options.mapping);
+      const workspace = config.workspaces.find((item) => item.id === options.mapping);
+      if (!mapping && !workspace) throw new StatecaseUsageError("conflict mapping is not configured on this device", 2);
+      if (mapping && workspace) throw new StatecaseUsageError("conflict mapping ID is ambiguous", 2);
+      const namespace = mapping?.namespace ?? `workspace:${workspace!.id}`;
+      const snapshot = await client.createSnapshot(vaultId, `Before local resolution of ${options.mapping}`);
+      const resolveConfig = structuredClone(config);
+      if (mapping) {
+        resolveConfig.mappings = [mapping];
+        resolveConfig.workspaces = resolveConfig.workspaces.map((item) => ({ ...item, sync: "identity-only" }));
+      } else {
+        resolveConfig.mappings = [];
+        resolveConfig.workspaces = [workspace!];
+      }
+      const key = Buffer.from(secrets.vaultKeys[vaultId], "base64url");
+      try {
+        const result = await new SyncEngine(client, vaultId, key).push(resolveConfig, false, {
+          resolveLocalNamespaces: new Set([namespace]),
+          expectedHeadRevisionId: snapshot.revisionId,
+        });
+        if (resolveConfig.applied[namespace]) config.applied[namespace] = resolveConfig.applied[namespace];
+        await store.saveConfig(config);
+        emit(io, program, {
+          mappingId: options.mapping,
+          strategy: "local",
+          protectedSnapshotId: snapshot.id,
+          previousRevisionId: snapshot.revisionId,
+          result,
+        }, `Resolved ${options.mapping} with local state; protected previous head as ${snapshot.id}`);
+      } finally {
+        key.fill(0);
+      }
+    });
+
   const drop = program.command("drop").description("map arbitrary synchronized directories");
   drop.command("add <path>").requiredOption("--name <name>").option("--mode <mode>", "two-way, publish, consume, or append", "two-way").action(async (path: string, options: { name: string; mode: RootMapping["mode"] }) => {
     if (!new Set(["two-way", "publish", "consume", "append"]).has(options.mode)) throw new StatecaseUsageError("invalid Drop mode", 2);

@@ -9,6 +9,7 @@ import { scanCompleteJsonl } from "@statecase/adapter-common";
 import { chunkBytes, concatChunks } from "@statecase/chunking";
 import { computeObjectId, decryptEnvelope, deriveScopeKey, encryptEnvelope } from "@statecase/crypto";
 import { canonicalJson, manifestSchema, type VaultManifestV1 } from "@statecase/protocol";
+import { appendOnlyViolations, mergeNamespace, namespaceStateEquals, type NamespaceState } from "@statecase/sync-core";
 import {
   applyWorkspaceTransaction,
   assertWorkspaceDestination,
@@ -61,7 +62,11 @@ export class SyncEngine {
     if (vaultKey.byteLength !== 32) throw new TypeError("invalid vault key");
   }
 
-  async push(config: LocalConfig, dryRun = false): Promise<SyncResult> {
+  async push(
+    config: LocalConfig,
+    dryRun = false,
+    options: { resolveLocalNamespaces?: ReadonlySet<string>; expectedHeadRevisionId?: string } = {},
+  ): Promise<SyncResult> {
     const writable = [
       ...config.mappings.filter((mapping) => mapping.mode !== "consume"),
       ...workspaceMappings(config),
@@ -70,33 +75,14 @@ export class SyncEngine {
       mapping.id.startsWith("workspace_") ? scanGitOverlay(mapping) : scanMapping(mapping, config.workspaces)
     ))).flat();
     const head = await this.client.head(this.vaultId);
+    if (options.expectedHeadRevisionId !== undefined && head.revisionId !== options.expectedHeadRevisionId) {
+      throw new SyncConflict([`${this.vaultId}:head-advanced-before-resolution`]);
+    }
     const previous = head.manifestObjectId ? await this.#downloadManifest(head.manifestObjectId) : undefined;
     const writableNamespaces = new Set(writable.map((mapping) => mapping.namespace));
-    if (head.revisionId && previous) {
-      const unsafe = [...writableNamespaces].filter((namespace) => {
-        const remoteHasState = previous.entries.some((entry) => entry.namespace === namespace) ||
-          previous.tombstones.some((tombstone) => tombstone.namespace === namespace);
-        return remoteHasState && config.applied[namespace]?.revisionId !== head.revisionId;
-      });
-      if (unsafe.length > 0) throw new SyncConflict(unsafe.map((namespace) => `${namespace}:remote-head-not-applied`));
-    }
-    const entries = previous?.entries.filter((entry) => !writableNamespaces.has(entry.namespace)) ?? [];
-    const scannedKeys = new Set(scanned.map((file) => `${file.namespace}\0${file.logicalPath}`));
-    const tombstones = previous?.tombstones.filter((item) =>
-      !writableNamespaces.has(item.namespace) ||
-      (!item.namespace.startsWith("workspace:") && !scannedKeys.has(`${item.namespace}\0${item.logicalPath}`))
-    ) ?? [];
-    const tombstoneKeys = new Set(tombstones.map((item) => `${item.namespace}\0${item.logicalPath}`));
-    const deletedAt = new Date().toISOString();
-    for (const entry of previous?.entries ?? []) {
-      const key = `${entry.namespace}\0${entry.logicalPath}`;
-      if (writableNamespaces.has(entry.namespace) && !entry.namespace.startsWith("workspace:") && !scannedKeys.has(key) && !tombstoneKeys.has(key)) {
-        tombstones.push({ namespace: entry.namespace, logicalPath: entry.logicalPath, deletedAt });
-        tombstoneKeys.add(key);
-      }
-    }
+    if (writableNamespaces.size !== writable.length) throw new Error("duplicate writable namespace mapping");
     const plaintextChunks = new Map<string, { bytes: Uint8Array; namespace: string }>();
-
+    const localEntries: VaultManifestV1["entries"] = [];
     for (const file of scanned) {
       const keys = await deriveScopeKey(this.vaultKey, file.namespace);
       const objectIds: string[] = [];
@@ -105,7 +91,7 @@ export class SyncEngine {
         objectIds.push(objectId);
         if (!plaintextChunks.has(objectId)) plaintextChunks.set(objectId, { bytes: chunk, namespace: file.namespace });
       }
-      entries.push({
+      localEntries.push({
         namespace: file.namespace,
         logicalPath: file.logicalPath,
         entryType: file.entryType ?? "file",
@@ -117,14 +103,81 @@ export class SyncEngine {
         contentDigest: await computeObjectId(keys.dedupKey, file.bytes),
       });
     }
+    const entries = previous?.entries.filter((entry) => !writableNamespaces.has(entry.namespace)) ?? [];
+    const tombstones = previous?.tombstones.filter((item) => !writableNamespaces.has(item.namespace)) ?? [];
+    const completelyLocalNamespaces = new Set<string>();
+    const manifests = new Map<string, VaultManifestV1>();
+    if (head.revisionId && previous) manifests.set(head.revisionId, previous);
+    const deletedAt = new Date().toISOString();
+    const mergeConflicts: string[] = [];
+    for (const mapping of writable) {
+      const namespace = mapping.namespace;
+      const remoteState = manifestNamespaceState(previous, namespace);
+      const appliedRevisionId = config.applied[namespace]?.revisionId;
+      let baseState: NamespaceState;
+      if (options.resolveLocalNamespaces?.has(namespace)) {
+        if (!appliedRevisionId) {
+          mergeConflicts.push(`${namespace}:remote-head-not-applied`);
+          continue;
+        }
+        baseState = remoteState;
+      } else if (!appliedRevisionId) {
+        if (remoteState.entries.length > 0 || remoteState.tombstones.length > 0) {
+          mergeConflicts.push(`${namespace}:remote-head-not-applied`);
+          continue;
+        }
+        baseState = { entries: [], tombstones: [] };
+      } else {
+        let baseManifest = manifests.get(appliedRevisionId);
+        if (!baseManifest) {
+          try {
+            const pointer = await this.client.revision(this.vaultId, appliedRevisionId);
+            baseManifest = await this.#downloadManifest(pointer.manifestObjectId);
+            if (baseManifest.revisionId !== appliedRevisionId) throw new Error("base revision manifest does not match its pointer");
+            manifests.set(appliedRevisionId, baseManifest);
+          } catch {
+            mergeConflicts.push(`${namespace}:base-revision-unavailable`);
+            continue;
+          }
+        }
+        baseState = manifestNamespaceState(baseManifest, namespace);
+      }
+      const namespaceEntries = localEntries.filter((entry) => entry.namespace === namespace);
+      const scannedPaths = new Set(namespaceEntries.map((entry) => entry.logicalPath));
+      const localTombstones = baseState.tombstones.filter((item) => !scannedPaths.has(item.logicalPath));
+      if (!namespace.startsWith("workspace:")) {
+        for (const entry of baseState.entries) {
+          if (scannedPaths.has(entry.logicalPath)) continue;
+          localTombstones.push({ namespace, logicalPath: entry.logicalPath, deletedAt });
+        }
+      }
+      const localState = { entries: namespaceEntries, tombstones: localTombstones };
+      if (mapping.mode === "append") {
+        const violations = appendOnlyViolations(baseState, localState);
+        if (violations.length > 0) {
+          mergeConflicts.push(...violations.map((path) => `${namespace}:${path}:append-only`));
+          continue;
+        }
+      }
+      const merged = mergeNamespace(baseState, remoteState, localState, { atomic: namespace.startsWith("workspace:") });
+      if (merged.outcome === "conflict") {
+        mergeConflicts.push(...merged.paths.map((path) => `${namespace}:${path}`));
+        continue;
+      }
+      entries.push(...merged.state.entries);
+      tombstones.push(...merged.state.tombstones);
+      if (namespaceStateEquals(merged.state, localState)) completelyLocalNamespaces.add(namespace);
+    }
+    if (mergeConflicts.length > 0) throw new SyncConflict(mergeConflicts.sort((left, right) => left.localeCompare(right, "en")));
     entries.sort(compareEntries);
+    tombstones.sort((left, right) => left.namespace.localeCompare(right.namespace, "en") || left.logicalPath.localeCompare(right.logicalPath, "en"));
     const conflicts = previous?.conflicts ?? [];
     if (previous && canonicalJson({ entries, tombstones, conflicts }) === canonicalJson({
       entries: previous.entries,
       tombstones: previous.tombstones,
       conflicts: previous.conflicts,
     })) {
-      await this.#markApplied(config, writable, scanned, head.revisionId!);
+      await this.#markApplied(config, writable.filter((mapping) => completelyLocalNamespaces.has(mapping.namespace)), scanned, head.revisionId!);
       return { outcome: "unchanged", revisionId: head.revisionId, files: 0, objects: 0, bytes: 0 };
     }
     const envelopes = new Map<string, Uint8Array>();
@@ -151,7 +204,7 @@ export class SyncEngine {
       createdByDeviceId: config.deviceId ?? (config.deviceName ? safeIdentifier(config.deviceName, "device") : "device_unknown"),
       operationId,
       entries,
-      tombstones: tombstones.sort((left, right) => left.namespace.localeCompare(right.namespace, "en") || left.logicalPath.localeCompare(right.logicalPath, "en")),
+      tombstones,
       conflicts,
     };
     const manifestBytes = encoder.encode(canonicalJson(manifest));
@@ -175,7 +228,7 @@ export class SyncEngine {
       manifestObjectId,
       requiredObjectIds: [...envelopes.keys()],
     });
-    await this.#markApplied(config, writable, scanned, revisionId);
+    await this.#markApplied(config, writable.filter((mapping) => completelyLocalNamespaces.has(mapping.namespace)), scanned, revisionId);
     return { outcome: "pushed", revisionId, files: scanned.length, objects: envelopes.size + 1, bytes: transferredBytes + manifestEnvelope.byteLength };
   }
 
@@ -347,6 +400,13 @@ function workspaceMappings(config: LocalConfig): RootMapping[] {
     namespace: `workspace:${workspace.id}`,
     path: resolve(workspace.path),
   }));
+}
+
+function manifestNamespaceState(manifest: VaultManifestV1 | undefined, namespace: string): NamespaceState {
+  return {
+    entries: manifest?.entries.filter((entry) => entry.namespace === namespace) ?? [],
+    tombstones: manifest?.tombstones.filter((tombstone) => tombstone.namespace === namespace) ?? [],
+  };
 }
 
 async function scanGitOverlay(mapping: RootMapping): Promise<ScannedEntry[]> {

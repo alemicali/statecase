@@ -294,6 +294,91 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     expect(await readFile(join(staging, "context.txt"), "utf8")).toBe("version one\n");
     expect(remote.revisionId).toBe(second.revisionId);
   });
+
+  it("merges disjoint offline edits and pulls the remote side before marking it applied (SY-002, SY-003)", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-three-way-"));
+    temporary.push(base);
+    const firstRoot = join(base, "first");
+    const secondRoot = join(base, "second");
+    const observerRoot = join(base, "observer");
+    await Promise.all([mkdir(firstRoot), mkdir(secondRoot), mkdir(observerRoot)]);
+    await writeFile(join(firstRoot, "base.txt"), "base\n");
+    const remote = new MemoryRemote();
+    const key = await randomKey();
+    const firstEngine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    const secondEngine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    const firstConfig = config(firstRoot);
+    const secondConfig = config(secondRoot);
+    await firstEngine.push(firstConfig);
+    await secondEngine.pull(secondConfig);
+    const commonRevision = remote.revisionId;
+
+    await writeFile(join(firstRoot, "from-first.txt"), "first\n");
+    await writeFile(join(secondRoot, "from-second.txt"), "second\n");
+    await firstEngine.push(firstConfig);
+    const merged = await secondEngine.push(secondConfig);
+    expect(merged.outcome).toBe("pushed");
+    expect(secondConfig.applied["drop:drop_shared"]!.revisionId).toBe(commonRevision);
+    await secondEngine.pull(secondConfig);
+    expect(await readFile(join(secondRoot, "from-first.txt"), "utf8")).toBe("first\n");
+    expect(await readFile(join(secondRoot, "from-second.txt"), "utf8")).toBe("second\n");
+
+    await new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key).pull(config(observerRoot));
+    expect(await readFile(join(observerRoot, "from-first.txt"), "utf8")).toBe("first\n");
+    expect(await readFile(join(observerRoot, "from-second.txt"), "utf8")).toBe("second\n");
+  });
+
+  it("preserves an explicit conflict when two offline devices modify the same path (SY-006, SY-007)", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-three-way-conflict-"));
+    temporary.push(base);
+    const firstRoot = join(base, "first");
+    const secondRoot = join(base, "second");
+    await Promise.all([mkdir(firstRoot), mkdir(secondRoot)]);
+    await writeFile(join(firstRoot, "shared.txt"), "base\n");
+    const remote = new MemoryRemote();
+    const key = await randomKey();
+    const firstEngine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    const secondEngine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    const firstConfig = config(firstRoot);
+    const secondConfig = config(secondRoot);
+    await firstEngine.push(firstConfig);
+    await secondEngine.pull(secondConfig);
+    await writeFile(join(firstRoot, "shared.txt"), "first\n");
+    await writeFile(join(secondRoot, "shared.txt"), "second\n");
+    await firstEngine.push(firstConfig);
+    await expect(secondEngine.push(secondConfig)).rejects.toMatchObject({ paths: ["drop:drop_shared:shared.txt"] });
+    expect(await readFile(join(secondRoot, "shared.txt"), "utf8")).toBe("second\n");
+    const conflictedHead = remote.revisionId!;
+    await expect(secondEngine.push(secondConfig, false, {
+      resolveLocalNamespaces: new Set(["drop:drop_shared"]),
+      expectedHeadRevisionId: "rev_wrong",
+    })).rejects.toBeInstanceOf(SyncConflict);
+    expect(remote.revisionId).toBe(conflictedHead);
+    await secondEngine.push(secondConfig, false, {
+      resolveLocalNamespaces: new Set(["drop:drop_shared"]),
+      expectedHeadRevisionId: conflictedHead,
+    });
+    const observer = join(base, "observer");
+    await mkdir(observer);
+    await new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key).pull(config(observer));
+    expect(await readFile(join(observer, "shared.txt"), "utf8")).toBe("second\n");
+  });
+
+  it("never lets an append-only mapping overwrite prior content", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-append-only-"));
+    temporary.push(base);
+    await writeFile(join(base, "immutable.txt"), "first\n");
+    const remote = new MemoryRemote();
+    const key = await randomKey();
+    const engine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    const local = config(base);
+    local.mappings[0]!.mode = "append";
+    await engine.push(local);
+    await writeFile(join(base, "immutable.txt"), "replacement\n");
+    await expect(engine.push(local)).rejects.toMatchObject({ paths: ["drop:drop_shared:immutable.txt:append-only"] });
+    await rm(join(base, "immutable.txt"));
+    await expect(engine.push(local)).rejects.toMatchObject({ paths: ["drop:drop_shared:immutable.txt:append-only"] });
+  });
 });
 
 function config(path: string): LocalConfig {
