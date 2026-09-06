@@ -1,6 +1,6 @@
 import { homedir, hostname } from "node:os";
-import { join, resolve } from "node:path";
-import { lstat, readdir } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+import { chmod, lstat, mkdir, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -13,7 +13,8 @@ import { LocalStateStore } from "@statecase/storage-local";
 import { Command } from "commander";
 
 import { StatecaseClient } from "./client.js";
-import { ConfigStore, type LocalConfig, type RootMapping } from "./config.js";
+import { createBootstrapCapability, openBootstrapCapability, type ScopedVaultKeys } from "./capability.js";
+import { ConfigStore, type LocalConfig, type LocalSecrets, type RootMapping } from "./config.js";
 import { PersistentRuntime, readRuntimeStatus, type DaemonTrigger } from "./daemon.js";
 import { readRecoveryKit, writeRecoveryKit } from "./recovery.js";
 import { DurableReconciler } from "./reconciler.js";
@@ -129,7 +130,7 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
   vault.command("select <vaultId>").action(async (vaultId: string) => {
     const config = normalizeConfig(await store.loadConfig());
     const secrets = await store.loadSecrets();
-    if (!secrets.vaultKeys[vaultId]) throw new StatecaseUsageError("vault key is not available on this device", 2);
+    if (!secrets.vaultKeys[vaultId] && !secrets.scopedVaults?.[vaultId]) throw new StatecaseUsageError("vault key is not available on this device", 2);
     config.selectedVaultId = vaultId;
     await store.saveConfig(config);
     emit(io, program, { selectedVaultId: vaultId }, `Selected ${vaultId}`);
@@ -147,6 +148,92 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
       key.fill(0);
     }
   });
+
+  const token = program.command("token").description("grant and revoke short-lived namespace capabilities");
+  token.command("create")
+    .requiredOption("--namespace <names>", "comma-separated namespace IDs")
+    .option("--actions <actions>", "read or read,append", "read")
+    .option("--ttl <minutes>", "lifetime in minutes (1-1440)", "60")
+    .requiredOption("--output <path>", "new protected bootstrap-token file")
+    .action(async (options: { namespace: string; actions: string; ttl: string; output: string }) => {
+      const { config, secrets, client } = await requireSession(store, io.fetch);
+      const vaultId = selectedVault(config, secrets);
+      const encodedVaultKey = secrets.vaultKeys[vaultId];
+      if (!encodedVaultKey) throw new StatecaseUsageError("a full vault key is required to grant a capability", 4);
+      const namespaces = parseCsv(options.namespace);
+      const actions = parseCapabilityActions(options.actions);
+      const ttlMinutes = Number(options.ttl);
+      if (!Number.isSafeInteger(ttlMinutes) || ttlMinutes < 1 || ttlMinutes > 1440) {
+        throw new StatecaseUsageError("--ttl must be an integer from 1 to 1440 minutes", 2);
+      }
+      const expiresAt = Date.now() + ttlMinutes * 60_000;
+      const vaultKey = Buffer.from(encodedVaultKey, "base64url");
+      const outputPath = resolve(options.output);
+      try {
+        const material = await createBootstrapCapability({ vaultId, vaultKey, namespaces, actions, expiresAt });
+        await writeProtectedBootstrapFile(outputPath, `${material.bootstrapToken}\n`);
+        let record;
+        try {
+          record = await client.createCapability({
+            id: randomLocalId("cap"),
+            vaultId,
+            tokenHash: material.tokenHash,
+            namespaces,
+            actions,
+            expiresAt,
+            keyEnvelope: material.keyEnvelope,
+          });
+        } catch (error) {
+          await unlink(outputPath).catch(() => undefined);
+          throw error;
+        }
+        emit(io, program, { capability: record, bootstrapFile: outputPath }, `Created ${record.id}; bootstrap token written to ${outputPath}`);
+      } finally {
+        vaultKey.fill(0);
+      }
+    });
+  token.command("list").action(async () => {
+    const { client } = await requireSession(store, io.fetch);
+    const records = await client.listCapabilities();
+    emit(io, program, { tokens: records }, records.map((item) => `${item.id}\t${item.revokedAt ? "revoked" : item.redeemedAt ? "redeemed" : "ready"}\t${item.vaultId}\t${item.namespaces.join(",")}`).join("\n") || "No capability tokens");
+  });
+  token.command("revoke <tokenId>").requiredOption("--yes", "confirm revocation").action(async (tokenId: string) => {
+    const { client } = await requireSession(store, io.fetch);
+    await client.revokeCapability(tokenId);
+    emit(io, program, { id: tokenId, revoked: true }, `Revoked capability ${tokenId}`);
+  });
+
+  program.command("bootstrap")
+    .description("redeem a one-time scoped capability on an ephemeral machine")
+    .option("--token-file <path>", "protected file containing the bootstrap token")
+    .option("--non-interactive")
+    .action(async (options: { tokenFile?: string; nonInteractive?: boolean }) => {
+      const config = normalizeConfig(await store.loadConfig());
+      const secrets = await store.loadSecrets();
+      if (secrets.token || Object.keys(secrets.vaultKeys).length > 0 || Object.keys(secrets.scopedVaults ?? {}).length > 0) {
+        throw new StatecaseUsageError("bootstrap requires a fresh STATECASE_HOME with no existing credentials", 2);
+      }
+      const bootstrapToken = process.env.STATECASE_BOOTSTRAP_TOKEN ??
+        (options.tokenFile ? await readBootstrapTokenFile(resolve(options.tokenFile)) : undefined);
+      if (!bootstrapToken) {
+        throw new StatecaseUsageError("provide --token-file or STATECASE_BOOTSTRAP_TOKEN", options.nonInteractive ? 3 : 2);
+      }
+      const publicClient = new StatecaseClient(config.apiUrl, undefined, io.fetch);
+      const redemption = await publicClient.redeemBootstrap(bootstrapToken);
+      const scoped = await openBootstrapCapability({ bootstrapToken, ...redemption });
+      secrets.token = redemption.accessToken;
+      secrets.scopedVaults ??= {};
+      secrets.scopedVaults[redemption.vaultId] = scoped;
+      config.selectedVaultId = redemption.vaultId;
+      await Promise.all([store.saveConfig(config), store.saveSecrets(secrets)]);
+      emit(io, program, {
+        authenticated: true,
+        vaultId: redemption.vaultId,
+        namespaces: redemption.namespaces,
+        actions: redemption.actions,
+        expiresAt: redemption.expiresAt,
+      }, `Bootstrapped scoped access to ${redemption.vaultId} until ${new Date(redemption.expiresAt).toISOString()}`);
+    });
 
   const snapshot = program.command("snapshot").description("protect and inspect retained vault revisions");
   snapshot.command("create <name>").action(async (name: string) => {
@@ -198,13 +285,13 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
         restoreConfig.mappings = [];
         restoreConfig.workspaces = [{ ...workspace!, path: target, sync: "git" }];
       }
-      const key = Buffer.from(secrets.vaultKeys[vaultId], "base64url");
+      const key = syncAccess(secrets, vaultId);
       try {
         const result = await new SyncEngine(client, vaultId, key).pull(restoreConfig, options.dryRun, options.revision);
         emit(io, program, { revisionId: options.revision, mappingId: options.mapping, target, dryRun: Boolean(options.dryRun), result },
           `${options.dryRun ? "Would restore" : "Restored"} ${result.files} files from ${options.revision} to ${target}`);
       } finally {
-        key.fill(0);
+        wipeSyncAccess(key);
       }
     });
 
@@ -224,6 +311,7 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
       if (mapping && workspace) throw new StatecaseUsageError("conflict mapping ID is ambiguous", 2);
       const namespace = mapping?.namespace ?? `workspace:${workspace!.id}`;
       const snapshot = await client.createSnapshot(vaultId, `Before local resolution of ${options.mapping}`);
+      const expectedHeadRevisionId = (await client.namespaceHeads(vaultId)).revisionId ?? snapshot.revisionId;
       const resolveConfig = structuredClone(config);
       if (mapping) {
         resolveConfig.mappings = [mapping];
@@ -232,11 +320,11 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
         resolveConfig.mappings = [];
         resolveConfig.workspaces = [workspace!];
       }
-      const key = Buffer.from(secrets.vaultKeys[vaultId], "base64url");
+      const key = syncAccess(secrets, vaultId);
       try {
         const result = await new SyncEngine(client, vaultId, key).push(resolveConfig, false, {
           resolveLocalNamespaces: new Set([namespace]),
-          expectedHeadRevisionId: snapshot.revisionId,
+          expectedHeadRevisionId,
         });
         if (resolveConfig.applied[namespace]) config.applied[namespace] = resolveConfig.applied[namespace];
         await store.saveConfig(config);
@@ -248,7 +336,7 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
           result,
         }, `Resolved ${options.mapping} with local state; protected previous head as ${snapshot.id}`);
       } finally {
-        key.fill(0);
+        wipeSyncAccess(key);
       }
     });
 
@@ -314,7 +402,7 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
     .action(async (options: { workspace?: string; revision?: string }) => {
       const { config, secrets, client } = await requireSession(store, io.fetch);
       const vaultId = selectedVault(config, secrets);
-      const key = Buffer.from(secrets.vaultKeys[vaultId], "base64url");
+      const key = syncAccess(secrets, vaultId);
       try {
         const reports = (await new SyncEngine(client, vaultId, key).dependencies(options.revision))
           .filter((report) => !options.workspace || report.workspace.workspaceId === options.workspace);
@@ -324,7 +412,7 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
           ? "No resumable session capsules"
           : `${reports.length} session capsule${reports.length === 1 ? "" : "s"}; ${unresolved} unresolved dependenc${unresolved === 1 ? "y" : "ies"}`);
       } finally {
-        key.fill(0);
+        wipeSyncAccess(key);
       }
     });
   workspace.command("hydrate")
@@ -338,7 +426,7 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
       }
       const { config, secrets, client } = await requireSession(store, io.fetch);
       const vaultId = selectedVault(config, secrets);
-      const key = Buffer.from(secrets.vaultKeys[vaultId], "base64url");
+      const key = syncAccess(secrets, vaultId);
       try {
         const hydrated = await new SyncEngine(client, vaultId, key).hydrate(config, options.session, {
           mode: options.mode,
@@ -349,7 +437,7 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
         emit(io, program, { sessionCapsuleId: options.session, mode: options.mode, dryRun: Boolean(options.dryRun), ...hydrated },
           `${options.dryRun ? "Would hydrate" : "Hydrated"} ${hydrated.report.sessionKey} from ${hydrated.result.revisionId}; ${hydrated.warnings.length} warning${hydrated.warnings.length === 1 ? "" : "s"}`);
       } finally {
-        key.fill(0);
+        wipeSyncAccess(key);
       }
     });
 
@@ -414,11 +502,11 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
         ? resolve(options.executable)
         : localConfig.runtime!.harnesses[harness]?.realExecutable ?? await resolveHarnessExecutable(harness, process.env, [argv[1] ?? ""]);
       const journal = new LocalStateStore(join(store.home, "state.db"));
-      let liveKey: Buffer | undefined;
+      let liveKey: Buffer | ScopedVaultKeys | undefined;
       const sync = async (reason: ReconcileReason): Promise<string | null> => {
         const { config, secrets, client } = await requireSession(store, io.fetch);
         const vaultId = selectedVault(config, secrets);
-        liveKey ??= Buffer.from(secrets.vaultKeys[vaultId], "base64url");
+        liveKey ??= syncAccess(secrets, vaultId);
         const engine = new SyncEngine(client, vaultId, liveKey);
         const result = reason === "preflight" ? await engine.pull(config) : await engine.push(config);
         if (reason === "preflight") await store.saveConfig(config);
@@ -440,7 +528,7 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
         });
         requestedExitCode = result.exitCode;
       } finally {
-        liveKey?.fill(0);
+        if (liveKey) wipeSyncAccess(liveKey);
         journal.close();
       }
     });
@@ -501,11 +589,11 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
         ...initial.workspaces.map((workspaceValue) => workspaceValue.path),
       ];
       const journal = new LocalStateStore(join(store.home, "state.db"));
-      let liveKey: Buffer | undefined;
+      let liveKey: Buffer | ScopedVaultKeys | undefined;
       const sync = async (reason: ReconcileReason): Promise<string | null> => {
         const { config, secrets, client } = await requireSession(store, io.fetch);
         const vaultId = selectedVault(config, secrets);
-        liveKey ??= Buffer.from(secrets.vaultKeys[vaultId], "base64url");
+        liveKey ??= syncAccess(secrets, vaultId);
         const engine = new SyncEngine(client, vaultId, liveKey);
         const pulled = await engine.pull(config);
         const result = reason === "preflight" ? pulled : await engine.push(config);
@@ -526,7 +614,7 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
         if (!options.once) await waitForTermination();
       } finally {
         await runtime.stop();
-        liveKey?.fill(0);
+        if (liveKey) wipeSyncAccess(liveKey);
         journal.close();
       }
     });
@@ -576,7 +664,7 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
     program.command(command).option("--dry-run").action(async (options: { dryRun?: boolean }) => {
       const { config, secrets, client } = await requireSession(store, io.fetch);
       const vaultId = selectedVault(config, secrets);
-      const key = Buffer.from(secrets.vaultKeys[vaultId], "base64url");
+      const key = syncAccess(secrets, vaultId);
       const engine = new SyncEngine(client, vaultId, key);
       try {
         const results = [];
@@ -585,7 +673,7 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
         if (!options.dryRun) await store.saveConfig(config);
         emit(io, program, { command, dryRun: Boolean(options.dryRun), results }, results.map((result) => `${result.outcome}: ${result.files} files, ${result.objects} objects, ${result.bytes} bytes`).join("\n"));
       } finally {
-        key.fill(0);
+        wipeSyncAccess(key);
       }
     });
   }
@@ -593,14 +681,25 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
   program.command("status").action(async () => {
     const config = normalizeConfig(await store.loadConfig());
     const secrets = await store.loadSecrets();
-    const data = { authenticated: Boolean(secrets.token), selectedVaultId: config.selectedVaultId ?? null, mappings: config.mappings, apiUrl: config.apiUrl };
+    const selectedVaultId = config.selectedVaultId;
+    const scoped = selectedVaultId ? secrets.scopedVaults?.[selectedVaultId] : undefined;
+    const accessMode = selectedVaultId && secrets.vaultKeys[selectedVaultId] ? "full" : scoped ? "scoped" : "none";
+    const data = {
+      authenticated: Boolean(secrets.token),
+      selectedVaultId: selectedVaultId ?? null,
+      accessMode,
+      namespaces: scoped?.namespaces ?? [],
+      expiresAt: scoped?.expiresAt ?? null,
+      mappings: config.mappings,
+      apiUrl: config.apiUrl,
+    };
     emit(io, program, data, `${data.authenticated ? "authenticated" : "not authenticated"}; ${config.mappings.length} mappings; vault ${data.selectedVaultId ?? "not selected"}`);
   });
   program.command("doctor").action(async () => {
     const config = normalizeConfig(await store.loadConfig());
     const secrets = await store.loadSecrets();
     const git = await promisify(execFile)("git", ["--version"]).then(() => true, () => false);
-    const checks = { config: true, authenticated: Boolean(secrets.token), vaultKey: Boolean(config.selectedVaultId && secrets.vaultKeys[config.selectedVaultId]), git, mappings: config.mappings.length };
+    const checks = { config: true, authenticated: Boolean(secrets.token), vaultKey: Boolean(config.selectedVaultId && (secrets.vaultKeys[config.selectedVaultId] || secrets.scopedVaults?.[config.selectedVaultId])), git, mappings: config.mappings.length };
     emit(io, program, { healthy: checks.authenticated && checks.vaultKey && git, checks }, checks.authenticated && checks.vaultKey && git ? "Statecase is ready" : "Statecase needs Git, login, or vault selection");
   });
 
@@ -638,6 +737,48 @@ function requireRecoveryPassphrase(): string {
 
 function randomLocalId(prefix: string): string {
   return `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
+}
+
+function syncAccess(secrets: LocalSecrets, vaultId: string): Buffer | ScopedVaultKeys {
+  const root = secrets.vaultKeys[vaultId];
+  if (root) return Buffer.from(root, "base64url");
+  const scoped = secrets.scopedVaults?.[vaultId];
+  if (!scoped) throw new StatecaseUsageError("selected vault key is unavailable", 2);
+  return scoped;
+}
+
+function wipeSyncAccess(access: Buffer | ScopedVaultKeys): void {
+  if (access instanceof Uint8Array) access.fill(0);
+}
+
+function parseCsv(value: string): string[] {
+  const values = value.split(",").map((item) => item.trim()).filter(Boolean);
+  if (values.length === 0 || new Set(values).size !== values.length) throw new StatecaseUsageError("values must be unique and non-empty", 2);
+  return values;
+}
+
+function parseCapabilityActions(value: string): Array<"read" | "append"> {
+  const values = parseCsv(value);
+  if (values.some((item) => item !== "read" && item !== "append")) throw new StatecaseUsageError("--actions supports read or read,append", 2);
+  if (values.includes("append") && !values.includes("read")) throw new StatecaseUsageError("append capability also requires read", 2);
+  return values as Array<"read" | "append">;
+}
+
+async function writeProtectedBootstrapFile(path: string, value: string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  await writeFile(path, value, { encoding: "utf8", mode: 0o600, flag: "wx" })
+    .catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "EEXIST") throw new StatecaseUsageError("bootstrap output already exists", 2);
+      throw error;
+    });
+  await chmod(path, 0o600);
+}
+
+async function readBootstrapTokenFile(path: string): Promise<string> {
+  const metadata = await lstat(path);
+  if (!metadata.isFile() || metadata.isSymbolicLink()) throw new StatecaseUsageError("bootstrap token path must be a regular file", 2);
+  if (metadata.size > 1024) throw new StatecaseUsageError("bootstrap token file is too large", 2);
+  return (await readFile(path, "utf8")).trim();
 }
 
 function waitForTermination(): Promise<void> {

@@ -5,6 +5,7 @@ import { z } from "zod";
 import {
   commitRequestSchema,
   PROTOCOL_VERSION,
+  SCOPED_PROTOCOL_VERSION,
   scopedCommitRequestSchema,
   type CommitRequest,
   type ProtocolErrorCode,
@@ -14,8 +15,10 @@ import type {
   CommitResult,
   CreateSnapshotResult,
   NamespaceHead,
+  NamespaceRevision,
   ScopedCommitResult,
   ScopedVaultHead,
+  ScopedVaultRevision,
   VaultHead,
   VaultRevision,
   VaultSnapshot,
@@ -90,8 +93,10 @@ export interface Coordinator {
   createSnapshot(input: { id: string; name: string; createdAt: number }): Promise<CreateSnapshotResult>;
   deleteSnapshot(snapshotId: string): Promise<boolean>;
   namespaceHeads(allowedNamespaces?: ReadonlySet<string>): Promise<NamespaceHead[]>;
+  namespaceRevision(namespace: string, revisionId: string): Promise<NamespaceRevision | null>;
   scopedHead(): Promise<ScopedVaultHead | null>;
   commitNamespaces(request: ScopedCommitRequest): Promise<ScopedCommitResult>;
+  scopedRevision(revisionId: string): Promise<ScopedVaultRevision | null>;
 }
 
 export interface VaultSummary {
@@ -136,7 +141,7 @@ export function createCloudApp(services: CloudServices): Hono<AppEnvironment> {
   const app = new Hono<AppEnvironment>();
   app.use("*", secureHeaders());
 
-  app.get("/health", (context) => context.json({ protocolVersion: PROTOCOL_VERSION, service: "statecase", status: "ok" }));
+  app.get("/health", (context) => context.json({ protocolVersion: SCOPED_PROTOCOL_VERSION, legacyProtocolVersion: PROTOCOL_VERSION, service: "statecase", status: "ok" }));
   app.get("/", (context) => context.html(DEVICE_HTML));
   app.get("/login", (context) => context.html(DEVICE_HTML));
   app.get("/device", (context) => context.html(DEVICE_HTML));
@@ -175,6 +180,27 @@ export function createCloudApp(services: CloudServices): Hono<AppEnvironment> {
       services.authorizeNamespace(context.get("principal"), vaultId, head.namespace, "read")));
     const visible = heads.filter((_head, index) => decisions[index]);
     return context.json({ revisionId: (await services.coordinator(vaultId).scopedHead())?.revisionId ?? null, namespaces: visible });
+  });
+
+  app.get("/v1/vaults/:vaultId/namespaces/:namespace/revisions/:revisionId", async (context) => {
+    const vaultId = requireIdentifier(context.req.param("vaultId"));
+    const namespace = requireIdentifier(context.req.param("namespace"));
+    const revisionId = requireIdentifier(context.req.param("revisionId"));
+    if (!(await services.authorizeNamespace(context.get("principal"), vaultId, namespace, "read"))) return notFound(context);
+    const revision = await services.coordinator(vaultId).namespaceRevision(namespace, revisionId);
+    return revision ? context.json(revision) : notFound(context);
+  });
+
+  app.get("/v1/vaults/:vaultId/scoped-revisions/:revisionId", async (context) => {
+    const vaultId = requireIdentifier(context.req.param("vaultId"));
+    const revisionId = requireIdentifier(context.req.param("revisionId"));
+    const principal = context.get("principal");
+    if (principal.capability?.vaultId !== vaultId && !(await allowed(services, context, vaultId, "read"))) return notFound(context);
+    const revision = await services.coordinator(vaultId).scopedRevision(revisionId);
+    if (!revision) return notFound(context);
+    const decisions = await Promise.all(revision.namespaces.map((head) =>
+      services.authorizeNamespace(principal, vaultId, head.namespace, "read")));
+    return context.json({ ...revision, namespaces: revision.namespaces.filter((_head, index) => decisions[index]) });
   });
 
   app.get("/v1/vaults/:vaultId/revisions/:revisionId", async (context) => {
@@ -248,6 +274,9 @@ export function createCloudApp(services: CloudServices): Hono<AppEnvironment> {
     }).strict().superRefine((input, refinement) => {
       if (new Set(input.namespaces).size !== input.namespaces.length) refinement.addIssue({ code: "custom", message: "duplicate namespace" });
       if (new Set(input.actions).size !== input.actions.length) refinement.addIssue({ code: "custom", message: "duplicate action" });
+      if (input.actions.includes("append") && !input.actions.includes("read")) {
+        refinement.addIssue({ code: "custom", message: "append capabilities must also allow read" });
+      }
       if (input.namespaces.some((namespace) => namespace === "secrets" || namespace.startsWith("secrets:"))) {
         refinement.addIssue({ code: "custom", message: "ephemeral capabilities cannot access secrets" });
       }

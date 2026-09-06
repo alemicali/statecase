@@ -141,6 +141,17 @@ describe("atomic namespace heads for scoped capabilities (AU-004..AU-007, PR-003
     expect(await coordinator.namespaceHeads(new Set(["workspace:ws_01"]))).toEqual([
       { namespace: "workspace:ws_01", revisionId: "nrev_workspace", manifestObjectId: "obj_nrev_workspace" },
     ]);
+    expect(await coordinator.namespaceRevision("workspace:ws_01", "nrev_workspace")).toEqual({
+      namespace: "workspace:ws_01",
+      revisionId: "nrev_workspace",
+      manifestObjectId: "obj_nrev_workspace",
+      previousRevisionId: null,
+    });
+    expect(await coordinator.namespaceRevision("workspace:ws_01", "nrev_missing")).toBeNull();
+    await expect(coordinator.createSnapshot({ id: "snp_scoped", name: "Scoped checkpoint", createdAt: 5 })).resolves.toEqual({
+      outcome: "created",
+      snapshot: { id: "snp_scoped", name: "Scoped checkpoint", revisionId: "rev_vault_01", protocolVersion: "1.1", protected: true, createdAt: 5 },
+    });
   });
 
   it("allows disjoint offline namespace commits while rejecting a stale touched namespace", async () => {
@@ -179,6 +190,24 @@ describe("atomic namespace heads for scoped capabilities (AU-004..AU-007, PR-003
     })).resolves.toEqual({ outcome: "append-violation", namespace: "harness:codex:sandbox", pathIds: ["pth_nrev_1"] });
     await expect(coordinator.commitNamespaces({ ...firstAppend, vaultRevisionId: "rev_other" }))
       .resolves.toEqual({ outcome: "idempotency-conflict" });
+    expect(await coordinator.namespaceRevision("harness:codex:sandbox", "nrev_2")).toBeNull();
+  });
+
+  it("applies delete claims to the blinded live-path set", async () => {
+    const coordinator = new VaultCoordinatorCore(new InMemoryCoordinatorStorage());
+    await coordinator.commitNamespaces({ protocolVersion: "1.1", operationId: "op_add", vaultRevisionId: "rev_add", updates: [update("drop:a", "nrev_add")] });
+    await expect(coordinator.commitNamespaces({
+      protocolVersion: "1.1",
+      operationId: "op_delete",
+      vaultRevisionId: "rev_delete",
+      updates: [{ ...update("drop:a", "nrev_delete", "nrev_add"), pathClaims: [{ pathId: "pth_nrev_add", mutation: "delete" }] }],
+    })).resolves.toMatchObject({ outcome: "committed" });
+    await expect(coordinator.commitNamespaces({
+      protocolVersion: "1.1",
+      operationId: "op_readd",
+      vaultRevisionId: "rev_readd",
+      updates: [{ ...update("drop:a", "nrev_readd", "nrev_delete"), mode: "append", pathClaims: [{ pathId: "pth_nrev_add", mutation: "add" }] }],
+    })).resolves.toMatchObject({ outcome: "committed" });
   });
 });
 
@@ -221,6 +250,15 @@ describe("three-way namespace merge (SY-002..SY-009)", () => {
     const local = state(entry("kept.txt", "changed"), entry("new.txt", "new"), entry("gone.txt", "resurrected"));
     expect(appendOnlyViolations(base, local)).toEqual(["deleted.txt", "gone.txt", "kept.txt"]);
     expect(appendOnlyViolations(base, state(entry("kept.txt", "base"), entry("deleted.txt", "old"), entry("new.txt", "new")))).toEqual([]);
+    expect(appendOnlyViolations(state(entry("kept.txt", "base")), deleted("kept.txt"))).toEqual(["kept.txt"]);
+  });
+
+  it("fails closed when a decrypted namespace state repeats a logical path", () => {
+    expect(() => namespaceStateEquals(state(entry("same.txt", "one"), entry("same.txt", "two")), state())).toThrow("duplicate namespace path");
+    expect(() => namespaceStateEquals({
+      entries: [entry("same.txt", "one")],
+      tombstones: [{ namespace, logicalPath: "same.txt", deletedAt: "2026-09-06T00:00:00.000Z" }],
+    }, state())).toThrow("duplicate namespace path");
   });
 
   it("converges deterministically for randomized disjoint offline additions", () => {

@@ -24,7 +24,9 @@ export async function requireSession(store: ConfigStore, fetchImplementation: ty
 
 export function selectedVault(config: LocalConfig, secrets: LocalSecrets): string {
   if (!config.selectedVaultId) throw new StatecaseUsageError("select or create a vault first", 2);
-  if (!secrets.vaultKeys[config.selectedVaultId]) throw new StatecaseUsageError("selected vault key is unavailable", 2);
+  if (!secrets.vaultKeys[config.selectedVaultId] && !secrets.scopedVaults?.[config.selectedVaultId]) {
+    throw new StatecaseUsageError("selected vault key is unavailable", 2);
+  }
   return config.selectedVaultId;
 }
 

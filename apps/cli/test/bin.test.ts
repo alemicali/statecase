@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -47,6 +47,42 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
     expect(await command(io, "--json", "drop", "add", source, "--name", "working-context")).toBe(0);
     const drop = JSON.parse(output.at(-1)!) as { id: string };
     expect(await command(io, "--json", "push")).toBe(0);
+    const bootstrapFile = join(base, "bootstrap", "sandbox.token");
+    expect(await command(io, "--json", "token", "create", "--namespace", `drop:${drop.id}`, "--actions", "read,append", "--ttl", "15", "--output", bootstrapFile)).toBe(0);
+    const capability = (JSON.parse(output.at(-1)!) as { capability: { id: string }; bootstrapFile: string }).capability;
+    const bootstrapSecret = (await readFile(bootstrapFile, "utf8")).trim();
+    expect(bootstrapSecret).toMatch(/^stc_boot_/u);
+    expect((await stat(bootstrapFile)).mode & 0o777).toBe(0o600);
+    expect(output.at(-1)).not.toContain(bootstrapSecret);
+    expect(await command(io, "--json", "token", "create", "--namespace", `drop:${drop.id}`, "--output", bootstrapFile)).toBe(2);
+    expect(remote.capabilities.size).toBe(1);
+    expect(await command(io, "--json", "token", "create", "--namespace", `drop:${drop.id}`, "--actions", "append", "--output", join(base, "append-only.token"))).toBe(2);
+    expect(remote.capabilities.size).toBe(1);
+    expect(await command(io, "--json", "token", "list")).toBe(0);
+    expect(JSON.parse(output.at(-1)!)).toMatchObject({ tokens: [{ id: capability.id }] });
+    const sandbox = join(base, "sandbox");
+    process.env.STATECASE_HOME = sandbox;
+    delete process.env.STATECASE_TOKEN;
+    expect(await command(io, "--json", "bootstrap", "--token-file", bootstrapFile, "--non-interactive")).toBe(0);
+    const sandboxSecrets = JSON.parse(await readFile(join(sandbox, "credentials.json"), "utf8")) as { token: string; vaultKeys: Record<string, string>; scopedVaults: Record<string, { namespaceKeys: Record<string, unknown> }> };
+    expect(sandboxSecrets.token).toBe("scoped-access-token");
+    expect(sandboxSecrets.vaultKeys).toEqual({});
+    expect(Object.keys(sandboxSecrets.scopedVaults.vlt_test.namespaceKeys)).toEqual([`drop:${drop.id}`]);
+    expect(output.join("\n")).not.toContain(bootstrapSecret);
+    const sandboxTarget = join(base, "sandbox-target");
+    await mkdir(sandboxTarget);
+    expect(await command(io, "--json", "drop", "map", drop.id, sandboxTarget, "--name", "working-context", "--mode", "consume")).toBe(0);
+    expect(await command(io, "--json", "pull")).toBe(0);
+    expect(await readFile(join(sandboxTarget, "context.txt"), "utf8")).toBe("context from machine A\n");
+    expect(await command(io, "--json", "drop", "map", drop.id, sandboxTarget, "--name", "working-context", "--mode", "two-way")).toBe(0);
+    await writeFile(join(sandboxTarget, "context.txt"), "context updated in sandbox\n");
+    expect(await command(io, "--json", "push")).toBe(0);
+
+    process.env.STATECASE_HOME = machineA;
+    process.env.STATECASE_TOKEN = "injected-token-value";
+    expect(await command(io, "--json", "pull")).toBe(0);
+    expect(await readFile(join(source, "context.txt"), "utf8")).toBe("context updated in sandbox\n");
+    expect(await command(io, "--json", "token", "revoke", capability.id, "--yes")).toBe(0);
     expect(await command(io, "--json", "workspace", "dependencies")).toBe(0);
     expect(JSON.parse(output.at(-1)!)).toEqual({ reports: [], unresolved: 0 });
     expect(await command(io, "--json", "snapshot", "create", "Before second device")).toBe(0);
@@ -81,7 +117,7 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
     expect(await command(io, "--json", "vault", "join", created.id, "--recovery-file", recovery)).toBe(0);
     expect(await command(io, "--json", "drop", "map", drop.id, target, "--name", "working-context")).toBe(0);
     expect(await command(io, "--json", "pull")).toBe(0);
-    expect(await readFile(join(target, "context.txt"), "utf8")).toBe("context from machine A\n");
+    expect(await readFile(join(target, "context.txt"), "utf8")).toBe("context updated in sandbox\n");
     expect(await command(io, "--json", "vault", "select", created.id)).toBe(0);
     expect(await command(io, "--json", "logout")).toBe(0);
     expect(errors.join("\n")).not.toContain("injected-token-value");
@@ -148,21 +184,87 @@ function command(io: CliIO, ...arguments_: string[]): Promise<number> {
 
 class CliRemote {
   readonly objects = new Map<string, Uint8Array>();
+  readonly namespaceObjects = new Map<string, Uint8Array>();
+  readonly namespaceHeads = new Map<string, { namespace: string; revisionId: string; manifestObjectId: string }>();
+  readonly namespaceRevisions = new Map<string, { namespace: string; revisionId: string; manifestObjectId: string; previousRevisionId: string | null }>();
+  readonly scopedRevisions = new Map<string, { revisionId: string; previousRevisionId: string | null; namespaces: Array<{ namespace: string; revisionId: string; manifestObjectId: string }> }>();
   readonly vaults: Array<{ id: string; name: string; role: "owner" }> = [];
   revisionId: string | null = null;
+  scopedRevisionId: string | null = null;
   manifestObjectId: string | null = null;
   readonly devices = new Map<string, { id: string; name: string; status: "active" | "revoked" }>();
-  readonly snapshots = new Map<string, { id: string; name: string; revisionId: string; manifestObjectId: string; protected: true; createdAt: number }>();
+  readonly snapshots = new Map<string, { id: string; name: string; revisionId: string; manifestObjectId?: string; protocolVersion?: "1.1"; protected: true; createdAt: number }>();
   readonly revisions = new Map<string, { revisionId: string; manifestObjectId: string; previousRevisionId: string | null }>();
+  readonly capabilities = new Map<string, { id: string; vaultId: string; tokenHash: string; namespaces: string[]; actions: Array<"read" | "append">; expiresAt: number; keyEnvelope: string; createdAt: number; redeemedAt?: number; revokedAt?: number }>();
 
   fetch: typeof fetch = async (input, init) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
     const method = init?.method ?? "GET";
+    const scopedRevision = /^\/v1\/vaults\/vlt_test\/scoped-revisions\/([^/]+)$/u.exec(url.pathname);
+    if (scopedRevision) {
+      const value = this.scopedRevisions.get(scopedRevision[1]);
+      return value ? Response.json(value) : Response.json({ error: { code: "NOT_FOUND" } }, { status: 404 });
+    }
+    const namespaceRevision = /^\/v1\/vaults\/vlt_test\/namespaces\/([^/]+)\/revisions\/([^/]+)$/u.exec(url.pathname);
+    if (namespaceRevision) {
+      const value = this.namespaceRevisions.get(`${decodeURIComponent(namespaceRevision[1])}\0${namespaceRevision[2]}`);
+      return value ? Response.json(value) : Response.json({ error: { code: "NOT_FOUND" } }, { status: 404 });
+    }
+    const namespaceObject = /^\/v1\/vaults\/vlt_test\/namespaces\/([^/]+)\/objects\/([^/]+)$/u.exec(url.pathname);
+    if (namespaceObject) {
+      const namespace = decodeURIComponent(namespaceObject[1]);
+      const key = `${namespace}\0${namespaceObject[2]}`;
+      if (method === "PUT") {
+        const bytes = new Uint8Array(await new Response(init?.body).arrayBuffer());
+        this.namespaceObjects.set(key, bytes);
+        return Response.json({ created: true, size: bytes.byteLength }, { status: 201 });
+      }
+      const bytes = this.namespaceObjects.get(key);
+      return bytes ? new Response(bytes) : Response.json({ error: { code: "NOT_FOUND" } }, { status: 404 });
+    }
+    if (url.pathname.endsWith("/namespaces")) return Response.json({ revisionId: this.scopedRevisionId, namespaces: [...this.namespaceHeads.values()] });
+    if (url.pathname.endsWith("/namespace-commits")) {
+      const request = JSON.parse(String(init?.body)) as { vaultRevisionId: string; updates: Array<{ namespace: string; baseNamespaceRevisionId: string | null; namespaceRevisionId: string; manifestObjectId: string }> };
+      for (const update of request.updates) {
+        const previousRevisionId = this.namespaceHeads.get(update.namespace)?.revisionId ?? null;
+        const head = { namespace: update.namespace, revisionId: update.namespaceRevisionId, manifestObjectId: update.manifestObjectId };
+        this.namespaceHeads.set(update.namespace, head);
+        this.namespaceRevisions.set(`${update.namespace}\0${update.namespaceRevisionId}`, { ...head, previousRevisionId });
+      }
+      const previousRevisionId = this.scopedRevisionId;
+      this.scopedRevisionId = request.vaultRevisionId;
+      this.scopedRevisions.set(request.vaultRevisionId, { revisionId: request.vaultRevisionId, previousRevisionId, namespaces: [...this.namespaceHeads.values()] });
+      return Response.json({ outcome: "committed", revisionId: request.vaultRevisionId });
+    }
     if (url.pathname === "/v1/devices/current") {
       const input = JSON.parse(String(init?.body)) as { id: string; name: string };
       const device = { id: input.id, name: input.name, status: "active" as const };
       this.devices.set(device.id, device);
       return Response.json({ accountId: "acct_test", deviceId: device.id, name: device.name });
+    }
+    if (url.pathname === "/v1/tokens" && method === "POST") {
+      const input = JSON.parse(String(init?.body)) as Omit<(typeof this.capabilities extends Map<string, infer T> ? T : never), "createdAt">;
+      const record = { ...input, createdAt: Date.now() };
+      this.capabilities.set(record.id, record);
+      const { tokenHash: _tokenHash, keyEnvelope: _keyEnvelope, ...summary } = record;
+      return Response.json(summary, { status: 201 });
+    }
+    if (url.pathname === "/v1/tokens" && method === "GET") {
+      return Response.json({ tokens: [...this.capabilities.values()].map(({ tokenHash: _tokenHash, keyEnvelope: _keyEnvelope, ...record }) => record) });
+    }
+    const capability = /^\/v1\/tokens\/([^/]+)$/u.exec(url.pathname);
+    if (capability && method === "DELETE") {
+      const record = this.capabilities.get(capability[1]);
+      if (record) record.revokedAt = Date.now();
+      return new Response(null, { status: 204 });
+    }
+    if (url.pathname === "/api/bootstrap/redeem" && method === "POST") {
+      const { token } = JSON.parse(String(init?.body)) as { token: string };
+      const digest = Buffer.from(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token))).toString("base64url");
+      const record = [...this.capabilities.values()].find((candidate) => candidate.tokenHash === digest && !candidate.redeemedAt && !candidate.revokedAt);
+      if (!record) return Response.json({ error: { code: "AUTH_REQUIRED", message: "invalid" } }, { status: 401 });
+      record.redeemedAt = Date.now();
+      return Response.json({ accessToken: "scoped-access-token", expiresAt: record.expiresAt, vaultId: record.vaultId, namespaces: record.namespaces, actions: record.actions, keyEnvelope: record.keyEnvelope });
     }
     if (url.pathname === "/v1/devices" && method === "GET") return Response.json({ devices: [...this.devices.values()] });
     const device = /^\/v1\/devices\/([^/]+)$/u.exec(url.pathname);
@@ -185,7 +287,9 @@ class CliRemote {
     }
     if (url.pathname.endsWith("/snapshots") && method === "POST") {
       const input = JSON.parse(String(init?.body)) as { id: string; name: string };
-      const snapshot = { id: input.id, name: input.name, revisionId: this.revisionId!, manifestObjectId: this.manifestObjectId!, protected: true as const, createdAt: 1 };
+      const snapshot = this.scopedRevisionId
+        ? { id: input.id, name: input.name, revisionId: this.scopedRevisionId, protocolVersion: "1.1" as const, protected: true as const, createdAt: 1 }
+        : { id: input.id, name: input.name, revisionId: this.revisionId!, manifestObjectId: this.manifestObjectId!, protected: true as const, createdAt: 1 };
       this.snapshots.set(snapshot.id, snapshot);
       return Response.json(snapshot, { status: 201 });
     }

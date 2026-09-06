@@ -73,8 +73,16 @@ export class VaultCoordinator extends DurableObject<StatecaseEnvironment> {
     return this.#core.namespaceHeads(allowedNamespaces);
   }
 
+  async namespaceRevision(namespace: string, revisionId: string) {
+    return this.#core.namespaceRevision(namespace, revisionId);
+  }
+
   async scopedHead(): Promise<ScopedVaultHead | null> {
     return this.#core.scopedHead();
+  }
+
+  async scopedRevision(revisionId: string) {
+    return this.#core.scopedRevision(revisionId);
   }
 
   async commitNamespaces(request: ScopedCommitRequest): Promise<ScopedCommitResult> {
@@ -399,20 +407,30 @@ class D1CapabilityService implements CapabilityService {
   async redeem(token: string): Promise<Awaited<ReturnType<CapabilityService["redeem"]>>> {
     const now = Date.now();
     const tokenHash = await sha256Base64Url(token);
-    const grant = await this.#database.prepare(`
-      UPDATE capability_grants
-      SET redeemed_at = ?
-      WHERE token_hash = ? AND redeemed_at IS NULL AND revoked_at IS NULL AND expires_at > ?
-      RETURNING id, account_id, vault_id, namespaces_json, actions_json, key_envelope, expires_at
-    `).bind(now, tokenHash, now).first<CapabilityRedeemRow>();
-    if (!grant) return null;
     const accessToken = `stc_access_${randomSecret()}`;
     const accessHash = await sha256Base64Url(accessToken);
     const sessionId = `cps_${crypto.randomUUID().replaceAll("-", "")}`;
-    await this.#database.prepare(`
-      INSERT INTO capability_sessions (id, grant_id, token_hash, expires_at, created_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).bind(sessionId, grant.id, accessHash, grant.expires_at, now).run();
+    const [created] = await this.#database.batch([
+      this.#database.prepare(`
+        INSERT INTO capability_sessions (id, grant_id, token_hash, expires_at, created_at)
+        SELECT ?, id, ?, expires_at, ?
+        FROM capability_grants
+        WHERE token_hash = ? AND redeemed_at IS NULL AND revoked_at IS NULL AND expires_at > ?
+      `).bind(sessionId, accessHash, now, tokenHash, now),
+      this.#database.prepare(`
+        UPDATE capability_grants SET redeemed_at = ?
+        WHERE token_hash = ? AND redeemed_at IS NULL AND revoked_at IS NULL AND expires_at > ?
+          AND EXISTS (SELECT 1 FROM capability_sessions WHERE id = ? AND grant_id = capability_grants.id)
+      `).bind(now, tokenHash, now, sessionId),
+    ]);
+    if (created.meta.changes !== 1) return null;
+    const grant = await this.#database.prepare(`
+      SELECT cg.id, cg.vault_id, cg.namespaces_json, cg.actions_json, cg.key_envelope, cg.expires_at
+      FROM capability_grants cg
+      INNER JOIN capability_sessions cs ON cs.grant_id = cg.id
+      WHERE cs.id = ? AND cg.redeemed_at = ? LIMIT 1
+    `).bind(sessionId, now).first<CapabilityRedeemRow>();
+    if (!grant) throw new Error("capability redemption transaction lost its grant");
     return {
       accessToken,
       expiresAt: grant.expires_at,
@@ -437,7 +455,6 @@ interface CapabilityRow {
 
 interface CapabilityRedeemRow {
   id: string;
-  account_id: string;
   vault_id: string;
   namespaces_json: string;
   actions_json: string;

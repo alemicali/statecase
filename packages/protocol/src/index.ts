@@ -167,6 +167,51 @@ export type PathClaim = z.infer<typeof pathClaimSchema>;
 export type NamespaceUpdate = z.infer<typeof namespaceUpdateSchema>;
 export type ScopedCommitRequest = z.infer<typeof scopedCommitRequestSchema>;
 
+export const namespaceManifestSchema = z.object({
+  schemaVersion: z.literal(1),
+  vaultId: identifier,
+  namespace: identifier,
+  namespaceRevisionId: identifier,
+  parentNamespaceRevisionIds: z.array(identifier).max(32),
+  createdAt: z.iso.datetime(),
+  createdByDeviceId: identifier,
+  operationId: identifier,
+  mode: z.enum(["snapshot", "delta"]),
+  entries: z.array(manifestEntrySchema).max(100_000),
+  tombstones: z.array(tombstoneSchema).max(100_000),
+  conflicts: z.array(conflictSchema).max(100_000),
+  sessionCapsules: z.array(sessionCapsuleSchema).max(100_000).optional(),
+  pathClaims: z.array(pathClaimSchema).max(100_000),
+}).strict().superRefine((manifest, context) => {
+  const logicalPaths = new Set<string>();
+  for (const [collection, values] of [
+    ["entries", manifest.entries],
+    ["tombstones", manifest.tombstones],
+    ["conflicts", manifest.conflicts],
+  ] as const) {
+    for (const [index, value] of values.entries()) {
+      if (value.namespace !== manifest.namespace) {
+        context.addIssue({ code: "custom", message: "content must match manifest namespace", path: [collection, index, "namespace"] });
+      }
+      const identity = value.logicalPath;
+      if (logicalPaths.has(identity)) {
+        context.addIssue({ code: "custom", message: "duplicate logical path", path: [collection, index, "logicalPath"] });
+      }
+      logicalPaths.add(identity);
+    }
+  }
+  const pathIds = new Set<string>();
+  for (const [index, claim] of manifest.pathClaims.entries()) {
+    if (pathIds.has(claim.pathId)) context.addIssue({ code: "custom", message: "duplicate path claim", path: ["pathClaims", index, "pathId"] });
+    pathIds.add(claim.pathId);
+    if (manifest.mode === "delta" && claim.mutation !== "add") {
+      context.addIssue({ code: "custom", message: "delta manifests may only add paths", path: ["pathClaims", index, "mutation"] });
+    }
+  }
+});
+
+export type NamespaceManifestV1 = z.infer<typeof namespaceManifestSchema>;
+
 export type ProtocolErrorCode =
   | "AUTH_REQUIRED"
   | "FORBIDDEN"

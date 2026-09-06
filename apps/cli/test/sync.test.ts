@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-import { randomKey } from "@statecase/crypto";
+import { computeObjectId, deriveScopeKey, encryptEnvelope, randomKey } from "@statecase/crypto";
+import { canonicalJson, type NamespaceManifestV1 } from "@statecase/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { StatecaseClient } from "../src/client.js";
@@ -19,6 +20,20 @@ afterEach(async () => {
 });
 
 describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, WS-003, WS-004)", () => {
+  it("keeps conflict diagnostics stable for plural paths and empty legacy heads", async () => {
+    expect(new SyncConflict(["a", "b"]).message).toContain("2 paths");
+    const remote = new MemoryRemote();
+    const key = await randomKey();
+    const root = await mkdtemp(join(tmpdir(), "statecase-empty-legacy-"));
+    temporary.push(root);
+    const local = config(root);
+    delete local.deviceName;
+    const engine = new SyncEngine(new StatecaseClient("https://remote.test", "device", remote.fetch), "vlt_test", key);
+    expect(await engine.pull(local)).toMatchObject({ outcome: "unchanged", revisionId: null });
+    await writeFile(join(root, "anonymous.txt"), "anonymous\n");
+    expect(await engine.push(local)).toMatchObject({ outcome: "pushed" });
+  });
+
   it("moves only safe encrypted Drop content between unrelated absolute paths", async () => {
     const base = await mkdtemp(join(tmpdir(), "statecase-sync-"));
     temporary.push(base);
@@ -39,6 +54,7 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     const configB = config(second);
 
     expect(await a.push(configA)).toMatchObject({ outcome: "pushed", files: 1 });
+    expect(remote.namespaceHeads.get("drop:drop_shared")).toMatchObject({ namespace: "drop:drop_shared", manifestObjectId: expect.stringMatching(/^obj_/u) });
     expect(remote.plaintext).not.toContain("portable context");
     expect(remote.plaintext).not.toContain("must-not-leak");
     expect(await b.pull(configB)).toMatchObject({ outcome: "pulled", files: 1 });
@@ -46,6 +62,67 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     await expect(readFile(join(second, ".env"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readFile(join(second, "link.txt"))).rejects.toMatchObject({ code: "ENOENT" });
     expect((await b.pull(configB)).outcome).toBe("unchanged");
+  });
+
+  it("materializes an authorized namespace without a vault root key or legacy object access", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-scoped-pull-"));
+    temporary.push(base);
+    const source = join(base, "source");
+    const target = join(base, "target");
+    await Promise.all([mkdir(source), mkdir(target)]);
+    await writeFile(join(source, "brief.md"), "scoped context\n");
+    const remote = new MemoryRemote();
+    const rootKey = await randomKey();
+    await new SyncEngine(new StatecaseClient("https://remote.test", "device", remote.fetch), "vlt_test", rootKey).push(config(source));
+    const keys = await deriveScopeKey(rootKey, "drop:drop_shared");
+    remote.allowLegacyReads = false;
+    const scoped = new SyncEngine(new StatecaseClient("https://remote.test", "capability", remote.fetch), "vlt_test", {
+      vaultId: "vlt_test",
+      namespaces: ["drop:drop_shared"],
+      actions: ["read"],
+      expiresAt: Date.now() + 60_000,
+      namespaceKeys: {
+        "drop:drop_shared": {
+          encryptionKey: Buffer.from(keys.encryptionKey).toString("base64url"),
+          dedupKey: Buffer.from(keys.dedupKey).toString("base64url"),
+        },
+      },
+    });
+    expect(await scoped.pull(config(target))).toMatchObject({ outcome: "pulled", files: 1 });
+    expect(await readFile(join(target, "brief.md"), "utf8")).toBe("scoped context\n");
+  });
+
+  it("publishes immutable append deltas and reconstructs them over the namespace snapshot", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-scoped-append-"));
+    temporary.push(base);
+    const source = join(base, "source");
+    const sandbox = join(base, "sandbox");
+    const observer = join(base, "observer");
+    await Promise.all([mkdir(source), mkdir(sandbox), mkdir(observer)]);
+    await writeFile(join(source, "brief.md"), "version one\n");
+    const remote = new MemoryRemote();
+    const rootKey = await randomKey();
+    await new SyncEngine(new StatecaseClient("https://remote.test", "device", remote.fetch), "vlt_test", rootKey).push(config(source));
+    const keys = await deriveScopeKey(rootKey, "drop:drop_shared");
+    const access = {
+      vaultId: "vlt_test",
+      namespaces: ["drop:drop_shared"],
+      actions: ["read", "append"] as Array<"read" | "append">,
+      expiresAt: Date.now() + 60_000,
+      namespaceKeys: { "drop:drop_shared": { encryptionKey: Buffer.from(keys.encryptionKey).toString("base64url"), dedupKey: Buffer.from(keys.dedupKey).toString("base64url") } },
+    };
+    remote.allowLegacyReads = false;
+    const sandboxConfig = config(sandbox);
+    const sandboxEngine = new SyncEngine(new StatecaseClient("https://remote.test", "capability", remote.fetch), "vlt_test", access);
+    await sandboxEngine.pull(sandboxConfig);
+    await writeFile(join(sandbox, "brief.md"), "version two\n");
+    await writeFile(join(sandbox, "result.md"), "new result\n");
+    expect(await sandboxEngine.push(sandboxConfig)).toMatchObject({ outcome: "pushed", files: 2 });
+
+    const observerEngine = new SyncEngine(new StatecaseClient("https://remote.test", "capability", remote.fetch), "vlt_test", access);
+    expect(await observerEngine.pull(config(observer))).toMatchObject({ outcome: "pulled", files: 2 });
+    expect(await readFile(join(observer, "brief.md"), "utf8")).toBe("version two\n");
+    expect(await readFile(join(observer, "result.md"), "utf8")).toBe("new result\n");
   });
 
   it("refuses to overwrite a locally modified file", async () => {
@@ -251,6 +328,15 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     expect(hydrated.warnings).toEqual(["/outside/not-mapped.txt", "drop_reference/.env", "ignored.txt"]);
     expect(await readFile(join(targetDrop, "brief.md"), "utf8")).toBe("portable brief\n");
     expect(await readFile(join(targetWorkspace, "changed.txt"), "utf8")).toBe("uncommitted context\n");
+
+    await writeFile(join(harness, "sessions", "2026", "native-01.jsonl"), `${session.concat([
+      { type: "tool_call", name: "read_file", arguments: { path: "changed.txt" } },
+    ]).map((record) => JSON.stringify(record)).join("\n")}\n`);
+    const scopedPush = await engine.push(local);
+    const updated = (await engine.dependencies()).find((report) => report.sessionKey.endsWith(":native-01"))!;
+    expect(updated.harnessRevisionId).toBe(scopedPush.revisionId);
+    expect(updated.workspace.capsuleRevisionId).toBe(scopedPush.revisionId);
+    expect(updated.dependencies.find((dependency) => dependency.logicalPath === "changed.txt")).toMatchObject({ status: "resolved" });
   });
 
   it("carries modified and untracked Git work over a clean baseline at a different path", async () => {
@@ -313,7 +399,7 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     await mkdir(unrelated);
     await writeFile(join(unrelated, "note.txt"), "other namespace");
     await sourceEngine.push(config(unrelated));
-    await expect(targetEngine.pull(targetConfig)).resolves.toMatchObject({ outcome: "pulled" });
+    await expect(targetEngine.pull(targetConfig)).resolves.toMatchObject({ outcome: "unchanged" });
     expect((await runFile("git", ["-C", target, "status", "--porcelain=v1", "-z"])).stdout)
       .toBe((await runFile("git", ["-C", source, "status", "--porcelain=v1", "-z"])).stdout);
   });
@@ -367,10 +453,10 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     const engine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
     const local = config(base);
     const first = await engine.push(local);
-    const revision = remote.revisionId;
+    const revision = remote.scopedRevisionId;
     expect(first.outcome).toBe("pushed");
     expect(await engine.push(local)).toMatchObject({ outcome: "unchanged", revisionId: revision, objects: 0, bytes: 0 });
-    expect(remote.revisionId).toBe(revision);
+    expect(remote.scopedRevisionId).toBe(revision);
   });
 
   it("fails closed on an invalid key or a mapping that is not a directory", async () => {
@@ -404,7 +490,11 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     await expect(readFile(join(staging, "context.txt"))).rejects.toMatchObject({ code: "ENOENT" });
     await engine.pull(config(staging), false, first.revisionId!);
     expect(await readFile(join(staging, "context.txt"), "utf8")).toBe("version one\n");
-    expect(remote.revisionId).toBe(second.revisionId);
+    expect(remote.scopedRevisionId).toBe(second.revisionId);
+    const scopedStaging = join(base, "scoped-staging");
+    await mkdir(scopedStaging);
+    await expect(engine.pull(config(scopedStaging), false, second.revisionId!)).resolves.toMatchObject({ outcome: "pulled" });
+    expect(await readFile(join(scopedStaging, "context.txt"), "utf8")).toBe("version two\n");
   });
 
   it("merges disjoint offline edits and pulls the remote side before marking it applied (SY-002, SY-003)", async () => {
@@ -423,7 +513,7 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     const secondConfig = config(secondRoot);
     await firstEngine.push(firstConfig);
     await secondEngine.pull(secondConfig);
-    const commonRevision = remote.revisionId;
+    const commonRevision = secondConfig.applied["drop:drop_shared"]!.revisionId;
 
     await writeFile(join(firstRoot, "from-first.txt"), "first\n");
     await writeFile(join(secondRoot, "from-second.txt"), "second\n");
@@ -460,12 +550,12 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     await firstEngine.push(firstConfig);
     await expect(secondEngine.push(secondConfig)).rejects.toMatchObject({ paths: ["drop:drop_shared:shared.txt"] });
     expect(await readFile(join(secondRoot, "shared.txt"), "utf8")).toBe("second\n");
-    const conflictedHead = remote.revisionId!;
+    const conflictedHead = remote.scopedRevisionId!;
     await expect(secondEngine.push(secondConfig, false, {
       resolveLocalNamespaces: new Set(["drop:drop_shared"]),
       expectedHeadRevisionId: "rev_wrong",
     })).rejects.toBeInstanceOf(SyncConflict);
-    expect(remote.revisionId).toBe(conflictedHead);
+    expect(remote.scopedRevisionId).toBe(conflictedHead);
     await secondEngine.push(secondConfig, false, {
       resolveLocalNamespaces: new Set(["drop:drop_shared"]),
       expectedHeadRevisionId: conflictedHead,
@@ -490,6 +580,224 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     await expect(engine.push(local)).rejects.toMatchObject({ paths: ["drop:drop_shared:immutable.txt:append-only"] });
     await rm(join(base, "immutable.txt"));
     await expect(engine.push(local)).rejects.toMatchObject({ paths: ["drop:drop_shared:immutable.txt:append-only"] });
+  });
+
+  it("fails closed across scoped expiry, authority, mapping, history, dry-run, and deletion edges", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-scoped-edges-"));
+    temporary.push(base);
+    const source = join(base, "source");
+    const sandbox = join(base, "sandbox");
+    await Promise.all([mkdir(source), mkdir(sandbox)]);
+    await writeFile(join(source, "existing.txt"), "existing\n");
+    const remote = new MemoryRemote();
+    const rootKey = await randomKey();
+    await new SyncEngine(new StatecaseClient("https://remote.test", "device", remote.fetch), "vlt_test", rootKey).push(config(source));
+    const appendAccess = await scopedAccess(rootKey, ["read", "append"]);
+    const readAccess = await scopedAccess(rootKey, ["read"]);
+
+    await expect(new SyncEngine(new StatecaseClient("https://remote.test", "cap", remote.fetch), "vlt_test", { ...appendAccess, expiresAt: 1 }).pull(config(sandbox)))
+      .rejects.toThrow("expired");
+    await expect(new SyncEngine(new StatecaseClient("https://remote.test", "cap", remote.fetch), "vlt_test", { ...appendAccess, expiresAt: 1 }).push(config(sandbox)))
+      .rejects.toThrow("expired");
+    await expect(new SyncEngine(new StatecaseClient("https://remote.test", "cap", remote.fetch), "vlt_test", readAccess).push(config(sandbox)))
+      .rejects.toThrow("read-only");
+    expect(() => new SyncEngine(new StatecaseClient("https://remote.test", "cap", remote.fetch), "other_vault", appendAccess))
+      .toThrow("another vault");
+
+    const unauthorized = config(sandbox);
+    unauthorized.mappings[0]!.namespace = "drop:private";
+    await expect(new SyncEngine(new StatecaseClient("https://remote.test", "cap", remote.fetch), "vlt_test", appendAccess).pull(unauthorized))
+      .rejects.toThrow("does not authorize");
+    await expect(new SyncEngine(new StatecaseClient("https://remote.test", "cap", remote.fetch), "vlt_test", appendAccess).push(unauthorized))
+      .rejects.toThrow("does not authorize");
+    const duplicate = config(sandbox);
+    duplicate.mappings.push({ ...duplicate.mappings[0]!, id: "drop_duplicate" });
+    await expect(new SyncEngine(new StatecaseClient("https://remote.test", "cap", remote.fetch), "vlt_test", appendAccess).push(duplicate))
+      .rejects.toThrow("duplicate writable namespace");
+    await expect(new SyncEngine(new StatecaseClient("https://remote.test", "cap", remote.fetch), "vlt_test", appendAccess).pull(config(sandbox), false, "nrev_old"))
+      .rejects.toMatchObject({ status: 404 });
+
+    const scopedConfig = config(sandbox);
+    const engine = new SyncEngine(new StatecaseClient("https://remote.test", "cap", remote.fetch), "vlt_test", appendAccess);
+    await engine.pull(scopedConfig);
+    const strictAppend = structuredClone(scopedConfig);
+    strictAppend.mappings[0]!.mode = "append";
+    await writeFile(join(sandbox, "existing.txt"), "forbidden append overwrite\n");
+    await expect(engine.push(strictAppend)).rejects.toMatchObject({ paths: ["drop:drop_shared:existing.txt:append-only"] });
+    await writeFile(join(sandbox, "existing.txt"), "existing\n");
+    await writeFile(join(sandbox, "draft.txt"), "draft\n");
+    const beforeDryRun = remote.scopedRevisionId;
+    expect(await engine.push(scopedConfig, true)).toMatchObject({ outcome: "pushed" });
+    expect(remote.scopedRevisionId).toBe(beforeDryRun);
+    expect(await engine.push(scopedConfig)).toMatchObject({ outcome: "pushed" });
+    expect(await engine.push(scopedConfig)).toMatchObject({ outcome: "unchanged", objects: 0 });
+    await rm(join(sandbox, "existing.txt"));
+    expect(await engine.push(scopedConfig)).toMatchObject({ outcome: "pushed" });
+    const observer = join(base, "observer");
+    await mkdir(observer);
+    await new SyncEngine(new StatecaseClient("https://remote.test", "cap", remote.fetch), "vlt_test", appendAccess).pull(config(observer));
+    await expect(readFile(join(observer, "existing.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(join(observer, "draft.txt"), "utf8")).toBe("draft\n");
+
+    const invalidKeys = structuredClone(appendAccess);
+    invalidKeys.namespaceKeys["drop:drop_shared"]!.encryptionKey = "bad";
+    await expect(new SyncEngine(new StatecaseClient("https://remote.test", "cap", remote.fetch), "vlt_test", invalidKeys).pull(config(join(base, "bad"))))
+      .rejects.toThrow("stored namespace key");
+
+    const emptyRemote = new MemoryRemote();
+    const emptyRoot = await randomKey();
+    const emptyAccess = await scopedAccess(emptyRoot, ["read", "append"]);
+    const emptyRootPath = join(base, "empty-root");
+    await mkdir(emptyRootPath);
+    const emptyEngine = new SyncEngine(new StatecaseClient("https://remote.test", "cap", emptyRemote.fetch), "vlt_test", emptyAccess);
+    expect(await emptyEngine.pull(config(emptyRootPath))).toMatchObject({ outcome: "unchanged", revisionId: null });
+    await writeFile(join(emptyRootPath, "first.txt"), "first\n");
+    expect(await emptyEngine.push(config(emptyRootPath))).toMatchObject({ outcome: "pushed" });
+  });
+
+  it("rejects mismatched, branching, and cyclic encrypted namespace histories", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-scoped-history-"));
+    temporary.push(base);
+    const rootKey = await randomKey();
+    const access = await scopedAccess(rootKey, ["read"]);
+    const clientFor = (remote: MemoryRemote) => new SyncEngine(new StatecaseClient("https://remote.test", "cap", remote.fetch), "vlt_test", access);
+
+    const mismatched = new MemoryRemote();
+    const mismatchedManifest = namespaceManifest("nrev_body", "snapshot", []);
+    const mismatchObject = await storeNamespaceManifest(mismatched, rootKey, mismatchedManifest);
+    mismatched.namespaceHeads.set(mismatchedManifest.namespace, { namespace: mismatchedManifest.namespace, revisionId: "nrev_pointer", manifestObjectId: mismatchObject });
+    mismatched.scopedRevisionId = "srev_mismatch";
+    await expect(clientFor(mismatched).pull(config(join(base, "mismatch")))).rejects.toThrow("do not match");
+
+    const unboundClaims = new MemoryRemote();
+    const unboundManifest = namespaceManifest("nrev_unbound", "snapshot", []);
+    unboundManifest.entries.push({
+      namespace: unboundManifest.namespace,
+      logicalPath: "unclaimed.txt",
+      entryType: "file",
+      objectIds: ["obj_unclaimed"],
+      totalSize: 1,
+      contentDigest: "digest_unclaimed",
+    });
+    const unboundObject = await storeNamespaceManifest(unboundClaims, rootKey, unboundManifest);
+    unboundClaims.namespaceHeads.set(unboundManifest.namespace, { namespace: unboundManifest.namespace, revisionId: unboundManifest.namespaceRevisionId, manifestObjectId: unboundObject });
+    unboundClaims.scopedRevisionId = "srev_unbound";
+    await expect(clientFor(unboundClaims).pull(config(join(base, "unbound")))).rejects.toThrow("path claims do not cover");
+
+    const duplicateCoverage = new MemoryRemote();
+    const duplicateManifest = namespaceManifest("nrev_duplicate_coverage", "snapshot", []);
+    duplicateManifest.entries.push(
+      { namespace: duplicateManifest.namespace, logicalPath: "first.txt", entryType: "file", objectIds: [], totalSize: 0, contentDigest: "digest_first" },
+      { namespace: duplicateManifest.namespace, logicalPath: "second.txt", entryType: "file", objectIds: [], totalSize: 0, contentDigest: "digest_second" },
+    );
+    const duplicateKeys = await deriveScopeKey(rootKey, duplicateManifest.namespace);
+    duplicateManifest.pathClaims.push(
+      { pathId: await testPathId(duplicateKeys.dedupKey, "first.txt"), mutation: "add" },
+      { pathId: await testPathId(duplicateKeys.dedupKey, `${duplicateManifest.operationId}\0first.txt`), mutation: "add" },
+    );
+    const duplicateObject = await storeNamespaceManifest(duplicateCoverage, rootKey, duplicateManifest);
+    duplicateCoverage.namespaceHeads.set(duplicateManifest.namespace, { namespace: duplicateManifest.namespace, revisionId: duplicateManifest.namespaceRevisionId, manifestObjectId: duplicateObject });
+    duplicateCoverage.scopedRevisionId = "srev_duplicate_coverage";
+    await expect(clientFor(duplicateCoverage).pull(config(join(base, "duplicate-coverage")))).rejects.toThrow("does not match");
+
+    const branching = new MemoryRemote();
+    const branchingManifest = namespaceManifest("nrev_branch", "delta", []);
+    const branchObject = await storeNamespaceManifest(branching, rootKey, branchingManifest);
+    branching.namespaceHeads.set(branchingManifest.namespace, { namespace: branchingManifest.namespace, revisionId: branchingManifest.namespaceRevisionId, manifestObjectId: branchObject });
+    branching.scopedRevisionId = "srev_branch";
+    await expect(clientFor(branching).pull(config(join(base, "branch")))).rejects.toThrow("exactly one parent");
+
+    const wrongParent = new MemoryRemote();
+    const wrongParentManifest = namespaceManifest("nrev_child", "delta", ["nrev_parent"]);
+    const childObject = await storeNamespaceManifest(wrongParent, rootKey, wrongParentManifest);
+    wrongParent.namespaceHeads.set(wrongParentManifest.namespace, { namespace: wrongParentManifest.namespace, revisionId: wrongParentManifest.namespaceRevisionId, manifestObjectId: childObject });
+    wrongParent.namespaceRevisions.set(`${wrongParentManifest.namespace}\0nrev_parent`, { namespace: wrongParentManifest.namespace, revisionId: "nrev_other", manifestObjectId: childObject, previousRevisionId: null });
+    wrongParent.scopedRevisionId = "srev_wrong_parent";
+    await expect(clientFor(wrongParent).pull(config(join(base, "wrong-parent")))).rejects.toThrow("pointer does not match");
+
+    const cyclic = new MemoryRemote();
+    const cycleA = namespaceManifest("nrev_a", "delta", ["nrev_b"]);
+    const cycleB = namespaceManifest("nrev_b", "delta", ["nrev_a"]);
+    const objectA = await storeNamespaceManifest(cyclic, rootKey, cycleA);
+    const objectB = await storeNamespaceManifest(cyclic, rootKey, cycleB);
+    cyclic.namespaceHeads.set(cycleA.namespace, { namespace: cycleA.namespace, revisionId: cycleA.namespaceRevisionId, manifestObjectId: objectA });
+    cyclic.namespaceRevisions.set(`${cycleA.namespace}\0nrev_a`, { namespace: cycleA.namespace, revisionId: "nrev_a", manifestObjectId: objectA, previousRevisionId: "nrev_b" });
+    cyclic.namespaceRevisions.set(`${cycleA.namespace}\0nrev_b`, { namespace: cycleA.namespace, revisionId: "nrev_b", manifestObjectId: objectB, previousRevisionId: "nrev_a" });
+    cyclic.scopedRevisionId = "srev_cycle";
+    await expect(clientFor(cyclic).pull(config(join(base, "cycle")))).rejects.toThrow("cycle");
+
+    const noGlobalRevision = new MemoryRemote();
+    const snapshot = namespaceManifest("nrev_only", "snapshot", []);
+    const snapshotObject = await storeNamespaceManifest(noGlobalRevision, rootKey, snapshot);
+    noGlobalRevision.namespaceHeads.set(snapshot.namespace, { namespace: snapshot.namespace, revisionId: snapshot.namespaceRevisionId, manifestObjectId: snapshotObject });
+    await expect(clientFor(noGlobalRevision).pull(config(join(base, "fallback")))).resolves.toMatchObject({ revisionId: "nrev_only" });
+  });
+
+  it("migrates a pre-1.1 legacy head without overwriting concurrent or unhydrated state", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-legacy-migration-"));
+    temporary.push(base);
+    const source = join(base, "source");
+    const stranger = join(base, "stranger");
+    await Promise.all([mkdir(source), mkdir(stranger)]);
+    await writeFile(join(source, "legacy.txt"), "legacy\n");
+    const remote = new MemoryRemote();
+    const rootKey = await randomKey();
+    const engine = new SyncEngine(new StatecaseClient("https://remote.test", "device", remote.fetch), "vlt_test", rootKey);
+    const local = config(source);
+    await engine.push(local);
+    const legacyRevision = remote.revisionId!;
+
+    remote.namespaceHeads.clear();
+    remote.namespaceRevisions.clear();
+    remote.scopedRevisionId = null;
+    local.applied["drop:drop_shared"]!.revisionId = legacyRevision;
+    expect(await engine.pull(local)).toMatchObject({ outcome: "unchanged", revisionId: legacyRevision });
+    expect(await engine.dependencies(legacyRevision)).toEqual([]);
+    expect(await engine.push(local, true)).toMatchObject({ outcome: "unchanged", revisionId: legacyRevision });
+    expect(await engine.push(local)).toMatchObject({ outcome: "unchanged", revisionId: legacyRevision });
+    expect(remote.namespaceHeads.get("drop:drop_shared")).toBeDefined();
+
+    remote.namespaceHeads.clear();
+    remote.namespaceRevisions.clear();
+    remote.scopedRevisionId = null;
+    await expect(engine.push(local, false, { expectedHeadRevisionId: "rev_wrong" })).rejects.toMatchObject({ paths: ["vlt_test:head-advanced-before-resolution"] });
+
+    const duplicate = config(source);
+    duplicate.applied["drop:drop_shared"] = { revisionId: legacyRevision, digests: {} };
+    duplicate.mappings.push({ ...duplicate.mappings[0]!, id: "drop_duplicate" });
+    await expect(engine.push(duplicate)).rejects.toThrow("duplicate writable namespace");
+
+    const unhydrated = config(stranger);
+    await expect(engine.push(unhydrated)).rejects.toMatchObject({ paths: ["drop:drop_shared:remote-head-not-applied"] });
+
+    const append = config(source);
+    append.applied["drop:drop_shared"] = { revisionId: legacyRevision, digests: {} };
+    append.mappings[0]!.mode = "append";
+    await writeFile(join(source, "legacy.txt"), "forbidden replacement\n");
+    await expect(engine.push(append)).rejects.toMatchObject({ paths: ["drop:drop_shared:legacy.txt:append-only"] });
+
+    const mismatchRevision = remote.revisionId!;
+    remote.revisionId = "rev_mismatched_pointer";
+    await expect(engine.pull(config(join(base, "mismatch")))).rejects.toThrow("head and manifest revision");
+    remote.revisionId = mismatchRevision;
+
+    const resolutionRemote = new MemoryRemote();
+    const resolutionRoot = join(base, "resolution");
+    await mkdir(resolutionRoot);
+    await writeFile(join(resolutionRoot, "winner.txt"), "base\n");
+    const resolutionEngine = new SyncEngine(new StatecaseClient("https://remote.test", "device", resolutionRemote.fetch), "vlt_test", rootKey);
+    const resolutionConfig = config(resolutionRoot);
+    await resolutionEngine.push(resolutionConfig);
+    const resolutionLegacyRevision = resolutionRemote.revisionId!;
+    resolutionRemote.namespaceHeads.clear();
+    resolutionRemote.namespaceRevisions.clear();
+    resolutionRemote.scopedRevisionId = null;
+    resolutionConfig.applied["drop:drop_shared"]!.revisionId = resolutionLegacyRevision;
+    await writeFile(join(resolutionRoot, "winner.txt"), "local winner\n");
+    await expect(resolutionEngine.push(resolutionConfig, false, {
+      resolveLocalNamespaces: new Set(["drop:drop_shared"]),
+      expectedHeadRevisionId: resolutionLegacyRevision,
+    })).resolves.toMatchObject({ outcome: "pushed" });
   });
 });
 
@@ -517,6 +825,57 @@ function workspaceConfig(path: string): LocalConfig {
   return { ...config(path), mappings: [], workspaces: [{ id: "ws_test", path }] };
 }
 
+async function scopedAccess(rootKey: Uint8Array, actions: Array<"read" | "append">) {
+  const keys = await deriveScopeKey(rootKey, "drop:drop_shared");
+  return {
+    vaultId: "vlt_test",
+    namespaces: ["drop:drop_shared"],
+    actions,
+    expiresAt: Date.now() + 60_000,
+    namespaceKeys: {
+      "drop:drop_shared": {
+        encryptionKey: Buffer.from(keys.encryptionKey).toString("base64url"),
+        dedupKey: Buffer.from(keys.dedupKey).toString("base64url"),
+      },
+    },
+  };
+}
+
+function namespaceManifest(revisionId: string, mode: "snapshot" | "delta", parents: string[]): NamespaceManifestV1 {
+  return {
+    schemaVersion: 1,
+    vaultId: "vlt_test",
+    namespace: "drop:drop_shared",
+    namespaceRevisionId: revisionId,
+    parentNamespaceRevisionIds: parents,
+    createdAt: "2026-09-06T10:00:00.000Z",
+    createdByDeviceId: "dev_test",
+    operationId: `op_${revisionId}`,
+    mode,
+    entries: [],
+    tombstones: [],
+    conflicts: [],
+    pathClaims: [],
+  };
+}
+
+async function storeNamespaceManifest(remote: MemoryRemote, rootKey: Uint8Array, manifest: NamespaceManifestV1): Promise<string> {
+  const keys = await deriveScopeKey(rootKey, manifest.namespace);
+  const bytes = new TextEncoder().encode(canonicalJson(manifest));
+  const objectId = await computeObjectId(keys.dedupKey, bytes);
+  remote.namespaceObjects.set(`${manifest.namespace}\0${objectId}`, await encryptEnvelope({
+    plaintext: bytes,
+    key: keys.encryptionKey,
+    dedupKey: keys.dedupKey,
+    context: { vaultId: manifest.vaultId, scopeId: manifest.namespace, compression: "none" },
+  }));
+  return objectId;
+}
+
+async function testPathId(dedupKey: Uint8Array, logicalPath: string): Promise<string> {
+  return computeObjectId(dedupKey, new TextEncoder().encode(`statecase:path:v1\0${logicalPath}`));
+}
+
 async function initializeRepository(path: string): Promise<void> {
   await mkdir(path, { recursive: true });
   await writeFile(join(path, "tracked.txt"), "baseline\n");
@@ -527,14 +886,59 @@ async function initializeRepository(path: string): Promise<void> {
 
 class MemoryRemote {
   readonly objects = new Map<string, Uint8Array>();
+  readonly namespaceObjects = new Map<string, Uint8Array>();
+  readonly namespaceHeads = new Map<string, { namespace: string; revisionId: string; manifestObjectId: string }>();
+  readonly namespaceRevisions = new Map<string, { namespace: string; revisionId: string; manifestObjectId: string; previousRevisionId: string | null }>();
+  readonly scopedRevisions = new Map<string, { revisionId: string; previousRevisionId: string | null; namespaces: Array<{ namespace: string; revisionId: string; manifestObjectId: string }> }>();
   readonly revisions = new Map<string, { revisionId: string; manifestObjectId: string; previousRevisionId: string | null }>();
   revisionId: string | null = null;
+  scopedRevisionId: string | null = null;
   manifestObjectId: string | null = null;
   plaintext = "";
+  allowLegacyReads = true;
 
   fetch: typeof fetch = async (input, init) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
     const method = init?.method ?? "GET";
+    const scopedRevision = /^\/v1\/vaults\/vlt_test\/scoped-revisions\/([^/]+)$/u.exec(url.pathname);
+    if (scopedRevision) {
+      const value = this.scopedRevisions.get(scopedRevision[1]);
+      return value ? Response.json(value) : Response.json({ error: { code: "NOT_FOUND" } }, { status: 404 });
+    }
+    const namespaceRevision = /^\/v1\/vaults\/vlt_test\/namespaces\/([^/]+)\/revisions\/([^/]+)$/u.exec(url.pathname);
+    if (namespaceRevision) {
+      const value = this.namespaceRevisions.get(`${decodeURIComponent(namespaceRevision[1])}\0${namespaceRevision[2]}`);
+      return value ? Response.json(value) : Response.json({ error: { code: "NOT_FOUND" } }, { status: 404 });
+    }
+    const namespaceObject = /^\/v1\/vaults\/vlt_test\/namespaces\/([^/]+)\/objects\/([^/]+)$/u.exec(url.pathname);
+    if (namespaceObject) {
+      const namespace = decodeURIComponent(namespaceObject[1]);
+      const key = `${namespace}\0${namespaceObject[2]}`;
+      if (method === "PUT") {
+        const bytes = new Uint8Array(await new Response(init?.body).arrayBuffer());
+        this.namespaceObjects.set(key, bytes);
+        this.plaintext += new TextDecoder().decode(bytes);
+        return Response.json({ created: true, size: bytes.byteLength }, { status: 201 });
+      }
+      const bytes = this.namespaceObjects.get(key);
+      return bytes ? new Response(bytes) : Response.json({ error: { code: "NOT_FOUND" } }, { status: 404 });
+    }
+    if (url.pathname.endsWith("/namespaces")) return Response.json({ revisionId: this.scopedRevisionId, namespaces: [...this.namespaceHeads.values()] });
+    if (url.pathname.endsWith("/namespace-commits")) {
+      const request = JSON.parse(String(init?.body)) as { vaultRevisionId: string; updates: Array<{ namespace: string; baseNamespaceRevisionId: string | null; namespaceRevisionId: string; manifestObjectId: string }> };
+      const stale = request.updates.filter((update) => (this.namespaceHeads.get(update.namespace)?.revisionId ?? null) !== update.baseNamespaceRevisionId);
+      if (stale.length > 0) return Response.json({ error: { code: "STALE_BASE", message: "advanced" } }, { status: 409 });
+      for (const update of request.updates) {
+        const previousRevisionId = this.namespaceHeads.get(update.namespace)?.revisionId ?? null;
+        const head = { namespace: update.namespace, revisionId: update.namespaceRevisionId, manifestObjectId: update.manifestObjectId };
+        this.namespaceHeads.set(update.namespace, head);
+        this.namespaceRevisions.set(`${update.namespace}\0${update.namespaceRevisionId}`, { ...head, previousRevisionId });
+      }
+      const previousRevisionId = this.scopedRevisionId;
+      this.scopedRevisionId = request.vaultRevisionId;
+      this.scopedRevisions.set(request.vaultRevisionId, { revisionId: request.vaultRevisionId, previousRevisionId, namespaces: [...this.namespaceHeads.values()] });
+      return Response.json({ outcome: "committed", revisionId: request.vaultRevisionId });
+    }
     const object = /^\/v1\/vaults\/vlt_test\/objects\/([^/]+)$/u.exec(url.pathname);
     if (object && method === "PUT") {
       const bytes = new Uint8Array(await new Response(init?.body).arrayBuffer());
@@ -543,6 +947,7 @@ class MemoryRemote {
       return Response.json({ created: true, size: bytes.byteLength }, { status: 201 });
     }
     if (object) {
+      if (!this.allowLegacyReads) return Response.json({ error: { code: "NOT_FOUND" } }, { status: 404 });
       const bytes = this.objects.get(object[1]);
       return bytes ? new Response(bytes) : Response.json({ error: { code: "NOT_FOUND" } }, { status: 404 });
     }

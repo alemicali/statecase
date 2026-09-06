@@ -438,6 +438,11 @@ cross-workspace access.
 Acceptance: intended flow succeeds; every escalation fails; secret never
 appears in transcript/log/process arguments.
 
+Automated status: the synthetic CLI UAT now covers protected token creation,
+one-time rootless bootstrap, scoped pull, append publication, persistent-device
+reconciliation, and revocation. Real Daytona-like Codex and Claude runs plus
+process/log inspection remain required before public release.
+
 ### UAT-07 Offline and crash recovery
 
 Disconnect during an object upload and kill the client at selected journal

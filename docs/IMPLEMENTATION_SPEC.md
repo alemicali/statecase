@@ -20,10 +20,10 @@ and selective restore to a staging target are implemented. Content-addressed
 three-way merge handles disjoint/identical namespace changes and preserves
 same-path conflicts; workspace transports are atomic and append-only mappings
 cannot mutate prior paths. Immutable Session Capsules and historical closure
-hydration are implemented. The protocol 1.1 server foundation now provides
-namespace-isolated R2 objects, atomic namespace heads, and single-use scoped
-capability grants; CLI namespace manifests and scope-key bootstrap remain in
-progress. Sections covering append-aware same-session merge, safe parsed text
+hydration are implemented. Protocol 1.1 provides namespace-isolated R2
+objects, immutable per-namespace revision chains, atomic namespace heads,
+single-use scoped capability grants, client-encrypted scope-key bootstrap, and
+rootless read+append synchronization. Sections covering append-aware same-session merge, safe parsed text
 merge, retention pruning, in-place restore, automatic baseline fetch, and
 initialized submodule hydration remain target requirements, not current claims.
 
@@ -349,8 +349,9 @@ review before production data is accepted.
 ### 6.1 Key hierarchy
 
 - Each vault has a random 256-bit root key.
-- The root key wraps independently generated scope keys for global config,
-  global skills, each workspace, and an optional secrets compartment.
+- Domain-separated scope encryption and deduplication keys are derived from
+  the root key for global config, global skills, each workspace/Drop/harness,
+  and an optional secrets compartment.
 - Persistent devices receive only authorized wrapped scope keys.
 - Ephemeral bootstrap capabilities receive only the requested workspace keys
   and optional read-only global skill/config keys.
@@ -393,8 +394,9 @@ verification step during onboarding.
 
 ### 6.4 Bootstrap capability
 
-`STATECASE_BOOTSTRAP_TOKEN` is a single secret envelope containing or
-referencing:
+`STATECASE_BOOTSTRAP_TOKEN` is a random 256-bit one-time secret. The service
+stores only its SHA-256 digest and an opaque client-encrypted envelope
+containing:
 
 - server-verifiable authorization;
 - expiry and one-time redemption identifier;
@@ -722,10 +724,11 @@ Initial endpoints:
 POST   /v1/auth/device/start
 POST   /v1/auth/device/complete
 POST   /v1/auth/token/refresh
-POST   /v1/bootstrap/redeem
+POST   /api/bootstrap/redeem
 GET    /v1/devices
 DELETE /v1/devices/:deviceId
 POST   /v1/tokens
+GET    /v1/tokens
 DELETE /v1/tokens/:tokenId
 POST   /v1/sync/plan
 PUT    /v1/vaults/:vaultId/objects/:objectId
@@ -734,6 +737,12 @@ PUT    /v1/vaults/:vaultId/manifests/:revisionId
 GET    /v1/vaults/:vaultId/manifests/:revisionId
 GET    /v1/vaults/:vaultId/head
 POST   /v1/vaults/:vaultId/commit
+GET    /v1/vaults/:vaultId/namespaces
+PUT    /v1/vaults/:vaultId/namespaces/:namespace/objects/:objectId
+GET    /v1/vaults/:vaultId/namespaces/:namespace/objects/:objectId
+GET    /v1/vaults/:vaultId/namespaces/:namespace/revisions/:revisionId
+GET    /v1/vaults/:vaultId/scoped-revisions/:revisionId
+POST   /v1/vaults/:vaultId/namespace-commits
 POST   /v1/vaults/:vaultId/sessions/:sessionId/lease
 DELETE /v1/vaults/:vaultId/sessions/:sessionId/lease
 GET    /v1/vaults/:vaultId/snapshots
@@ -760,7 +769,7 @@ statecase login [--device-name] [--device-code] [--non-interactive]
 statecase logout
 statecase vault create|list|select
 statecase setup [--harness ...] [--transparent] [--dry-run]
-statecase bootstrap [--token-stdin] [--non-interactive]
+statecase bootstrap [--token-file ...] [--non-interactive]
 statecase workspace attach [--id ...] [--path ...] [--auto] [--mode git-overlay|metadata-only]
 statecase workspace list|move|detach
 statecase workspace capsule|dependencies|hydrate
@@ -774,7 +783,8 @@ statecase doctor [--json]
 statecase conflicts list|show|resolve
 statecase snapshot create|list|protect|delete
 statecase restore --revision ... [--target ...] [--dry-run]
-statecase token create|list|revoke
+statecase token create --namespace ... --actions read[,append] --ttl ... --output ...
+statecase token list|revoke
 statecase device list|approve|revoke
 statecase daemon install|start|stop|status|uninstall
 statecase skills install|verify|uninstall

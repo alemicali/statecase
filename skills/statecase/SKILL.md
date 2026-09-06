@@ -15,7 +15,15 @@ Run:
 statecase --json status
 ```
 
-Read the JSON and decide whether login, vault enrollment, harness setup, a Drop mapping, or synchronization is missing.
+Read the JSON fields `accessMode`, `namespaces`, and `expiresAt`. Decide whether full login/vault enrollment, scoped bootstrap, harness setup, a Drop mapping, or synchronization is missing.
+
+## Ephemeral bootstrap
+
+On a trusted full-access device, create a least-privilege grant with `statecase token create --namespace <ids> --actions read,append --ttl <minutes> --output <protected-path>`. Never request or echo the generated file contents. Prefer `read` without `append` when the sandbox does not need to return work.
+
+In a fresh sandbox profile, redeem through an injected `STATECASE_BOOTSTRAP_TOKEN` or `statecase bootstrap --token-file <secret-mount> --non-interactive`. Do not put the token itself in a command argument. Then attach only the authorized workspace IDs, map only the authorized Drop IDs, run `statecase --json pull`, and launch through `statecase run <harness> -- <args>` when supervised synchronization is desired.
+
+A scoped client has no vault root key. Treat an authorization error for an unlisted namespace as an intended boundary, not as a reason to inspect credentials or fall back to raw copy/Git. After successful redemption, tell the operator or deployment system to remove the one-time bootstrap secret. A trusted device can inspect and revoke grants with `statecase token list` and `statecase token revoke <id> --yes`.
 
 ## Safe workflow
 

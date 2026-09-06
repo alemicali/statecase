@@ -7,7 +7,7 @@ describe("Statecase in workerd (PR-001, PR-005, PR-010, PR-011, AU-001)", () => 
   it("runs the real Worker entrypoint", async () => {
     const response = await exports.default.fetch("http://statecase.test/health");
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ protocolVersion: "1.0", service: "statecase", status: "ok" });
+    expect(await response.json()).toEqual({ protocolVersion: "1.1", legacyProtocolVersion: "1.0", service: "statecase", status: "ok" });
   });
 
   it("applies the complete D1 control and auth schema", async () => {
@@ -247,6 +247,17 @@ describe("Statecase in workerd (PR-001, PR-005, PR-010, PR-011, AU-001)", () => 
     });
     expect(committed.status).toBe(200);
     expect(await committed.json()).toMatchObject({ outcome: "committed" });
+    expect(await (await exports.default.fetch(
+      `http://statecase.test/v1/vaults/${vault.id}/scoped-revisions/rev_capability_runtime`,
+      { headers: capabilityHeaders },
+    )).json()).toMatchObject({
+      revisionId: "rev_capability_runtime",
+      namespaces: [{ namespace, revisionId: "nrev_capability_runtime", manifestObjectId: "obj_manifest" }],
+    });
+    expect(await (await exports.default.fetch(
+      `http://statecase.test/v1/vaults/${vault.id}/namespaces/${encodeURIComponent(namespace)}/revisions/nrev_capability_runtime`,
+      { headers: capabilityHeaders },
+    )).json()).toMatchObject({ revisionId: "nrev_capability_runtime", previousRevisionId: null });
     expect((await exports.default.fetch(`http://statecase.test/v1/vaults/${vault.id}/namespace-commits`, {
       method: "POST",
       headers: { authorization: `Bearer ${access.accessToken}`, "content-type": "application/json" },

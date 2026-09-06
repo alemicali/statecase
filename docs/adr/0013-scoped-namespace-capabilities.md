@@ -1,6 +1,6 @@
 # ADR 0013: Namespace heads and scoped ephemeral capabilities
 
-Status: accepted; server foundation implemented, client migration in progress
+Status: accepted and implemented for current-head synchronization
 
 ## Context
 
@@ -25,11 +25,11 @@ the object lookup and ciphertext from another namespace is not reachable
 through an allowed route. A Durable Object checks every touched namespace base
 before changing any head; disjoint namespace writers can advance independently.
 
-Append commits contain blinded path/checkpoint identities. The coordinator
-retains those identities and rejects reuse, updates, or deletion by an append
-writer without learning plaintext paths. Clients must bind and verify the same
-claims against decrypted namespace manifests; the server-side check alone is
-not a substitute for client integrity validation.
+Append commits contain blinded immutable patch-record identities. The
+coordinator retains those identities and rejects their reuse without learning
+plaintext paths. A patch may propose an upsert or deletion of a logical path,
+but it cannot perform a server-authorized replace: readers reconstruct the
+authenticated parent chain and a persistent writer reconciles the proposal.
 
 Capability enrollment has two credentials:
 
@@ -49,9 +49,12 @@ Revoking the creator device also revokes its grants. Redemption responses use
 
 The existing protocol 1.0 paths remain temporarily available to persistent
 devices so current private data can be migrated. A capability never falls back
-to them. The CLI still needs to emit/consume namespace manifests, derive only
-the granted scope keys, create protected bootstrap files, and migrate legacy
-vault heads before UAT-06 can be claimed complete.
+to them. The CLI emits per-namespace snapshot/delta manifests, derives and
+wraps only granted scope keys, creates new `0600` bootstrap files, and migrates
+the first legacy head into namespace-qualified storage. Each immutable
+namespace revision records its predecessor so bounded clients can reconstruct
+append chains. Protected snapshots now pin scoped global revisions; retention
+compaction and real sandbox/harness certification remain separate release gates.
 
 R2 requires a known upload length. The Worker therefore reads each already
 bounded object into at most 8 MiB before the conditional put; this fixes the
@@ -62,6 +65,8 @@ the in-memory API tests.
 
 Protocol and coordinator tests cover duplicate namespace/path claims, atomic
 multi-head commits, disjoint writers, stale touched heads, durable idempotency,
-and append reuse. The workerd suite exercises D1 migration, concurrent one-time
+and append reuse. The CLI UAT covers trusted publish, redacted capability
+creation, rootless bootstrap, scoped pull, append publish, persistent-device
+reconciliation, and revocation. The workerd suite exercises D1 migration, concurrent one-time
 redemption, scoped R2 access, legacy and cross-namespace denial, append commit,
 replace denial, and immediate revocation using the real Worker bindings.

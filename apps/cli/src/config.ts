@@ -33,6 +33,13 @@ export interface LocalSecrets {
   version: 1;
   token?: string;
   vaultKeys: Record<string, string>;
+  scopedVaults?: Record<string, {
+    vaultId: string;
+    namespaces: string[];
+    actions: Array<"read" | "append">;
+    expiresAt: number;
+    namespaceKeys: Record<string, { encryptionKey: string; dedupKey: string }>;
+  }>;
 }
 
 export class ConfigStore {

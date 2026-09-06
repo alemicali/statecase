@@ -46,7 +46,7 @@ describe("Cloud API contract (PR-001..PR-015)", () => {
   it("exposes unauthenticated health without payload detail", async () => {
     const response = await fixture({ authenticated: false }).app.request("/health");
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ protocolVersion: "1.0", service: "statecase", status: "ok" });
+    expect(await response.json()).toEqual({ protocolVersion: "1.1", legacyProtocolVersion: "1.0", service: "statecase", status: "ok" });
     expect(response.headers.get("x-content-type-options")).toBe("nosniff");
   });
 
@@ -167,6 +167,7 @@ describe("Cloud API contract (PR-001..PR-015)", () => {
     expect((await fixture().app.request("/v1/tokens", { method: "POST", body: JSON.stringify({ ...valid, namespaces: ["secrets"] }) })).status).toBe(400);
     expect((await fixture().app.request("/v1/tokens", { method: "POST", body: JSON.stringify({ ...valid, namespaces: ["workspace:ws_01", "workspace:ws_01"] }) })).status).toBe(400);
     expect((await fixture().app.request("/v1/tokens", { method: "POST", body: JSON.stringify({ ...valid, actions: ["read", "read"] }) })).status).toBe(400);
+    expect((await fixture().app.request("/v1/tokens", { method: "POST", body: JSON.stringify({ ...valid, actions: ["append"] }) })).status).toBe(400);
     expect((await fixture().app.request("/v1/tokens", { method: "POST", body: JSON.stringify({ ...valid, expiresAt: Date.now() + 25 * 60 * 60 * 1000 }) })).status).toBe(400);
     expect((await fixture({ adminAuthorized: false }).app.request("/v1/tokens", { method: "POST", body: JSON.stringify(valid) })).status).toBe(404);
   });
@@ -328,6 +329,23 @@ describe("Cloud API contract (PR-001..PR-015)", () => {
       revisionId: "rev_scoped",
       namespaces: [{ namespace: "workspace:ws_01", revisionId: "nrev_01", manifestObjectId: "obj_manifest" }],
     });
+    expect(await (await app.request("/v1/vaults/vlt_01/namespaces/workspace%3Aws_01/revisions/nrev_01")).json()).toEqual({
+      namespace: "workspace:ws_01",
+      revisionId: "nrev_01",
+      manifestObjectId: "obj_manifest",
+      previousRevisionId: null,
+    });
+    expect(await (await app.request("/v1/vaults/vlt_01/scoped-revisions/rev_scoped")).json()).toMatchObject({
+      revisionId: "rev_scoped",
+      previousRevisionId: null,
+      namespaces: [{ namespace: "workspace:ws_01", revisionId: "nrev_01" }],
+    });
+    expect(await (await app.request("/v1/vaults/vlt_01/snapshots", {
+      method: "POST",
+      body: JSON.stringify({ id: "snp_scoped", name: "Scoped checkpoint" }),
+    })).json()).toMatchObject({ revisionId: "rev_scoped", protocolVersion: "1.1", protected: true });
+    expect((await app.request("/v1/vaults/vlt_01/scoped-revisions/rev_missing")).status).toBe(404);
+    expect((await app.request("/v1/vaults/vlt_01/namespaces/drop%3Aprivate/revisions/nrev_01")).status).toBe(404);
     expect(new Uint8Array(await (await app.request(`${allowedBase}/obj_chunk`)).arrayBuffer())).toEqual(Uint8Array.of(2));
   });
 

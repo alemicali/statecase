@@ -5,6 +5,7 @@ import {
   commitRequestSchema,
   manifestEntrySchema,
   manifestSchema,
+  namespaceManifestSchema,
   protocolError,
   scopedCommitRequestSchema,
   sessionCapsuleSchema,
@@ -158,5 +159,60 @@ describe("wire schemas (PR-001, PR-014)", () => {
       ...request,
       updates: [{ ...request.updates[0], mode: "append", pathClaims: [{ pathId: "pth_01", mutation: "update" }] }],
     })).toThrow();
+  });
+
+  it("accepts a namespace-scoped manifest and rejects cross-namespace content", () => {
+    const scoped = {
+      schemaVersion: 1,
+      vaultId: "vlt_01",
+      namespace: "workspace:ws_01",
+      namespaceRevisionId: "nrev_01",
+      parentNamespaceRevisionIds: [],
+      createdAt: "2026-09-06T10:00:00.000Z",
+      createdByDeviceId: "dev_01",
+      operationId: "op_scoped",
+      mode: "snapshot",
+      entries: [{
+        namespace: "workspace:ws_01",
+        logicalPath: "src/index.ts",
+        objectIds: ["obj_a"],
+        totalSize: 1,
+        contentDigest: "digest_a",
+      }],
+      tombstones: [],
+      conflicts: [],
+      pathClaims: [{ pathId: "pth_a", mutation: "add" }],
+    };
+    expect(namespaceManifestSchema.parse(scoped)).toMatchObject({ namespace: "workspace:ws_01", mode: "snapshot" });
+    expect(() => namespaceManifestSchema.parse({
+      ...scoped,
+      entries: [{ ...scoped.entries[0], namespace: "drop:private" }],
+    })).toThrow("manifest namespace");
+  });
+
+  it("requires append namespace manifests to be additive and internally unique", () => {
+    const append = {
+      schemaVersion: 1,
+      vaultId: "vlt_01",
+      namespace: "harness:codex:default",
+      namespaceRevisionId: "nrev_02",
+      parentNamespaceRevisionIds: ["nrev_01"],
+      createdAt: "2026-09-06T10:00:00.000Z",
+      createdByDeviceId: "dev_01",
+      operationId: "op_append",
+      mode: "delta",
+      entries: [{ namespace: "harness:codex:default", logicalPath: "sessions/run.jsonl", objectIds: ["obj_a"], totalSize: 1, contentDigest: "digest_a" }],
+      tombstones: [],
+      conflicts: [],
+      pathClaims: [{ pathId: "pth_a", mutation: "add" }],
+    };
+    expect(namespaceManifestSchema.parse(append)).toMatchObject({ mode: "delta" });
+    expect(namespaceManifestSchema.parse({ ...append, tombstones: [{ namespace: append.namespace, logicalPath: "old", deletedAt: append.createdAt }] }).tombstones).toHaveLength(1);
+    expect(() => namespaceManifestSchema.parse({ ...append, pathClaims: [{ pathId: "pth_a", mutation: "update" }] })).toThrow("delta manifests");
+    expect(() => namespaceManifestSchema.parse({ ...append, entries: [...append.entries, append.entries[0]] })).toThrow("duplicate logical path");
+    expect(() => namespaceManifestSchema.parse({
+      ...append,
+      tombstones: [{ namespace: append.namespace, logicalPath: append.entries[0].logicalPath, deletedAt: append.createdAt }],
+    })).toThrow("duplicate logical path");
   });
 });

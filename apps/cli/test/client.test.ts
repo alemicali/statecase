@@ -20,6 +20,10 @@ describe("HTTP client contract (PR-001, AU-011)", () => {
     await expect(offline.startDeviceCode()).rejects.toEqual(new RemoteError(0, "NETWORK_ERROR", "Statecase service is unavailable"));
     const malformed = new StatecaseClient("https://statecase.test", undefined, async () => new Response("bad", { status: 200 }));
     await expect(malformed.startDeviceCode()).rejects.toEqual(new RemoteError(200, "INVALID_RESPONSE", "service returned an invalid response"));
+    const oauth = new StatecaseClient("https://statecase.test", undefined, async () => Response.json({ error: "authorization_pending", error_description: "pending" }, { status: 400 }));
+    await expect(oauth.startDeviceCode()).rejects.toEqual(new RemoteError(400, "authorization_pending", "pending"));
+    const empty = new StatecaseClient("https://statecase.test", undefined, async () => Response.json({}, { status: 418 }));
+    await expect(empty.startDeviceCode()).rejects.toEqual(new RemoteError(418, "REMOTE_ERROR", "Statecase request failed"));
   });
 
   it("covers the complete typed service surface", async () => {
@@ -36,6 +40,13 @@ describe("HTTP client contract (PR-001, AU-011)", () => {
       if (path === "/v1/vaults") return Response.json({ vaults: [] });
       if (path.endsWith("/join")) return Response.json({ id: "vlt_one", role: "writer" });
       if (path.endsWith("/head")) return Response.json({ revisionId: null, manifestObjectId: null });
+      if (path.endsWith("/namespaces")) return Response.json({ revisionId: "rev_scoped", namespaces: [{ namespace: "workspace:ws_01", revisionId: "nrev_01", manifestObjectId: "obj_manifest" }] });
+      if (path.includes("/namespaces/") && path.includes("/revisions/")) return Response.json({ namespace: "workspace:ws_01", revisionId: "nrev_01", manifestObjectId: "obj_manifest", previousRevisionId: null });
+      if (path.includes("/scoped-revisions/")) return Response.json({ revisionId: "rev_scoped", previousRevisionId: null, namespaces: [{ namespace: "workspace:ws_01", revisionId: "nrev_01", manifestObjectId: "obj_manifest" }] });
+      if (path === "/v1/tokens" && init?.method === "POST") return Response.json({ id: "cap_one", vaultId: "vlt_one", namespaces: ["workspace:ws_01"], actions: ["read"], expiresAt: 2, createdAt: 1 });
+      if (path === "/v1/tokens") return Response.json({ tokens: [] });
+      if (path.startsWith("/v1/tokens/") && init?.method === "DELETE") return new Response(null, { status: 204 });
+      if (path === "/api/bootstrap/redeem") return Response.json({ accessToken: "scoped", expiresAt: 2, vaultId: "vlt_one", namespaces: ["workspace:ws_01"], actions: ["read"], keyEnvelope: "opaque" });
       if (path.endsWith("/snapshots") && init?.method === "POST") return Response.json({ id: "snp_one", name: "snapshot", revisionId: "rev_one", manifestObjectId: "obj_one", protected: true, createdAt: 1 });
       if (path.endsWith("/snapshots")) return Response.json({ snapshots: [] });
       if (path.includes("/snapshots/") && init?.method === "DELETE") return new Response(null, { status: 204 });
@@ -51,13 +62,25 @@ describe("HTTP client contract (PR-001, AU-011)", () => {
     await client.listVaults();
     await client.joinVault("vlt_one");
     await client.head("vlt_one");
+    await client.namespaceHeads("vlt_one");
+    await client.namespaceRevision("vlt_one", "workspace:ws_01", "nrev_01");
+    await client.scopedRevision("vlt_one", "rev_scoped");
     await client.revision("vlt_one", "rev_one");
     await client.createSnapshot("vlt_one", "snapshot");
     await client.listSnapshots("vlt_one");
     await client.deleteSnapshot("vlt_one", "snp_one");
+    await client.createCapability({ id: "cap_one", vaultId: "vlt_one", tokenHash: "a".repeat(43), namespaces: ["workspace:ws_01"], actions: ["read"], expiresAt: 2, keyEnvelope: "opaque" });
+    await client.listCapabilities();
+    await client.revokeCapability("cap_one");
+    await client.redeemBootstrap("stc_boot_" + "a".repeat(43));
+    await client.putNamespaceObject("vlt_one", "workspace:ws_01", "obj_one", new Uint8Array([1]));
+    await client.getNamespaceObject("vlt_one", "workspace:ws_01", "obj_one");
+    await client.commitNamespaces("vlt_one", {
+      protocolVersion: "1.1", operationId: "op_scoped", vaultRevisionId: "rev_scoped", updates: [{ namespace: "workspace:ws_01", baseNamespaceRevisionId: null, namespaceRevisionId: "nrev_01", manifestObjectId: "obj_manifest", requiredObjectIds: [], mode: "replace", pathClaims: [] }],
+    });
     await client.commit("vlt_one", {
       protocolVersion: "1.0", operationId: "op_one", baseRevisionId: null, revisionId: "rev_one", manifestObjectId: "obj_one", requiredObjectIds: [],
     });
-    expect(calls).toHaveLength(14);
+    expect(calls).toHaveLength(24);
   });
 });

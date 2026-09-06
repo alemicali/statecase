@@ -134,9 +134,12 @@ export interface VaultRevision extends VaultHead {
   previousRevisionId: string | null;
 }
 
-export interface VaultSnapshot extends VaultHead {
+export interface VaultSnapshot {
   id: string;
   name: string;
+  revisionId: string;
+  manifestObjectId?: string;
+  protocolVersion?: "1.1";
   protected: true;
   createdAt: number;
 }
@@ -160,6 +163,10 @@ export interface NamespaceHead {
   namespace: string;
   revisionId: string;
   manifestObjectId: string;
+}
+
+export interface NamespaceRevision extends NamespaceHead {
+  previousRevisionId: string | null;
 }
 
 export interface ScopedVaultHead {
@@ -211,6 +218,10 @@ export class VaultCoordinatorCore {
       .sort((left, right) => left.namespace.localeCompare(right.namespace, "en"));
   }
 
+  async namespaceRevision(namespace: string, revisionId: string): Promise<NamespaceRevision | null> {
+    return (await this.#storage.get<NamespaceRevision>(namespaceRevisionKey(namespace, revisionId))) ?? null;
+  }
+
   async scopedHead(): Promise<ScopedVaultHead | null> {
     return (await this.#storage.get<ScopedVaultHead>(SCOPED_HEAD_KEY)) ?? null;
   }
@@ -231,10 +242,13 @@ export class VaultCoordinatorCore {
         ? { outcome: "created", snapshot: existing }
         : { outcome: "id-conflict" };
     }
-    const head = await this.head();
-    if (!head) return { outcome: "no-head" };
+    const scopedHead = await this.scopedHead();
+    const legacyHead = scopedHead ? null : await this.head();
+    if (!scopedHead && !legacyHead) return { outcome: "no-head" };
     if (snapshots.length >= MAX_SNAPSHOTS) throw new Error("snapshot limit reached");
-    const snapshot: VaultSnapshot = { id: input.id, name: input.name, ...head, protected: true, createdAt: input.createdAt };
+    const snapshot: VaultSnapshot = scopedHead
+      ? { id: input.id, name: input.name, revisionId: scopedHead.revisionId, protocolVersion: "1.1", protected: true, createdAt: input.createdAt }
+      : { id: input.id, name: input.name, ...legacyHead!, protected: true, createdAt: input.createdAt };
     await this.#storage.putMany({ [SNAPSHOTS_KEY]: [...snapshots, snapshot] });
     return { outcome: "created", snapshot };
   }
@@ -324,6 +338,12 @@ export class VaultCoordinatorCore {
         revisionId: update.namespaceRevisionId,
         manifestObjectId: update.manifestObjectId,
       } satisfies NamespaceHead;
+      writes[namespaceRevisionKey(update.namespace, update.namespaceRevisionId)] = {
+        namespace: update.namespace,
+        revisionId: update.namespaceRevisionId,
+        manifestObjectId: update.manifestObjectId,
+        previousRevisionId: currentHeads.get(update.namespace)?.revisionId ?? null,
+      } satisfies NamespaceRevision;
       writes[namespacePathsKey(update.namespace)] = [...nextPaths.get(update.namespace)!].sort((left, right) => left.localeCompare(right, "en"));
     }
     writes[NAMESPACE_NAMES_KEY] = [...names].sort((left, right) => left.localeCompare(right, "en"));
@@ -359,6 +379,10 @@ function namespaceHeadKey(namespace: string): string {
 
 function namespacePathsKey(namespace: string): string {
   return `scoped:namespace:${namespace}:paths`;
+}
+
+function namespaceRevisionKey(namespace: string, revisionId: string): string {
+  return `scoped:namespace:${namespace}:revision:${revisionId}`;
 }
 
 async function requestFingerprint(request: CommitRequest | ScopedCommitRequest): Promise<string> {

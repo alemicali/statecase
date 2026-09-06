@@ -139,8 +139,8 @@ session fail. Cryptographic key rewrapping after revocation remains a separate
 release gate because already-decrypted data cannot be remotely withdrawn.
 
 Automated background steady state is not yet claimed. Real-OS daemon/service
-UAT, append-aware same-session merge, automatic retention/in-place restore, scoped
-ephemeral bootstrap, post-revocation key rewrap,
+UAT, append-aware same-session merge, automatic retention/in-place restore,
+post-revocation key rewrap,
 and complete historical Session Capsules remain blocking work for a public or
 unattended release.
 

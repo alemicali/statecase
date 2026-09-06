@@ -1,4 +1,4 @@
-import type { CommitRequest } from "@statecase/protocol";
+import type { CommitRequest, ScopedCommitRequest } from "@statecase/protocol";
 
 export class RemoteError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) {
@@ -27,17 +27,68 @@ export interface RemoteHead {
   manifestObjectId: string | null;
 }
 
+export interface RemoteNamespaceHead {
+  namespace: string;
+  revisionId: string;
+  manifestObjectId: string;
+}
+
+export interface RemoteNamespaceRevision extends RemoteNamespaceHead {
+  previousRevisionId: string | null;
+}
+
+export interface RemoteNamespaceHeads {
+  revisionId: string | null;
+  namespaces: RemoteNamespaceHead[];
+}
+
+export interface RemoteScopedRevision extends RemoteNamespaceHeads {
+  revisionId: string;
+  previousRevisionId: string | null;
+}
+
+export interface CapabilityRecord {
+  id: string;
+  vaultId: string;
+  namespaces: string[];
+  actions: Array<"read" | "append">;
+  expiresAt: number;
+  redeemedAt?: number;
+  revokedAt?: number;
+  createdAt: number;
+}
+
+export interface CreateCapabilityInput {
+  id: string;
+  vaultId: string;
+  tokenHash: string;
+  namespaces: string[];
+  actions: Array<"read" | "append">;
+  expiresAt: number;
+  keyEnvelope: string;
+}
+
+export interface BootstrapRedemption {
+  accessToken: string;
+  expiresAt: number;
+  vaultId: string;
+  namespaces: string[];
+  actions: Array<"read" | "append">;
+  keyEnvelope: string;
+}
+
 export interface RemoteRevision extends RemoteHead {
   revisionId: string;
   manifestObjectId: string;
   previousRevisionId: string | null;
 }
 
-export interface RemoteSnapshot extends RemoteHead {
+export interface RemoteSnapshot {
   id: string;
   name: string;
   revisionId: string;
-  manifestObjectId: string;
+  manifestObjectId?: string;
+  protocolVersion?: "1.1";
   protected: true;
   createdAt: number;
 }
@@ -107,6 +158,18 @@ export class StatecaseClient {
     return this.#json(`/v1/vaults/${encodeURIComponent(vaultId)}/head`);
   }
 
+  namespaceHeads(vaultId: string): Promise<RemoteNamespaceHeads> {
+    return this.#json(`/v1/vaults/${encodeURIComponent(vaultId)}/namespaces`);
+  }
+
+  namespaceRevision(vaultId: string, namespace: string, revisionId: string): Promise<RemoteNamespaceRevision> {
+    return this.#json(`/v1/vaults/${encodeURIComponent(vaultId)}/namespaces/${encodeURIComponent(namespace)}/revisions/${encodeURIComponent(revisionId)}`);
+  }
+
+  scopedRevision(vaultId: string, revisionId: string): Promise<RemoteScopedRevision> {
+    return this.#json(`/v1/vaults/${encodeURIComponent(vaultId)}/scoped-revisions/${encodeURIComponent(revisionId)}`);
+  }
+
   revision(vaultId: string, revisionId: string): Promise<RemoteRevision> {
     return this.#json(`/v1/vaults/${encodeURIComponent(vaultId)}/revisions/${encodeURIComponent(revisionId)}`);
   }
@@ -139,11 +202,47 @@ export class StatecaseClient {
     return new Uint8Array(await response.arrayBuffer());
   }
 
+  async putNamespaceObject(vaultId: string, namespace: string, objectId: string, bytes: Uint8Array): Promise<void> {
+    await this.#request(`/v1/vaults/${encodeURIComponent(vaultId)}/namespaces/${encodeURIComponent(namespace)}/objects/${encodeURIComponent(objectId)}`, {
+      method: "PUT",
+      body: bytes,
+      headers: { "content-type": "application/octet-stream" },
+    });
+  }
+
+  async getNamespaceObject(vaultId: string, namespace: string, objectId: string): Promise<Uint8Array> {
+    const response = await this.#request(`/v1/vaults/${encodeURIComponent(vaultId)}/namespaces/${encodeURIComponent(namespace)}/objects/${encodeURIComponent(objectId)}`);
+    return new Uint8Array(await response.arrayBuffer());
+  }
+
   commit(vaultId: string, request: CommitRequest): Promise<{ outcome: string; revisionId: string }> {
     return this.#json(`/v1/vaults/${encodeURIComponent(vaultId)}/commits`, {
       method: "POST",
       body: JSON.stringify(request),
     });
+  }
+
+  commitNamespaces(vaultId: string, request: ScopedCommitRequest): Promise<{ outcome: string; revisionId: string }> {
+    return this.#json(`/v1/vaults/${encodeURIComponent(vaultId)}/namespace-commits`, {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+  }
+
+  createCapability(input: CreateCapabilityInput): Promise<CapabilityRecord> {
+    return this.#json("/v1/tokens", { method: "POST", body: JSON.stringify(input) });
+  }
+
+  async listCapabilities(): Promise<CapabilityRecord[]> {
+    return (await this.#json<{ tokens: CapabilityRecord[] }>("/v1/tokens")).tokens;
+  }
+
+  async revokeCapability(capabilityId: string): Promise<void> {
+    await this.#request(`/v1/tokens/${encodeURIComponent(capabilityId)}`, { method: "DELETE" });
+  }
+
+  redeemBootstrap(token: string): Promise<BootstrapRedemption> {
+    return this.#json("/api/bootstrap/redeem", { method: "POST", body: JSON.stringify({ token }) });
   }
 
   async #json<T>(path: string, init: RequestInit = {}): Promise<T> {

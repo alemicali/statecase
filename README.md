@@ -23,14 +23,17 @@ unavailable/external context is reported instead of silently copied.
 `statecase run codex|claude` performs a bounded
 preflight pull, supervises the unmodified harness, publishes periodically, and
 attempts a final flush without preventing offline use or changing the child
-exit status.
+exit status. Protocol 1.1 gives ephemeral machines a one-time bootstrap into
+explicit encrypted namespaces: no vault root key is transferred, scoped
+clients cannot use legacy vault-wide routes, and read+append work is published
+as an immutable delta that persistent devices can reconcile.
 
 The persistent daemon can run with `statecase daemon foreground` or be installed
 as a systemd user service / macOS LaunchAgent. Real-OS service UAT, append-aware
 same-session merge, automatic missing-baseline fetch, initialized-submodule
-hydration, automatic retention/in-place restore, scoped ephemeral capabilities,
-post-revocation key rewrapping, key rotation, and real-version Codex/Claude
-fixture certification remain release gates. This is not yet a
+hydration, automatic retention/in-place restore, post-revocation key rewrapping,
+key rotation, and real-version Codex/Claude fixture certification remain
+release gates. This is not yet a
 public-production release.
 
 The approved direction lives in:
@@ -142,6 +145,32 @@ recorded closure rather than pulling whichever workspace happens to be latest:
 `warn` reports a partial resume with exit code `8`; `best-effort` is available
 only as an explicit acceptance of missing context. Map a reported external
 dependency as a Drop and checkpoint it before expecting a strict resume.
+
+For an ephemeral sandbox, create the capability on a trusted full-key device.
+The bootstrap secret is written to a new owner-only file and is never included
+in normal or JSON output:
+
+```bash
+./apps/cli/dist/bin.js token create \
+  --namespace workspace:ws_project,harness:codex:default \
+  --actions read,append --ttl 120 --output /secure/bootstrap.token
+```
+
+Inject that file or `STATECASE_BOOTSTRAP_TOKEN` into a fresh
+`STATECASE_HOME`, redeem it once, configure only authorized mappings, and pull:
+
+```bash
+./apps/cli/dist/bin.js bootstrap --token-file /run/secrets/statecase-bootstrap --non-interactive
+./apps/cli/dist/bin.js workspace attach --id ws_project --path "$PWD" --mode git-overlay
+./apps/cli/dist/bin.js setup --harness codex
+./apps/cli/dist/bin.js pull
+```
+
+`statecase run codex -- <args>` then performs preflight/periodic/final sync.
+An append-capable sandbox may publish changed and deleted paths as immutable
+delta records, but cannot replace a namespace head with an unrestricted write.
+Revoke the grant with `token revoke <id> --yes`; remove the bootstrap file from
+the secret-delivery system after successful redemption.
 
 Account creation is deliberately allowlisted for the private MVP. Never put
 `STATECASE_TOKEN`, `STATECASE_RECOVERY_PASSPHRASE`, or the recovery kit in a

@@ -65,3 +65,16 @@ All notable changes to Statecase will be documented here.
   redemption, scoped R2/commit access, escalation attempts, and revocation.
 - Replaced the R2 upload transform with an 8 MiB bounded read so conditional
   puts have the known length required by the real Cloudflare runtime.
+- Added production client support for scoped capabilities: protected one-time
+  bootstrap files, client-encrypted envelopes containing only explicitly
+  granted namespace keys, redacted token create/list/revoke/bootstrap CLI
+  commands, scoped credentials with no vault root, namespace-qualified object
+  transfer, and fail-closed scope/expiry checks.
+- Added encrypted namespace snapshot/delta manifests and immutable namespace
+  revision pointers. Persistent writers migrate the legacy head into physical
+  namespace mirrors; scoped read+append clients publish patch deltas, readers
+  reconstruct bounded parent chains, and persistent devices reconcile sandbox
+  work without granting legacy vault-wide access.
+- Extended protected snapshots and historical restore to protocol 1.1 global
+  scoped revisions, so conflict checkpoints and restore targets protect the
+  authoritative namespace heads rather than the migration-only legacy head.
