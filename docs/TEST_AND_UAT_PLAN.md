@@ -190,7 +190,10 @@ policy; they are never uploaded merely because they are present.
   later workspace rolls back earlier automatic checkouts and leaks no remote
   URL or credential-shaped diagnostic.
 - `WS-016`: dirty destination produces a conflict preview and remains unchanged.
-- `WS-017`: Git LFS pointer and absent LFS content are reported distinctly.
+- `WS-017`: Git LFS pointer and absent LFS content are reported distinctly;
+  `ask|never` make no network/mutation, while `auto` tries the local cache then
+  the existing origin, verifies size/SHA-256, redacts failures, and rolls back
+  partial materialization.
 - `WS-018`: nested repository/submodule boundaries do not leak files.
 - `WS-019`: untracked ignored file referenced by a session is reported but not
   silently uploaded.

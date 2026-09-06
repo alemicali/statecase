@@ -1,5 +1,5 @@
 import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { randomKey } from "@statecase/crypto";
@@ -16,6 +16,17 @@ afterEach(async () => {
 });
 
 describe("CLI local security and recovery (CR-007, CR-009, AU-011)", () => {
+  it("uses the conventional owner-local home when no override is configured", () => {
+    const previous = process.env.STATECASE_HOME;
+    delete process.env.STATECASE_HOME;
+    try {
+      expect(new ConfigStore().home).toBe(join(homedir(), ".statecase"));
+    } finally {
+      if (previous === undefined) delete process.env.STATECASE_HOME;
+      else process.env.STATECASE_HOME = previous;
+    }
+  });
+
   it("writes configuration and credentials atomically with owner-only permissions", async () => {
     const home = await mkdtemp(join(tmpdir(), "statecase-config-"));
     temporary.push(home);

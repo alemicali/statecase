@@ -27,6 +27,9 @@ const target = join(root, "target");
 const gitSource = join(root, "git-source");
 const gitRemote = join(root, "git-remote.git");
 const gitTarget = join(root, "git-target");
+const lfsSource = join(root, "lfs-source");
+const lfsRemote = join(root, "lfs-remote.git");
+const lfsTarget = join(root, "lfs-target");
 const recoveryFile = join(root, "recovery", "uat.statecase-recovery.json");
 
 await Promise.all([
@@ -148,6 +151,35 @@ assert.equal(git(["-C", gitTarget, "rev-parse", "HEAD"]).stdout.trim(), gitBasel
 assert.equal(await readFile(join(gitTarget, "tracked.txt"), "utf8"), "portable Git overlay\n");
 assert.equal(await readFile(join(gitTarget, "untracked.txt"), "utf8"), "portable untracked file\n");
 
+await mkdir(lfsSource, { recursive: true });
+git(["init", "-q", lfsSource]);
+git(["-C", lfsSource, "lfs", "install", "--local"]);
+git(["-C", lfsSource, "lfs", "track", "*.bin"]);
+const lfsBytes = randomBytes(96 * 1024);
+await writeFile(join(lfsSource, "portable.bin"), lfsBytes);
+git(["-C", lfsSource, "add", ".gitattributes", "portable.bin"]);
+git(["-C", lfsSource, "-c", "user.name=Statecase UAT", "-c", "user.email=uat@statecase.invalid", "commit", "-qm", "LFS baseline"]);
+git(["init", "--bare", "-q", lfsRemote]);
+git(["-C", lfsSource, "branch", "-M", "main"]);
+git(["-C", lfsSource, "remote", "add", "origin", `file://${lfsRemote}`]);
+git(["-C", lfsSource, "push", "-q", "-u", "origin", "main"]);
+git(["-C", lfsRemote, "symbolic-ref", "HEAD", "refs/heads/main"]);
+run(machineA, ["workspace", "attach", "--id", "ws_lfs", "--path", lfsSource, "--mode", "git-overlay", "--git-fetch", "auto"]);
+run(machineA, ["push"]);
+
+gitWithEnvironment(["clone", "-q", `file://${lfsRemote}`, lfsTarget], { GIT_LFS_SKIP_SMUDGE: "1" });
+git(["-C", lfsTarget, "lfs", "install", "--local", "--skip-smudge"]);
+const lfsPointerBytes = await readFile(join(lfsTarget, "portable.bin"));
+assert.match(lfsPointerBytes.toString("utf8"), /^version https:\/\/git-lfs\.github\.com\/spec\/v1$/mu);
+run(machineB, ["workspace", "attach", "--id", "ws_lfs", "--path", lfsTarget, "--mode", "git-overlay", "--git-fetch", "ask"]);
+const lfsApprovalRequired = runRaw(machineB, ["pull"]);
+assert.equal(lfsApprovalRequired.status, 5, `LFS ask policy returned ${lfsApprovalRequired.status}: ${lfsApprovalRequired.stderr}`);
+assert.match(lfsApprovalRequired.stderr, /GIT_LFS_CONTENT_UNAVAILABLE/u);
+assert.deepEqual(await readFile(join(lfsTarget, "portable.bin")), lfsPointerBytes, "ask policy changed the LFS pointer");
+run(machineB, ["workspace", "attach", "--id", "ws_lfs", "--path", lfsTarget, "--mode", "git-overlay", "--git-fetch", "auto"]);
+run(machineB, ["pull"]);
+assert.deepEqual(await readFile(join(lfsTarget, "portable.bin")), lfsBytes, "auto policy did not materialize exact LFS bytes");
+
 console.log(JSON.stringify({
   result: "pass",
   apiUrl,
@@ -160,6 +192,7 @@ console.log(JSON.stringify({
   conflictResolvedWithProtectedSnapshot: true,
   namedSnapshotCreated: true,
   shallowGitBaselineAcquisition: "ask-preserved-auto-restored",
+  gitLfsAcquisition: "ask-preserved-auto-verified",
   codexAndClaudeHomesRemainIsolated: true,
 }, null, 2));
 
@@ -185,9 +218,13 @@ function runRaw(statecaseHome, args, secrets = {}) {
 }
 
 function git(args, expectSuccess = true) {
+  return gitWithEnvironment(args, {}, expectSuccess);
+}
+
+function gitWithEnvironment(args, environment, expectSuccess = true) {
   const result = spawnSync("git", args, {
     encoding: "utf8",
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "Never" },
+    env: { ...process.env, ...environment, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "Never" },
   });
   assert.equal(result.error, undefined, `git ${args.join(" ")} could not start: ${result.error?.message}`);
   if (expectSuccess) assert.equal(result.status, 0, `git ${args.join(" ")} failed (${result.status}): ${result.stderr}`);

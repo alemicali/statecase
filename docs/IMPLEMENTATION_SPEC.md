@@ -572,9 +572,16 @@ Baseline blobs that conform to the Git LFS pointer format MUST NOT be treated as
 the referenced content. Capture and hydration report
 `GIT_LFS_CONTENT_UNAVAILABLE` with logical paths while the worktree still holds
 a pointer or omits the file. A capsule-provided worktree replacement or deletion
-satisfies this check. Git LFS network access and credentials remain entirely
-device-local; Statecase does not invoke or serialize them in the current
-implementation.
+satisfies this check. `ask` and `never` MUST perform no LFS network or working-tree
+mutation. Under explicit `auto` policy, Statecase MUST first attempt a
+device-local `git lfs checkout`, then use bounded non-interactive system Git LFS
+to fetch the exact baseline from the existing `origin` and retry checkout when
+the object is absent. Repository fetch include/exclude settings MUST NOT make a
+required baseline appear complete. Materialized bytes MUST match the pointer's
+declared size and SHA-256. Failure diagnostics MUST redact raw Git LFS output,
+and partial materialization MUST be restored when acquisition or the enclosing
+workspace transaction fails. Statecase MUST NOT serialize remotes or Git/LFS
+credentials.
 
 Modes:
 

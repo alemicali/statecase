@@ -28,7 +28,7 @@ describe("foreground harness supervisor (RT-002..RT-005, RT-011)", () => {
     const reconcile = vi.fn(async (reason: ReconcileReason) => {
       events.push(`sync:${reason}`);
     });
-    const supervisor = new HarnessSupervisor({ spawn, reconcile, intervalMs: 0 });
+    const supervisor = new HarnessSupervisor({ spawn, reconcile, intervalMs: 0, preflightTimeoutMs: 0, finalFlushTimeoutMs: 0 });
 
     const result = await supervisor.run({
       harness: "codex",
@@ -155,6 +155,7 @@ describe("foreground harness supervisor (RT-002..RT-005, RT-011)", () => {
   });
 
   it("validates intervals and resolves a real executable while skipping an excluded shim", async () => {
+    expect(() => new HarnessSupervisor({ reconcile: async () => {} })).not.toThrow();
     expect(() => new HarnessSupervisor({ reconcile: async () => {}, intervalMs: -1 })).toThrow("sync interval");
     expect(() => new HarnessSupervisor({ reconcile: async () => {}, intervalMs: 1.5 })).toThrow("sync interval");
     const root = await mkdtemp(join(process.cwd(), ".statecase-resolve-"));
@@ -167,6 +168,7 @@ describe("foreground harness supervisor (RT-002..RT-005, RT-011)", () => {
     await Promise.all([chmod(excluded, 0o700), chmod(real, 0o700)]);
 
     expect(await resolveHarnessExecutable("codex", { PATH: `${first}:${second}` }, [excluded])).toBe(real);
+    expect(await resolveHarnessExecutable(real, {}, [])).toBe(real);
     await expect(resolveHarnessExecutable("claude", { PATH: first }, [])).rejects.toThrow("could not find");
     await rm(root, { recursive: true, force: true });
   });

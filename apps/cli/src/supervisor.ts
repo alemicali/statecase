@@ -135,7 +135,7 @@ export class HarnessSupervisor {
 }
 
 export async function resolveHarnessExecutable(
-  harness: HarnessName,
+  harness: string,
   environment: Record<string, string | undefined>,
   excludedPaths: readonly string[] = [],
 ): Promise<string> {

@@ -145,7 +145,7 @@ missing-baseline acquisition through device-local system Git. Auto mode uses
 only the checkout's existing `origin`, disables interactive credential prompts,
 redacts Git failures, supports shallow clones, and rolls every earlier checkout
 back if a later workspace cannot be prepared. Initialized submodule hydration
-and LFS diagnostics remain explicit follow-on gates. The packaged path passed
+remains an explicit follow-on gate. The packaged path passed
 the
 [Daytona Git-baseline acquisition UAT](uat/2026-09-07-git-baseline-daytona.md)
 against the live Cloudflare service.
@@ -154,9 +154,12 @@ Git LFS pointer detection is now fail-closed on both capture and hydration.
 Statecase identifies baseline pointer blobs through Git plumbing, reports the
 affected logical paths as `GIT_LFS_CONTENT_UNAVAILABLE`, and accepts a path only
 when device-local Git LFS has materialized it or the encrypted overlay replaces
-or deletes it. Statecase still does not acquire LFS credentials or promise
-transparent LFS object download; that compatibility/UAT work remains a release
-gate.
+or deletes it. With explicit `auto` policy it now attempts the local LFS cache,
+then performs a bounded non-interactive exact-baseline fetch from the existing
+origin, and verifies the pointer's declared size and SHA-256. Partial or corrupt
+materialization rolls back and raw Git LFS diagnostics remain hidden. Statecase
+does not acquire or synchronize LFS credentials. Real Git LFS interoperability
+and remote UAT remain a release gate until executed.
 
 Persistent installations now keep a stable device ID independent of absolute
 paths and Better Auth session rotation. D1 binds each service session to that

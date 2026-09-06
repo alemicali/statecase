@@ -20,10 +20,12 @@ materialization, a crash-safe runtime journal, transparent harness shims, and
 the canonical agent skill. Immutable Session Capsules bind native sessions to
 their exact harness, Git baseline, workspace overlay, and Drop revision;
 unavailable/external context is reported instead of silently copied.
-Clean Git LFS pointers are likewise rejected with
-`GIT_LFS_CONTENT_UNAVAILABLE` until their bytes are materialized by device-local
-Git LFS; an encrypted overlay that already contains replacement bytes remains
-portable.
+Clean Git LFS pointers are never mistaken for content. With `--git-fetch auto`,
+Statecase first uses the device-local LFS cache, then runs bounded,
+non-interactive `git lfs fetch` against the existing `origin` when required,
+checks out the object, and verifies its declared size and SHA-256. Failures are
+redacted and roll back partial materialization; an encrypted overlay that
+already replaces or deletes the path remains portable.
 `statecase run codex|claude` performs a bounded
 preflight pull, supervises the unmodified harness, publishes periodically, and
 attempts a final flush without preventing offline use or changing the child
@@ -35,7 +37,7 @@ as an immutable delta that persistent devices can reconcile.
 The persistent daemon can run with `statecase daemon foreground` or be installed
 as a systemd user service / macOS LaunchAgent. Real-OS service UAT, append-aware
 same-session merge, initialized-submodule
-hydration, transparent Git LFS object acquisition, automatic retention/in-place
+hydration, real Git LFS interoperability UAT, automatic retention/in-place
 restore, post-revocation key rewrapping,
 key rotation, and real-version Codex/Claude fixture certification remain
 release gates. This is not yet a
@@ -129,6 +131,14 @@ system Git against that checkout's existing `origin`, with interactive Git
 prompts disabled, and then checks out the exact commit before applying the
 encrypted overlay. `never` always requires manual provisioning. Statecase does
 not store, transfer, or print the remote URL or Git credentials.
+
+The same policy governs missing Git LFS objects. `auto` requires the system
+`git-lfs` binary, attempts the local LFS object cache before any network call,
+then fetches only through the checkout's existing `origin`. Statecase clears
+per-repository LFS include/exclude filters for the exact baseline fetch, verifies
+materialized size and SHA-256, and restores original pointers/missing files if
+the operation or a later workspace transaction fails. `ask` and `never` perform
+no LFS mutation or network access.
 
 For a persistent process under an existing supervisor:
 

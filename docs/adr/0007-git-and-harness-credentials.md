@@ -23,6 +23,13 @@ the device. `never` requires manual provisioning. Auto mode invokes system Git
 against the existing local `origin`, disables terminal credential prompts, uses
 a bounded fetch, and never surfaces raw Git/remote diagnostics.
 
+The same policy covers Git LFS objects required by a pinned baseline. Auto mode
+uses the installed system `git-lfs`, attempts its local object cache first, and
+only then performs a bounded non-interactive fetch from the checkout's existing
+`origin`. Statecase validates the materialized size and SHA-256 and restores
+partial results on failure. LFS credentials remain in device-local Git helpers;
+they are never copied into Statecase configuration or output.
+
 Do not synchronize Codex, Claude, Git, or model-provider credentials in v1.
 Classify them as excluded even when a broad harness root is selected. A future
 secrets vault requires a separate ADR and explicit opt-in.
@@ -52,5 +59,6 @@ Adding an opt-in secrets compartment later does not alter normal scopes.
 
 ## Verification
 
-Git policy, shallow-fetch, failure-redaction, cross-workspace rollback, secrets
-canaries, and ephemeral bootstrap UAT must pass.
+Git policy, shallow-fetch, LFS cache/fetch/integrity, failure-redaction,
+cross-workspace rollback, secrets canaries, and ephemeral bootstrap UAT must
+pass.

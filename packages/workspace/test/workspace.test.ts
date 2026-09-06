@@ -1,4 +1,5 @@
 import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmod, lstat, mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -255,6 +256,177 @@ describe("exact Git workspace capsules (WS-010..WS-018, WS-025..WS-026)", () => 
     await git(root, "add", "asset.bin");
     await git(root, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "LFS pointer without newline");
     await expect(captureWorkspace(root)).rejects.toMatchObject({ name: "GitLfsContentUnavailable", paths: ["asset.bin"] });
+  });
+
+  it("materializes Git LFS through explicit auto policy and verifies downloaded bytes", async () => {
+    const root = await repository("lfs-auto");
+    const remote = await bareRepository("lfs-auto-remote");
+    const actual = Buffer.from("device-local Git LFS content\n");
+    const oid = createHash("sha256").update(actual).digest("hex");
+    const pointer = lfsPointer(oid, actual.byteLength);
+    await writeFile(join(root, ".gitattributes"), "asset.bin filter=lfs diff=lfs merge=lfs -text\n");
+    await writeFile(join(root, "asset.bin"), pointer);
+    await git(root, "add", ".gitattributes", "asset.bin");
+    await git(root, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "LFS baseline");
+    await git(root, "remote", "add", "origin", `file://${remote}`);
+    await git(root, "update-index", "--skip-worktree", "asset.bin");
+    const fixture = await fakeGitLfs(actual);
+
+    await withEnvironment(fixture.environment, async () => {
+      const probe = await run("git", ["-C", root, "lfs", "version"], { encoding: "utf8", env: process.env });
+      expect(probe.stdout).toContain("git-lfs/3.7.1 (fixture)");
+      const beforeAskLog = await readFile(fixture.log, "utf8");
+      await expect(captureWorkspace(root, { gitFetch: "ask" })).rejects.toMatchObject({
+        name: "GitLfsContentUnavailable",
+        reason: "pointer",
+      });
+      expect(await readFile(fixture.log, "utf8")).toBe(beforeAskLog);
+
+      const captured = await captureWorkspace(root, { gitFetch: "auto" });
+      expect(captured).toMatchObject({ capsule: { records: [] }, blobs: [] });
+      expect(await readFile(join(root, "asset.bin"))).toEqual(actual);
+      const commands = await readFile(fixture.log, "utf8");
+      expect(commands).toContain("version");
+      expect(commands).toContain(`fetch --include= --exclude= origin ${(await git(root, "rev-parse", "HEAD")).trim()}`);
+      expect(commands).toContain("checkout");
+    });
+  });
+
+  it("redacts Git LFS failures and restores the original pointer after corrupt checkout", async () => {
+    const root = await repository("lfs-auto-failure");
+    const expected = Buffer.from("expected LFS bytes\n");
+    const pointer = lfsPointer(createHash("sha256").update(expected).digest("hex"), expected.byteLength);
+    await writeFile(join(root, ".gitattributes"), "asset.bin filter=lfs diff=lfs merge=lfs -text\n");
+    await writeFile(join(root, "asset.bin"), pointer);
+    await git(root, "add", ".gitattributes", "asset.bin");
+    await git(root, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "LFS baseline");
+    await git(root, "remote", "add", "origin", "file:///does-not-matter-to-fixture");
+    await git(root, "update-index", "--skip-worktree", "asset.bin");
+    const corrupt = await fakeGitLfs(Buffer.from("corrupt bytes\n"));
+
+    await withEnvironment(corrupt.environment, async () => {
+      await expect(captureWorkspace(root, { gitFetch: "auto" })).rejects.toMatchObject({
+        name: "GitLfsContentUnavailable",
+        reason: "integrity",
+        paths: ["asset.bin"],
+      });
+      expect(await readFile(join(root, "asset.bin"), "utf8")).toBe(pointer);
+    });
+
+    await writeFile(corrupt.failFetch, "1");
+    await withEnvironment(corrupt.environment, async () => {
+      const error = await captureWorkspace(root, { gitFetch: "auto" }).catch((failure: unknown) => failure) as Error & { reason: string };
+      expect(error).toMatchObject({ name: "GitLfsContentUnavailable", reason: "download-failed" });
+      expect(error.message).not.toContain("fixture-secret");
+      expect(await readFile(join(root, "asset.bin"), "utf8")).toBe(pointer);
+    });
+  });
+
+  it("rolls back same-baseline Git LFS materialization when the workspace transaction fails", async () => {
+    const root = await repository("lfs-transaction-rollback");
+    const actual = Buffer.from("transactional LFS bytes\n");
+    const pointer = lfsPointer(createHash("sha256").update(actual).digest("hex"), actual.byteLength);
+    await writeFile(join(root, ".gitattributes"), "asset.bin filter=lfs diff=lfs merge=lfs -text\n");
+    await writeFile(join(root, "asset.bin"), pointer);
+    await git(root, "add", ".gitattributes", "asset.bin");
+    await git(root, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "LFS baseline");
+    await git(root, "remote", "add", "origin", "file:///does-not-matter-to-fixture");
+    await git(root, "update-index", "--skip-worktree", "asset.bin");
+    const fixture = await fakeGitLfs(actual);
+    const captured = {
+      capsule: {
+        schemaVersion: 1 as const,
+        baseCommit: (await git(root, "rev-parse", "HEAD")).trim(),
+        headRef: (await git(root, "symbolic-ref", "--short", "HEAD")).trim(),
+        records: [],
+      },
+      blobs: [],
+    };
+
+    await withEnvironment(fixture.environment, async () => {
+      await expect(applyWorkspaceCapsule(root, captured, {
+        gitFetch: "auto",
+        materialize: async () => { throw new Error("injected post-LFS failure"); },
+      })).rejects.toThrow("injected post-LFS failure");
+    });
+    expect(await readFile(join(root, "asset.bin"), "utf8")).toBe(pointer);
+  });
+
+  it("uses the device-local Git LFS cache before requiring an origin", async () => {
+    const root = await repository("lfs-local-cache");
+    const actual = Buffer.from("cached LFS bytes\n");
+    const pointer = lfsPointer(createHash("sha256").update(actual).digest("hex"), actual.byteLength);
+    await writeFile(join(root, "asset.bin"), pointer);
+    await git(root, "add", "asset.bin");
+    await git(root, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "LFS baseline");
+    await git(root, "update-index", "--skip-worktree", "asset.bin");
+    const fixture = await fakeGitLfs(actual);
+    await writeFile(fixture.fetched, "cached");
+
+    await withEnvironment(fixture.environment, async () => {
+      await expect(captureWorkspace(root, { gitFetch: "auto" })).resolves.toMatchObject({ capsule: { records: [] } });
+    });
+    expect(await readFile(join(root, "asset.bin"))).toEqual(actual);
+    expect(await readFile(fixture.log, "utf8")).not.toContain("fetch");
+
+    await writeFile(join(root, "asset.bin"), pointer);
+    await rm(fixture.fetched);
+    await withEnvironment(fixture.environment, async () => {
+      await expect(captureWorkspace(root, { gitFetch: "auto" })).rejects.toMatchObject({
+        name: "GitLfsContentUnavailable",
+        reason: "no-origin",
+      });
+    });
+    expect(await readFile(join(root, "asset.bin"), "utf8")).toBe(pointer);
+  });
+
+  it("classifies missing Git LFS tooling and checkout failures without leaking output", async () => {
+    const unavailable = await lfsPointerRepository("lfs-binary-missing", Buffer.from("binary fixture\n"));
+    const missingBinary = await fakeGitLfs(unavailable.content);
+    await writeFile(missingBinary.failVersion, "1");
+    await withEnvironment(missingBinary.environment, async () => {
+      await expect(captureWorkspace(unavailable.root, { gitFetch: "auto" })).rejects.toMatchObject({
+        name: "GitLfsContentUnavailable",
+        reason: "binary-missing",
+      });
+    });
+    expect(await readFile(join(unavailable.root, "asset.bin"), "utf8")).toBe(unavailable.pointer);
+
+    const failed = await lfsPointerRepository("lfs-checkout-failure", Buffer.from("checkout fixture\n"));
+    const failedCheckout = await fakeGitLfs(failed.content);
+    await writeFile(failedCheckout.failCheckout, "1");
+    await withEnvironment(failedCheckout.environment, async () => {
+      await expect(captureWorkspace(failed.root, { gitFetch: "auto" })).rejects.toMatchObject({
+        name: "GitLfsContentUnavailable",
+        reason: "download-failed",
+      });
+    });
+    expect(await readFile(join(failed.root, "asset.bin"), "utf8")).toBe(failed.pointer);
+
+    const omitted = await lfsPointerRepository("lfs-checkout-omitted", Buffer.from("omitted fixture\n"));
+    const successfulNoop = await fakeGitLfs(omitted.content);
+    await writeFile(successfulNoop.suppressMaterialization, "1");
+    await withEnvironment(successfulNoop.environment, async () => {
+      await expect(captureWorkspace(omitted.root, { gitFetch: "auto" })).rejects.toMatchObject({
+        name: "GitLfsContentUnavailable",
+        reason: "download-failed",
+      });
+    });
+    expect(await readFile(join(omitted.root, "asset.bin"), "utf8")).toBe(omitted.pointer);
+  });
+
+  it("restores an originally missing LFS path when remote acquisition fails", async () => {
+    const missing = await lfsPointerRepository("lfs-missing-rollback", Buffer.from("missing fixture\n"));
+    await rm(join(missing.root, "asset.bin"));
+    const failedFetch = await fakeGitLfs(missing.content);
+    await writeFile(failedFetch.failFetch, "1");
+    await withEnvironment(failedFetch.environment, async () => {
+      await expect(captureWorkspace(missing.root, { gitFetch: "auto" })).rejects.toMatchObject({
+        name: "GitLfsContentUnavailable",
+        reason: "download-failed",
+      });
+    });
+    await expect(lstat(join(missing.root, "asset.bin"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("redacts and classifies a failing Git LFS checkout filter", async () => {
@@ -727,4 +899,99 @@ function gitWithInput(root: string, args: string[], input: string): Promise<stri
 
 function lfsPointer(oid: string, size: number): string {
   return `version https://git-lfs.github.com/spec/v1\noid sha256:${oid}\nsize ${size}\n`;
+}
+
+async function lfsPointerRepository(name: string, content: Buffer): Promise<{
+  content: Buffer;
+  pointer: string;
+  root: string;
+}> {
+  const root = await repository(name);
+  const pointer = lfsPointer(createHash("sha256").update(content).digest("hex"), content.byteLength);
+  await writeFile(join(root, ".gitattributes"), "asset.bin filter=lfs diff=lfs merge=lfs -text\n");
+  await writeFile(join(root, "asset.bin"), pointer);
+  await git(root, "add", ".gitattributes", "asset.bin");
+  await git(root, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "LFS baseline");
+  await git(root, "remote", "add", "origin", "file:///does-not-matter-to-fixture");
+  await git(root, "update-index", "--skip-worktree", "asset.bin");
+  return { content, pointer, root };
+}
+
+async function fakeGitLfs(content: Uint8Array): Promise<{
+  environment: Record<string, string>;
+  failCheckout: string;
+  failFetch: string;
+  failVersion: string;
+  fetched: string;
+  log: string;
+  suppressMaterialization: string;
+}> {
+  // Docker deliberately mounts /tmp noexec; place the fake executable under the test workspace.
+  const root = await mkdtemp(join(process.cwd(), ".statecase-fake-lfs-"));
+  temporary.push(root);
+  const executable = join(root, "git-lfs");
+  const object = join(root, "object.bin");
+  const log = join(root, "commands.log");
+  const failCheckout = join(root, "fail-checkout");
+  const failFetch = join(root, "fail-fetch");
+  const failVersion = join(root, "fail-version");
+  const fetched = join(root, "fetched");
+  const suppressMaterialization = join(root, "suppress-materialization");
+  await writeFile(object, content);
+  await writeFile(executable, `#!/bin/sh
+printf '%s\\n' "$*" >> "$STATECASE_TEST_LFS_LOG"
+case "$1" in
+  version)
+    if [ -f "$STATECASE_TEST_LFS_FAIL_VERSION" ]; then exit 1; fi
+    printf '%s\\n' 'git-lfs/3.7.1 (fixture)'
+    ;;
+  fetch)
+    if [ -f "$STATECASE_TEST_LFS_FAIL_FETCH" ]; then
+      printf '%s\\n' 'fixture-secret must be redacted' >&2
+      exit 1
+    fi
+    : > "$STATECASE_TEST_LFS_FETCHED"
+    ;;
+  checkout)
+    if [ -f "$STATECASE_TEST_LFS_FAIL_CHECKOUT" ]; then exit 1; fi
+    if [ -f "$STATECASE_TEST_LFS_SUPPRESS_MATERIALIZATION" ]; then exit 0; fi
+    if [ -f "$STATECASE_TEST_LFS_FETCHED" ]; then
+      cp "$STATECASE_TEST_LFS_OBJECT" asset.bin
+    fi
+    ;;
+  *) exit 2 ;;
+esac
+`);
+  await chmod(executable, 0o700);
+  return {
+    environment: {
+      PATH: `${root}:${process.env.PATH ?? ""}`,
+      STATECASE_TEST_LFS_FAIL_CHECKOUT: failCheckout,
+      STATECASE_TEST_LFS_FAIL_FETCH: failFetch,
+      STATECASE_TEST_LFS_FAIL_VERSION: failVersion,
+      STATECASE_TEST_LFS_FETCHED: fetched,
+      STATECASE_TEST_LFS_LOG: log,
+      STATECASE_TEST_LFS_OBJECT: object,
+      STATECASE_TEST_LFS_SUPPRESS_MATERIALIZATION: suppressMaterialization,
+    },
+    failCheckout,
+    failFetch,
+    failVersion,
+    fetched,
+    log,
+    suppressMaterialization,
+  };
+}
+
+async function withEnvironment<T>(environment: Record<string, string>, action: () => Promise<T>): Promise<T> {
+  const prior = new Map(Object.keys(environment).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, environment);
+  try {
+    return await action();
+  } finally {
+    for (const [key, value] of prior) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 }

@@ -116,7 +116,7 @@ export class SyncEngine {
       ...workspaceMappings(config),
     ];
     const scanned = (await Promise.all(writable.map((mapping) =>
-      mapping.id.startsWith("workspace_") ? scanGitOverlay(mapping) : scanMapping(mapping, config.workspaces)
+      mapping.id.startsWith("workspace_") ? scanGitOverlay(mapping, config.workspaces) : scanMapping(mapping, config.workspaces)
     ))).flat();
     const head = await this.client.head(this.vaultId);
     if (options.expectedHeadRevisionId !== undefined && head.revisionId !== options.expectedHeadRevisionId) {
@@ -373,7 +373,7 @@ export class SyncEngine {
     }
     if (new Set(writable.map((mapping) => mapping.namespace)).size !== writable.length) throw new Error("duplicate writable namespace mapping");
     const scanned = (await Promise.all(writable.map((mapping) =>
-      mapping.id.startsWith("workspace_") ? scanGitOverlay(mapping) : scanMapping(mapping, config.workspaces)
+      mapping.id.startsWith("workspace_") ? scanGitOverlay(mapping, config.workspaces) : scanMapping(mapping, config.workspaces)
     ))).flat();
     const remote = await this.client.namespaceHeads(this.vaultId);
     if (options.expectedHeadRevisionId !== undefined && remote.revisionId !== options.expectedHeadRevisionId) {
@@ -1287,8 +1287,10 @@ function manifestNamespaceState(manifest: VaultManifestV1 | undefined, namespace
   };
 }
 
-async function scanGitOverlay(mapping: RootMapping): Promise<ScannedEntry[]> {
-  const captured = await captureWorkspace(mapping.path);
+async function scanGitOverlay(mapping: RootMapping, workspaces: LocalConfig["workspaces"]): Promise<ScannedEntry[]> {
+  const workspaceId = mapping.namespace.slice("workspace:".length);
+  const gitFetch = workspaces.find((workspace) => workspace.id === workspaceId)?.gitFetch ?? "ask";
+  const captured = await captureWorkspace(mapping.path, { gitFetch });
   const allowedPaths = new Set(captured.capsule.records.filter((record) => !excludedBuiltIn(record.path)).map((record) => record.path));
   const capsule = { ...captured.capsule, records: captured.capsule.records.filter((record) => allowedPaths.has(record.path)) };
   return [

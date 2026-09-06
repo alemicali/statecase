@@ -40,8 +40,10 @@ transactional submodule hydration design is implemented.
 Baseline Git LFS pointer blobs are detected with bounded Git plumbing. A
 pointer or missing worktree file fails with `GIT_LFS_CONTENT_UNAVAILABLE`
 instead of masquerading as restored content. An explicit overlay replacement or
-deletion resolves the path. Statecase does not synchronize or invoke LFS
-credentials; automatic LFS object acquisition remains outside this decision.
+deletion resolves the path. Explicit auto policy invokes the device-local Git
+LFS client, cache, existing origin, and credential helpers; Statecase verifies
+the pointer's size/SHA-256 and rolls back partial checkout. No LFS credential,
+remote, or object-cache directory is synchronized.
 
 ## Alternatives considered
 
@@ -74,5 +76,6 @@ Tests cover clean baselines; staged/unstaged divergence; additions, deletions,
 binary and empty files; executable bits; relative symlinks; detached and unborn
 repositories; gitlinks; dirty/baseline conflicts; canonical ordering; malformed
 metadata; corrupt bytes; inbound path/symlink attacks; shallow-clone acquisition;
-unreachable/redacted origins; LFS pointer rejection/overlay replacement; and
-injected single- and multi-workspace rollback.
+unreachable/redacted origins; LFS pointer rejection, local-cache and remote
+acquisition, integrity failure, overlay replacement, and rollback; and injected
+single- and multi-workspace rollback.

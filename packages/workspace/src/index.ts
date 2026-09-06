@@ -1,4 +1,6 @@
 import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { chmod, lstat, mkdir, readFile, readlink, rm, rmdir, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
 import { promisify } from "node:util";
@@ -10,6 +12,7 @@ const MAX_CAPSULE_BYTES = 4 * 1024 * 1024 * 1024;
 const MAX_CAPSULE_RECORDS = 100_000;
 const MAX_LFS_POINTER_BYTES = 16 * 1024;
 const GIT_FETCH_TIMEOUT_MS = 60_000;
+const GIT_LFS_TIMEOUT_MS = 5 * 60_000;
 const GIT_OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 const REGULAR_MODES = new Set([0o100644, 0o100755]);
 const CONTENT_MODES = new Set([...REGULAR_MODES, 0o120000]);
@@ -34,10 +37,22 @@ export class WorkspaceBaselineUnavailable extends Error {
 export class GitLfsContentUnavailable extends Error {
   readonly code = "GIT_LFS_CONTENT_UNAVAILABLE" as const;
 
-  constructor(readonly paths: string[], readonly reason: "pointer" | "missing" | "checkout-filter") {
+  constructor(
+    readonly paths: string[],
+    readonly reason: "pointer" | "missing" | "checkout-filter" | "binary-missing" | "no-origin" | "download-failed" | "integrity",
+  ) {
     const sample = paths.slice(0, 3).join(", ");
     const suffix = sample ? `: ${sample}${paths.length > 3 ? ` (+${paths.length - 3} more)` : ""}` : "";
-    super(`GIT_LFS_CONTENT_UNAVAILABLE: Git LFS content is not materialized on this device (${reason}); run git lfs pull with device-local credentials or use metadata-only${suffix}`);
+    const guidance = {
+      pointer: "materialize it with device-local Git LFS, reattach with --git-fetch auto, or use metadata-only",
+      missing: "materialize it with device-local Git LFS, reattach with --git-fetch auto, or use metadata-only",
+      "checkout-filter": "verify the device-local Git LFS filter and credentials or use metadata-only",
+      "binary-missing": "install Git LFS on this device or use metadata-only",
+      "no-origin": "configure a device-local origin, materialize it manually, or use metadata-only",
+      "download-failed": "verify this device's Git LFS credentials and remote availability or use metadata-only",
+      integrity: "the materialized bytes failed Git LFS size or SHA-256 verification",
+    } satisfies Record<GitLfsContentUnavailable["reason"], string>;
+    super(`GIT_LFS_CONTENT_UNAVAILABLE: Git LFS content is not available on this device (${reason}); ${guidance[reason]}${suffix}`);
     this.name = "GitLfsContentUnavailable";
   }
 }
@@ -94,7 +109,10 @@ interface GitEntry {
   stage?: number;
 }
 
-export async function captureWorkspace(rootValue: string): Promise<CapturedWorkspace> {
+export async function captureWorkspace(
+  rootValue: string,
+  options: { gitFetch?: GitFetchPolicy } = {},
+): Promise<CapturedWorkspace> {
   const root = resolve(rootValue);
   if ((await gitText(root, ["rev-parse", "--is-inside-work-tree"]).catch(() => "false")).trim() !== "true") {
     throw new Error(`workspace is not a Git working tree: ${root}`);
@@ -121,7 +139,7 @@ export async function captureWorkspace(rootValue: string): Promise<CapturedWorks
     records.push({ path, index: indexLayer, worktree: worktreeLayer });
   }
   const captured = { capsule: { schemaVersion: 1 as const, baseCommit, headRef, records }, blobs };
-  await assertGitLfsMaterialized(root, baseCommit, captured);
+  await materializeGitLfs(root, baseCommit, captured, options.gitFetch ?? "ask");
   return captured;
 }
 
@@ -230,6 +248,23 @@ interface BaselineChange {
   originalCommit: string | null;
   originalRef: string | null;
   introducedPaths: string[];
+  lfsOriginals: LfsOriginal[];
+}
+
+interface GitLfsPointer {
+  path: string;
+  oid: string;
+  size: number;
+}
+
+interface LfsOriginal {
+  path: string;
+  bytes?: Uint8Array;
+  mode?: number;
+}
+
+interface GitLfsIssue extends GitLfsPointer {
+  reason: "pointer" | "missing" | "integrity";
 }
 
 export async function assertWorkspaceDestination(
@@ -261,7 +296,8 @@ export async function inspectWorkspaceDestination(
     if (blob.mode === 0o120000) safeSymlinkTarget(root, destinationPath(root, blob.path), blob.bytes);
   }
   if (currentBase === captured.capsule.baseCommit) {
-    await assertGitLfsMaterialized(root, currentBase, captured);
+    const issues = currentBase ? await gitLfsIssues(root, currentBase, captured) : [];
+    if (issues.length > 0 && gitFetch !== "auto") throwGitLfsIssues(issues);
     return { root, captured, baseCommit: captured.capsule.baseCommit, currentCommit: currentBase, currentRef, fetch: false, checkout: false };
   }
   if (gitFetch !== "auto") {
@@ -537,27 +573,31 @@ async function acquireWorkspaceBaseline(inspection: BaselineInspection): Promise
     originalCommit: inspection.currentCommit,
     originalRef: inspection.currentRef,
     introducedPaths: [],
+    lfsOriginals: [],
   };
-  if (!inspection.checkout || !inspection.baseCommit) return change;
-  if (inspection.fetch) {
-    await fetchWorkspaceBaseline(inspection.root, inspection.baseCommit);
-    if (!await gitObjectExists(inspection.root, inspection.baseCommit)) {
-      throw new WorkspaceBaselineUnavailable(inspection.baseCommit, "fetch-failed");
+  if (!inspection.baseCommit) return change;
+  if (inspection.checkout) {
+    if (inspection.fetch) {
+      await fetchWorkspaceBaseline(inspection.root, inspection.baseCommit);
+      if (!await gitObjectExists(inspection.root, inspection.baseCommit)) {
+        throw new WorkspaceBaselineUnavailable(inspection.baseCommit, "fetch-failed");
+      }
+    }
+    change.introducedPaths = await baselineIntroducedPaths(inspection.root, inspection.currentCommit, inspection.baseCommit);
+    try {
+      await gitCheckoutText(inspection.root, ["checkout", "--quiet", "--detach", inspection.baseCommit]);
+      change.changed = true;
+    } catch (error) {
+      await rollbackWorkspaceBaseline({ ...change, changed: true }).catch(() => undefined);
+      if (gitLfsFilterFailure(error)) {
+        throw new GitLfsContentUnavailable((await findGitLfsPointers(inspection.root, inspection.baseCommit)).map((pointer) => pointer.path), "checkout-filter");
+      }
+      throw new WorkspaceBaselineUnavailable(inspection.baseCommit, "checkout-failed");
     }
   }
-  change.introducedPaths = await baselineIntroducedPaths(inspection.root, inspection.currentCommit, inspection.baseCommit);
   try {
-    await gitText(inspection.root, ["checkout", "--quiet", "--detach", inspection.baseCommit]);
-    change.changed = true;
-  } catch (error) {
-    await rollbackWorkspaceBaseline({ ...change, changed: true }).catch(() => undefined);
-    if (gitLfsFilterFailure(error)) {
-      throw new GitLfsContentUnavailable(await findGitLfsPointerPaths(inspection.root, inspection.baseCommit), "checkout-filter");
-    }
-    throw new WorkspaceBaselineUnavailable(inspection.baseCommit, "checkout-failed");
-  }
-  try {
-    await assertGitLfsMaterialized(inspection.root, inspection.baseCommit, inspection.captured);
+    const originals = await materializeGitLfs(inspection.root, inspection.baseCommit, inspection.captured, "auto");
+    if (!inspection.checkout) change.lfsOriginals = originals;
     return change;
   } catch (error) {
     await rollbackWorkspaceBaseline(change);
@@ -566,16 +606,18 @@ async function acquireWorkspaceBaseline(inspection: BaselineInspection): Promise
 }
 
 async function rollbackWorkspaceBaseline(change: BaselineChange): Promise<void> {
-  if (!change.changed) return;
-  if (change.originalCommit) {
-    if (change.originalRef) await gitText(change.root, ["checkout", "--quiet", change.originalRef]);
-    else await gitText(change.root, ["checkout", "--quiet", "--detach", change.originalCommit]);
-  } else {
-    if (!change.originalRef) throw new Error("cannot restore an unborn workspace without its original branch");
-    await gitText(change.root, ["read-tree", "--empty"]);
-    await gitText(change.root, ["symbolic-ref", "HEAD", `refs/heads/${change.originalRef}`]);
+  if (change.changed) {
+    if (change.originalCommit) {
+      if (change.originalRef) await gitCheckoutText(change.root, ["checkout", "--quiet", change.originalRef]);
+      else await gitCheckoutText(change.root, ["checkout", "--quiet", "--detach", change.originalCommit]);
+    } else {
+      if (!change.originalRef) throw new Error("cannot restore an unborn workspace without its original branch");
+      await gitText(change.root, ["read-tree", "--empty"]);
+      await gitText(change.root, ["symbolic-ref", "HEAD", `refs/heads/${change.originalRef}`]);
+    }
+    for (const path of change.introducedPaths) await removeIntroducedPath(change.root, path);
   }
-  for (const path of change.introducedPaths) await removeIntroducedPath(change.root, path);
+  await restoreGitLfsOriginals(change.root, change.lfsOriginals);
 }
 
 async function baselineIntroducedPaths(root: string, originalCommit: string | null, baseCommit: string): Promise<string[]> {
@@ -647,33 +689,90 @@ function baselineUnavailableMessage(reason: WorkspaceBaselineUnavailable["reason
   return `BASELINE_UNAVAILABLE: workspace baseline does not match the capsule; ${guidance[reason]}`;
 }
 
-async function assertGitLfsMaterialized(root: string, baseCommit: string | null, captured: CapturedWorkspace): Promise<void> {
-  if (!baseCommit) return;
-  const pointers = await findGitLfsPointerPaths(root, baseCommit);
-  const unavailable: string[] = [];
-  let reason: GitLfsContentUnavailable["reason"] = "pointer";
-  for (const path of pointers) {
-    if (capsuleResolvesLfsPath(captured, path)) continue;
-    const info = await lstat(destinationPath(root, path)).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? undefined : Promise.reject(error));
-    if (!info || !info.isFile()) {
-      reason = "missing";
-      unavailable.push(path);
-      continue;
-    }
-    if (info.size > MAX_LFS_POINTER_BYTES) continue;
-    const bytes = new Uint8Array(await readFile(destinationPath(root, path)));
-    if (parseLfsPointer(bytes)) unavailable.push(path);
+async function materializeGitLfs(
+  root: string,
+  baseCommit: string | null,
+  captured: CapturedWorkspace,
+  policy: GitFetchPolicy,
+): Promise<LfsOriginal[]> {
+  if (!baseCommit) return [];
+  const issues = await gitLfsIssues(root, baseCommit, captured);
+  if (issues.length === 0) return [];
+  if (policy !== "auto") throwGitLfsIssues(issues);
+  const paths = issues.map((issue) => issue.path);
+  const originals = await captureGitLfsOriginals(root, paths);
+  if (!await runGitLfs(root, ["version"])) {
+    throw new GitLfsContentUnavailable(paths, "binary-missing");
   }
-  if (unavailable.length > 0) throw new GitLfsContentUnavailable(unavailable, reason);
+  let needsRefetch = false;
+  if (await runGitLfs(root, ["checkout"])) {
+    const local = await gitLfsIssues(root, baseCommit, captured, true);
+    if (local.length === 0) return originals;
+    needsRefetch = local.some((issue) => issue.reason === "integrity");
+    await restoreGitLfsOriginals(root, originals);
+  } else {
+    await restoreGitLfsOriginals(root, originals);
+  }
+  if (!await hasOrigin(root)) throw new GitLfsContentUnavailable(paths, "no-origin");
+  const fetchArguments = ["fetch", "--include=", "--exclude="];
+  if (needsRefetch) fetchArguments.push("--refetch");
+  fetchArguments.push("origin", baseCommit);
+  if (!await runGitLfs(root, fetchArguments) || !await runGitLfs(root, ["checkout"])) {
+    await restoreGitLfsOriginals(root, originals);
+    throw new GitLfsContentUnavailable(paths, "download-failed");
+  }
+  const remaining = await gitLfsIssues(root, baseCommit, captured, true);
+  if (remaining.length > 0) {
+    await restoreGitLfsOriginals(root, originals);
+    if (remaining.some((issue) => issue.reason === "integrity")) {
+      throw new GitLfsContentUnavailable(remaining.map((issue) => issue.path), "integrity");
+    }
+    throw new GitLfsContentUnavailable(remaining.map((issue) => issue.path), "download-failed");
+  }
+  return originals;
 }
 
-async function findGitLfsPointerPaths(root: string, baseCommit: string): Promise<string[]> {
+async function gitLfsIssues(
+  root: string,
+  baseCommit: string,
+  captured: CapturedWorkspace,
+  verifyContent = false,
+): Promise<GitLfsIssue[]> {
+  const pointers = await findGitLfsPointers(root, baseCommit);
+  const issues: GitLfsIssue[] = [];
+  for (const pointer of pointers) {
+    if (capsuleResolvesLfsPath(captured, pointer.path)) continue;
+    const path = destinationPath(root, pointer.path);
+    const info = await lstat(path).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? undefined : Promise.reject(error));
+    if (!info || !info.isFile()) {
+      issues.push({ ...pointer, reason: "missing" });
+      continue;
+    }
+    if (info.size <= MAX_LFS_POINTER_BYTES && parseLfsPointer(new Uint8Array(await readFile(path)))) {
+      issues.push({ ...pointer, reason: "pointer" });
+      continue;
+    }
+    if (verifyContent && (info.size !== pointer.size || await sha256File(path) !== pointer.oid)) {
+      issues.push({ ...pointer, reason: "integrity" });
+    }
+  }
+  return issues;
+}
+
+function throwGitLfsIssues(issues: GitLfsIssue[]): never {
+  const reason = issues.some((issue) => issue.reason === "integrity")
+    ? "integrity"
+    : issues.some((issue) => issue.reason === "missing") ? "missing" : "pointer";
+  throw new GitLfsContentUnavailable(issues.map((issue) => issue.path), reason);
+}
+
+async function findGitLfsPointers(root: string, baseCommit: string): Promise<GitLfsPointer[]> {
   const output = await gitBufferAllowNoMatch(root, [
     "grep", "-l", "-z", "--no-textconv", "--no-ext-grep",
     "-e", "^version https://git-lfs.github.com/spec/v1$", baseCommit, "--",
   ]);
   const prefix = `${baseCommit}:`;
-  const pointers: string[] = [];
+  const pointers: GitLfsPointer[] = [];
   for (const entry of nulPaths(output)) {
     if (!entry.startsWith(prefix)) throw new Error("Git returned an invalid LFS candidate path");
     const path = entry.slice(prefix.length);
@@ -681,10 +780,77 @@ async function findGitLfsPointerPaths(root: string, baseCommit: string): Promise
     const size = Number((await gitText(root, ["cat-file", "-s", `${baseCommit}:${path}`])).trim());
     if (!Number.isSafeInteger(size) || size < 0) throw new Error("Git returned an invalid LFS candidate size");
     if (size > MAX_LFS_POINTER_BYTES) continue;
-    if (parseLfsPointer(new Uint8Array(await gitBuffer(root, ["cat-file", "blob", `${baseCommit}:${path}`])))) pointers.push(path);
+    const pointer = parseLfsPointer(new Uint8Array(await gitBuffer(root, ["cat-file", "blob", `${baseCommit}:${path}`])));
+    if (pointer) pointers.push({ path, ...pointer });
   }
   if (pointers.length > MAX_CAPSULE_RECORDS) throw new Error("workspace has too many Git LFS pointers");
-  return pointers.sort((left, right) => left.localeCompare(right, "en"));
+  return pointers.sort((left, right) => left.path.localeCompare(right.path, "en"));
+}
+
+async function captureGitLfsOriginals(root: string, paths: string[]): Promise<LfsOriginal[]> {
+  const originals: LfsOriginal[] = [];
+  for (const path of paths) {
+    const destination = destinationPath(root, path);
+    const info = await lstat(destination).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? undefined : Promise.reject(error));
+    if (!info) originals.push({ path });
+    else if (info.isFile() && info.size <= MAX_LFS_POINTER_BYTES) {
+      originals.push({ path, bytes: new Uint8Array(await readFile(destination)), mode: info.mode & 0o777 });
+    } else {
+      throw new GitLfsContentUnavailable([path], "integrity");
+    }
+  }
+  return originals;
+}
+
+async function restoreGitLfsOriginals(root: string, originals: LfsOriginal[]): Promise<void> {
+  for (const original of [...originals].reverse()) {
+    const destination = destinationPath(root, original.path);
+    if (!original.bytes) {
+      await rm(destination, { force: true });
+      continue;
+    }
+    await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
+    await writeFile(destination, original.bytes, { mode: original.mode ?? 0o600 });
+    if (original.mode !== undefined) await chmod(destination, original.mode);
+  }
+}
+
+async function sha256File(path: string): Promise<string> {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(path)) hash.update(chunk as Buffer);
+  return hash.digest("hex");
+}
+
+async function runGitLfs(root: string, args: string[]): Promise<boolean> {
+  return run("git", ["-C", root, "lfs", ...args], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GIT_ATTR_SOURCE: "HEAD",
+      GIT_LFS_SKIP_DOWNLOAD_ERRORS: "0",
+      GIT_LFS_SKIP_SMUDGE: "0",
+      GIT_TERMINAL_PROMPT: "0",
+      GCM_INTERACTIVE: "Never",
+    },
+    maxBuffer: MAX_GIT_OUTPUT,
+    timeout: GIT_LFS_TIMEOUT_MS,
+    killSignal: "SIGKILL",
+  }).then(() => true, () => false);
+}
+
+async function gitCheckoutText(root: string, args: string[]): Promise<string> {
+  return (await run("git", ["-C", root, ...args], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GIT_LFS_SKIP_DOWNLOAD_ERRORS: "0",
+      GIT_TERMINAL_PROMPT: "0",
+      GCM_INTERACTIVE: "Never",
+    },
+    maxBuffer: MAX_GIT_OUTPUT,
+    timeout: GIT_LFS_TIMEOUT_MS,
+    killSignal: "SIGKILL",
+  })).stdout;
 }
 
 function capsuleResolvesLfsPath(captured: CapturedWorkspace, path: string): boolean {

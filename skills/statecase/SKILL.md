@@ -53,7 +53,7 @@ Use `strict` for unattended work. In an interactive workflow, `warn` may materia
 - Exit `3`: authentication or enrollment is required; ask the operator to complete it outside chat.
 - Exit `5`: preserve both sides and report the conflicting paths. Do not overwrite them.
 - `BASELINE_UNAVAILABLE` with exit `5`: if policy is `ask`, request approval to fetch with system Git or have the operator provision the commit. After approval, reattach the same ID/path with `--git-fetch auto` and retry. Never ask for Git credentials in chat and never change a `never` policy without explicit direction.
-- `GIT_LFS_CONTENT_UNAVAILABLE` with exit `5`: report the logical paths and ask the operator to materialize them with device-local `git lfs pull`, then retry. Do not request credentials, copy LFS storage, or silently switch to metadata-only mode.
+- `GIT_LFS_CONTENT_UNAVAILABLE` with exit `5`: report the logical paths and reason. If the workspace policy is `ask`, request approval to reattach it with `--git-fetch auto`; Statecase will use only device-local Git LFS, its cache, and the existing origin. For `binary-missing`, ask the operator to install Git LFS; for `download-failed`, ask them to verify device-local credentials/network; for `integrity`, stop and preserve the rollback. Never request credentials, copy LFS storage, or silently switch to metadata-only mode.
 - Exit `6`: stop. Treat this as an integrity or cryptographic failure.
 - Exit `7`: keep local work intact and retry later with bounded backoff.
 - Exit `8`: the requested work completed only partially or with unresolved context; report the warnings and do not claim an exact resume.

@@ -39,7 +39,10 @@ All notable changes to Statecase will be documented here.
 - Added fail-closed Git LFS pointer diagnostics on capture and hydration. Missing
   materialized content is reported by logical path, while encrypted overlay
   replacements and deletions remain portable without synchronizing LFS
-  credentials.
+  credentials. Explicit auto policy now tries the device-local LFS cache, then
+  fetches the exact baseline from the existing origin with bounded,
+  non-interactive system Git LFS; size/SHA-256 verification, redacted failures,
+  and transactional pointer restoration prevent partial or corrupt hydration.
 - Added stable installation identities, server-side auth-session binding,
   account device listing, and explicit device revocation. Revocation atomically
   disables vault memberships and every bound login session; a revoked session
