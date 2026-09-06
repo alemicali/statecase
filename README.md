@@ -60,6 +60,9 @@ npm run build
 ./apps/cli/dist/bin.js --json status
 ```
 
+Node.js 22.12+ and system Git are required. Git provides workspace identity and
+working-tree overlays; Statecase never synchronizes Git credentials.
+
 ## First private-MVP setup
 
 ```bash

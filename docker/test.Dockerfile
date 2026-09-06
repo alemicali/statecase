@@ -8,7 +8,7 @@ ENV CI=1 \
     CLAUDE_CONFIG_DIR=/tmp/statecase-synthetic-home/.claude
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends g++ make python3 \
+    && apt-get install -y --no-install-recommends g++ git make python3 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY . .

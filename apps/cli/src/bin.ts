@@ -232,8 +232,9 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
   program.command("doctor").action(async () => {
     const config = normalizeConfig(await store.loadConfig());
     const secrets = await store.loadSecrets();
-    const checks = { config: true, authenticated: Boolean(secrets.token), vaultKey: Boolean(config.selectedVaultId && secrets.vaultKeys[config.selectedVaultId]), mappings: config.mappings.length };
-    emit(io, program, { healthy: checks.authenticated && checks.vaultKey, checks }, checks.authenticated && checks.vaultKey ? "Statecase is ready" : "Statecase needs login or vault selection");
+    const git = await promisify(execFile)("git", ["--version"]).then(() => true, () => false);
+    const checks = { config: true, authenticated: Boolean(secrets.token), vaultKey: Boolean(config.selectedVaultId && secrets.vaultKeys[config.selectedVaultId]), git, mappings: config.mappings.length };
+    emit(io, program, { healthy: checks.authenticated && checks.vaultKey && git, checks }, checks.authenticated && checks.vaultKey && git ? "Statecase is ready" : "Statecase needs Git, login, or vault selection");
   });
 
   try {
