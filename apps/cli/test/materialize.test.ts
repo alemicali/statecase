@@ -1,4 +1,4 @@
-import { lstat, mkdtemp, readFile, readlink, readdir, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readlink, readdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -75,6 +75,20 @@ describe("transactional native materialization (BK-008, BK-009, WS-025)", () => 
       symlinks: [],
     })).rejects.toThrow("duplicate transaction target");
     expect(await readFile(path, "utf8")).toBe("untouched");
+  });
+
+  it("refuses to replace a directory when optional symlinks are omitted", async () => {
+    const root = await mkdtemp(join(tmpdir(), "statecase-directory-guard-"));
+    temporary.push(root);
+    const path = join(root, "existing-directory");
+    await mkdir(path);
+
+    await expect(applyFileTransaction({
+      writes: [{ path, bytes: new TextEncoder().encode("must not replace") }],
+      deletes: [],
+    })).rejects.toThrow("refusing to replace non-regular file");
+    expect((await lstat(path)).isDirectory()).toBe(true);
+    expect((await readdir(root)).every((name) => !name.includes(".statecase-transaction-"))).toBe(true);
   });
 
   it("rolls back a replaced symlink without following its target", async () => {
