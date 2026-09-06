@@ -179,11 +179,13 @@ export class SyncEngine {
     return { outcome: "pushed", revisionId, files: scanned.length, objects: envelopes.size + 1, bytes: transferredBytes + manifestEnvelope.byteLength };
   }
 
-  async pull(config: LocalConfig, dryRun = false): Promise<SyncResult> {
-    const head = await this.client.head(this.vaultId);
+  async pull(config: LocalConfig, dryRun = false, historicalRevisionId?: string): Promise<SyncResult> {
+    const head = historicalRevisionId
+      ? await this.client.revision(this.vaultId, historicalRevisionId)
+      : await this.client.head(this.vaultId);
     if (!head.revisionId || !head.manifestObjectId) return { outcome: "unchanged", revisionId: null, files: 0, objects: 0, bytes: 0 };
     const selected = [...config.mappings.filter((mapping) => mapping.mode !== "publish"), ...workspaceMappings(config)];
-    if (selected.length > 0 && selected.every((mapping) => config.applied[mapping.namespace]?.revisionId === head.revisionId)) {
+    if (!historicalRevisionId && selected.length > 0 && selected.every((mapping) => config.applied[mapping.namespace]?.revisionId === head.revisionId)) {
       return { outcome: "unchanged", revisionId: head.revisionId, files: 0, objects: 0, bytes: 0 };
     }
     const manifest = await this.#downloadManifest(head.manifestObjectId);

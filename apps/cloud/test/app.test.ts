@@ -14,7 +14,7 @@ import {
 
 const principal: Principal = { accountId: "acct_01", sessionId: "ses_01", deviceId: "dev_01", scopes: ["sync"] };
 
-function fixture(options: { authenticated?: boolean; authorized?: boolean } = {}) {
+function fixture(options: { authenticated?: boolean; authorized?: boolean; adminAuthorized?: boolean } = {}) {
   const objects = new MemoryObjects();
   const coordinators = new Map<string, VaultCoordinatorCore>();
   const auth: AuthService = {
@@ -24,7 +24,7 @@ function fixture(options: { authenticated?: boolean; authorized?: boolean } = {}
   const services: CloudServices = {
     auth,
     objects,
-    authorizeVault: async () => options.authorized !== false,
+    authorizeVault: async (_principalValue, _vaultId, action) => options.authorized !== false && (action !== "admin" || options.adminAuthorized !== false),
     coordinator: (vaultId) => {
       let coordinator = coordinators.get(vaultId);
       if (!coordinator) {
@@ -199,6 +199,45 @@ describe("Cloud API contract (PR-001..PR-015)", () => {
     expect(await stale.json()).toEqual({
       error: { code: "STALE_BASE", currentRevisionId: "rev_01", message: "vault head advanced" },
     });
+  });
+
+  it("creates, lists, resolves, and explicitly deletes protected snapshots (BK-001, BK-003)", async () => {
+    const { app } = fixture();
+    await app.request("/v1/vaults/vlt_01/objects/obj_manifest", { method: "PUT", body: Uint8Array.of(1) });
+    await app.request("/v1/vaults/vlt_01/commits", {
+      method: "POST",
+      body: JSON.stringify(commit("op_snapshot", null, "rev_snapshot", "obj_manifest", [])),
+    });
+    const created = await app.request("/v1/vaults/vlt_01/snapshots", {
+      method: "POST",
+      body: JSON.stringify({ id: "snp_api", name: "Before cleanup" }),
+    });
+    expect(created.status).toBe(201);
+    const snapshot = await created.json() as { id: string; revisionId: string; protected: boolean };
+    expect(snapshot).toMatchObject({ id: "snp_api", revisionId: "rev_snapshot", protected: true });
+    const replay = await app.request("/v1/vaults/vlt_01/snapshots", {
+      method: "POST",
+      body: JSON.stringify({ id: "snp_api", name: "Before cleanup" }),
+    });
+    expect(replay.status).toBe(201);
+    expect(await replay.json()).toEqual(snapshot);
+    expect(await (await app.request("/v1/vaults/vlt_01/snapshots")).json()).toEqual({ snapshots: [snapshot] });
+    expect(await (await app.request("/v1/vaults/vlt_01/revisions/rev_snapshot")).json()).toMatchObject({ manifestObjectId: "obj_manifest" });
+    expect((await app.request("/v1/vaults/vlt_01/revisions/rev_unknown")).status).toBe(404);
+    expect((await app.request(`/v1/vaults/vlt_01/snapshots/${snapshot.id}`, { method: "DELETE" })).status).toBe(204);
+    expect(await (await app.request("/v1/vaults/vlt_01/snapshots")).json()).toEqual({ snapshots: [] });
+  });
+
+  it("requires a writable head to snapshot and owner authority to delete protection", async () => {
+    const empty = fixture().app;
+    expect((await empty.request("/v1/vaults/vlt_01/snapshots", {
+      method: "POST",
+      body: JSON.stringify({ id: "snp_empty", name: "Empty" }),
+    })).status).toBe(409);
+    expect((await empty.request("/v1/vaults/vlt_01/snapshots", { method: "POST", body: "{}" })).status).toBe(400);
+
+    const nonOwner = fixture({ adminAuthorized: false }).app;
+    expect((await nonOwner.request("/v1/vaults/vlt_01/snapshots/snp_hidden", { method: "DELETE" })).status).toBe(404);
   });
 
   it.each(["not-json", JSON.stringify({ protocolVersion: "9.0" })])("rejects invalid commit body", async (body) => {

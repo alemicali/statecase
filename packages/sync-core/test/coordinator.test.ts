@@ -73,4 +73,43 @@ describe("ordered vault commits (PR-002..PR-004, PR-010)", () => {
       }),
     ).toEqual({ outcome: "committed", revisionId: "rev_02", previousRevisionId: "rev_01" });
   });
+
+  it("retains addressable revision pointers after the head advances (BK-001)", async () => {
+    const coordinator = new VaultCoordinatorCore(new InMemoryCoordinatorStorage());
+    await coordinator.commit(first);
+    await coordinator.commit({ ...first, operationId: "op_02", baseRevisionId: "rev_01", revisionId: "rev_02", manifestObjectId: "obj_manifest_02" });
+    expect(await coordinator.revision("rev_01")).toEqual({
+      revisionId: "rev_01",
+      manifestObjectId: "obj_manifest_01",
+      previousRevisionId: null,
+    });
+    expect(await coordinator.revision("rev_unknown")).toBeNull();
+  });
+
+  it("pins and removes protected snapshots without moving the vault head (BK-003, BK-005)", async () => {
+    const coordinator = new VaultCoordinatorCore(new InMemoryCoordinatorStorage());
+    await expect(coordinator.createSnapshot({ id: "snp_empty", name: "empty", createdAt: 1 })).resolves.toEqual({ outcome: "no-head" });
+    await coordinator.commit(first);
+    const created = await coordinator.createSnapshot({ id: "snp_01", name: "Before migration", createdAt: 123 });
+    expect(created).toEqual({
+      outcome: "created",
+      snapshot: {
+        id: "snp_01",
+        name: "Before migration",
+        revisionId: "rev_01",
+        manifestObjectId: "obj_manifest_01",
+        protected: true,
+        createdAt: 123,
+      },
+    });
+    if (created.outcome !== "created") throw new Error("snapshot fixture was not created");
+    await coordinator.commit({ ...first, operationId: "op_02", baseRevisionId: "rev_01", revisionId: "rev_02", manifestObjectId: "obj_manifest_02" });
+    expect(await coordinator.listSnapshots()).toEqual([created.snapshot]);
+    expect(await coordinator.createSnapshot({ id: "snp_01", name: "Before migration", createdAt: 999 })).toEqual(created);
+    expect(await coordinator.createSnapshot({ id: "snp_01", name: "different", createdAt: 124 })).toEqual({ outcome: "id-conflict" });
+    expect(await coordinator.deleteSnapshot("snp_missing")).toBe(false);
+    expect(await coordinator.deleteSnapshot("snp_01")).toBe(true);
+    expect(await coordinator.listSnapshots()).toEqual([]);
+    expect(await coordinator.head()).toEqual({ revisionId: "rev_02", manifestObjectId: "obj_manifest_02" });
+  });
 });

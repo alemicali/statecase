@@ -3,7 +3,7 @@ import { secureHeaders } from "hono/secure-headers";
 import { z } from "zod";
 
 import { commitRequestSchema, PROTOCOL_VERSION, type CommitRequest, type ProtocolErrorCode } from "@statecase/protocol";
-import type { CommitResult, VaultHead } from "@statecase/sync-core";
+import type { CommitResult, CreateSnapshotResult, VaultHead, VaultRevision, VaultSnapshot } from "@statecase/sync-core";
 
 import { DEVICE_HTML, UI_CSS, UI_JAVASCRIPT } from "./ui.js";
 
@@ -34,7 +34,11 @@ export interface ObjectStore {
 
 export interface Coordinator {
   head(): Promise<VaultHead | null>;
+  revision(revisionId: string): Promise<VaultRevision | null>;
   commit(request: CommitRequest): Promise<CommitResult>;
+  listSnapshots(): Promise<VaultSnapshot[]>;
+  createSnapshot(input: { id: string; name: string; createdAt: number }): Promise<CreateSnapshotResult>;
+  deleteSnapshot(snapshotId: string): Promise<boolean>;
 }
 
 export interface VaultSummary {
@@ -66,7 +70,7 @@ export interface ControlPlane {
 export interface CloudServices {
   auth: AuthService;
   objects: ObjectStore;
-  authorizeVault(principal: Principal, vaultId: string, action: "read" | "write"): Promise<boolean>;
+  authorizeVault(principal: Principal, vaultId: string, action: "read" | "write" | "admin"): Promise<boolean>;
   coordinator(vaultId: string): Coordinator;
   control: ControlPlane;
 }
@@ -97,6 +101,43 @@ export function createCloudApp(services: CloudServices): Hono<AppEnvironment> {
     if (!(await allowed(services, context, vaultId, "read"))) return notFound(context);
     const head = await services.coordinator(vaultId).head();
     return context.json(head ?? { revisionId: null, manifestObjectId: null });
+  });
+
+  app.get("/v1/vaults/:vaultId/revisions/:revisionId", async (context) => {
+    const vaultId = requireIdentifier(context.req.param("vaultId"));
+    const revisionId = requireIdentifier(context.req.param("revisionId"));
+    if (!(await allowed(services, context, vaultId, "read"))) return notFound(context);
+    const revision = await services.coordinator(vaultId).revision(revisionId);
+    return revision ? context.json(revision) : notFound(context);
+  });
+
+  app.get("/v1/vaults/:vaultId/snapshots", async (context) => {
+    const vaultId = requireIdentifier(context.req.param("vaultId"));
+    if (!(await allowed(services, context, vaultId, "read"))) return notFound(context);
+    return context.json({ snapshots: await services.coordinator(vaultId).listSnapshots() });
+  });
+
+  app.post("/v1/vaults/:vaultId/snapshots", async (context) => {
+    const vaultId = requireIdentifier(context.req.param("vaultId"));
+    if (!(await allowed(services, context, vaultId, "write"))) return notFound(context);
+    const body = await parseBody(context, z.object({ id: z.string().regex(identifier), name: z.string().trim().min(1).max(120) }).strict());
+    if (!body.success) return body.response;
+    const result = await services.coordinator(vaultId).createSnapshot({
+      id: body.data.id,
+      name: body.data.name,
+      createdAt: Date.now(),
+    });
+    if (result.outcome === "no-head") return jsonError(context, "INVALID_REQUEST", "vault has no revision to snapshot", 409);
+    if (result.outcome === "id-conflict") return jsonError(context, "IDEMPOTENCY_CONFLICT", "snapshot ID was already used", 409);
+    return context.json(result.snapshot, 201);
+  });
+
+  app.delete("/v1/vaults/:vaultId/snapshots/:snapshotId", async (context) => {
+    const vaultId = requireIdentifier(context.req.param("vaultId"));
+    const snapshotId = requireIdentifier(context.req.param("snapshotId"));
+    if (!(await allowed(services, context, vaultId, "admin"))) return notFound(context);
+    if (!(await services.coordinator(vaultId).deleteSnapshot(snapshotId))) return notFound(context);
+    return context.body(null, 204);
   });
 
   app.post("/v1/devices/current", async (context) => {
@@ -211,7 +252,7 @@ async function allowed(
   services: CloudServices,
   context: Context<AppEnvironment>,
   vaultId: string,
-  action: "read" | "write",
+  action: "read" | "write" | "admin",
 ): Promise<boolean> {
   return services.authorizeVault(context.get("principal"), vaultId, action);
 }

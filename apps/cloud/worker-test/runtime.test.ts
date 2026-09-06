@@ -174,6 +174,16 @@ describe("Statecase in workerd (PR-001, PR-005, PR-010, PR-011, AU-001)", () => 
       revisionId: "rev_runtime",
       manifestObjectId: "obj_manifest",
     });
+    expect(await firstStub.revision("rev_runtime")).toEqual({
+      revisionId: "rev_runtime",
+      manifestObjectId: "obj_manifest",
+      previousRevisionId: null,
+    });
+    const snapshot = await firstStub.createSnapshot({ id: "snp_runtime", name: "Runtime checkpoint", createdAt: 1 });
+    expect(snapshot).toMatchObject({ outcome: "created", snapshot: { revisionId: "rev_runtime", protected: true } });
+    expect(await vaults.getByName("vlt_runtime").listSnapshots()).toHaveLength(1);
+    expect(await firstStub.deleteSnapshot("snp_runtime")).toBe(true);
+    expect(await firstStub.listSnapshots()).toEqual([]);
   });
 
   it("provides an isolated R2 binding for opaque bytes", async () => {

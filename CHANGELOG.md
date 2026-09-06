@@ -33,3 +33,8 @@ All notable changes to Statecase will be documented here.
   account device listing, and explicit device revocation. Revocation atomically
   disables vault memberships and every bound login session; a revoked session
   cannot evade the decision by registering a different device ID.
+- Added durable addressable revision records and protected named snapshots in
+  each vault coordinator, with idempotent creation, owner-only deletion, CLI
+  management, and selective historical restore into an explicit staging
+  target. Historical materialization leaves the remote head unchanged and uses
+  the same integrity, path, conflict, and transaction checks as normal pull.

@@ -36,6 +36,10 @@ describe("HTTP client contract (PR-001, AU-011)", () => {
       if (path === "/v1/vaults") return Response.json({ vaults: [] });
       if (path.endsWith("/join")) return Response.json({ id: "vlt_one", role: "writer" });
       if (path.endsWith("/head")) return Response.json({ revisionId: null, manifestObjectId: null });
+      if (path.endsWith("/snapshots") && init?.method === "POST") return Response.json({ id: "snp_one", name: "snapshot", revisionId: "rev_one", manifestObjectId: "obj_one", protected: true, createdAt: 1 });
+      if (path.endsWith("/snapshots")) return Response.json({ snapshots: [] });
+      if (path.includes("/snapshots/") && init?.method === "DELETE") return new Response(null, { status: 204 });
+      if (path.includes("/revisions/")) return Response.json({ revisionId: "rev_one", manifestObjectId: "obj_one", previousRevisionId: null });
       return Response.json({ outcome: "committed", revisionId: "rev_one" });
     });
     await client.startDeviceCode();
@@ -47,9 +51,13 @@ describe("HTTP client contract (PR-001, AU-011)", () => {
     await client.listVaults();
     await client.joinVault("vlt_one");
     await client.head("vlt_one");
+    await client.revision("vlt_one", "rev_one");
+    await client.createSnapshot("vlt_one", "snapshot");
+    await client.listSnapshots("vlt_one");
+    await client.deleteSnapshot("vlt_one", "snp_one");
     await client.commit("vlt_one", {
       protocolVersion: "1.0", operationId: "op_one", baseRevisionId: null, revisionId: "rev_one", manifestObjectId: "obj_one", requiredObjectIds: [],
     });
-    expect(calls).toHaveLength(10);
+    expect(calls).toHaveLength(14);
   });
 });

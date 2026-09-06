@@ -47,6 +47,19 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
     expect(await command(io, "--json", "drop", "add", source, "--name", "working-context")).toBe(0);
     const drop = JSON.parse(output.at(-1)!) as { id: string };
     expect(await command(io, "--json", "push")).toBe(0);
+    expect(await command(io, "--json", "snapshot", "create", "Before second device")).toBe(0);
+    const snapshot = JSON.parse(output.at(-1)!) as { id: string };
+    expect(await command(io, "--json", "snapshot", "list")).toBe(0);
+    expect(JSON.parse(output.at(-1)!)).toMatchObject({ snapshots: [{ id: snapshot.id, protected: true }] });
+    expect(await command(io, "--json", "snapshot", "delete", snapshot.id)).toBe(2);
+    expect(await command(io, "--json", "snapshot", "delete", snapshot.id, "--yes")).toBe(0);
+    const restoreTarget = join(base, "historical-restore");
+    expect(await command(io, "--json", "restore", "--revision", remote.revisionId!, "--mapping", drop.id, "--target", restoreTarget, "--dry-run")).toBe(0);
+    await expect(readFile(join(restoreTarget, "context.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await command(io, "--json", "restore", "--revision", remote.revisionId!, "--mapping", drop.id, "--target", restoreTarget)).toBe(0);
+    expect(await readFile(join(restoreTarget, "context.txt"), "utf8")).toBe("context from machine A\n");
+    expect(await command(io, "--json", "restore", "--revision", remote.revisionId!, "--mapping", drop.id, "--target", restoreTarget)).toBe(2);
+    expect(await command(io, "--json", "restore", "--revision", remote.revisionId!, "--mapping", "missing", "--target", join(base, "missing"))).toBe(2);
     expect(await command(io, "--json", "status")).toBe(0);
     expect(await command(io, "--json", "doctor")).toBe(0);
     expect(await command(io, "--json", "device", "list")).toBe(0);
@@ -133,6 +146,8 @@ class CliRemote {
   revisionId: string | null = null;
   manifestObjectId: string | null = null;
   readonly devices = new Map<string, { id: string; name: string; status: "active" | "revoked" }>();
+  readonly snapshots = new Map<string, { id: string; name: string; revisionId: string; manifestObjectId: string; protected: true; createdAt: number }>();
+  readonly revisions = new Map<string, { revisionId: string; manifestObjectId: string; previousRevisionId: string | null }>();
 
   fetch: typeof fetch = async (input, init) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
@@ -157,6 +172,23 @@ class CliRemote {
     if (url.pathname === "/v1/vaults" && method === "GET") return Response.json({ vaults: this.vaults });
     if (url.pathname.endsWith("/join")) return Response.json({ id: "vlt_test", name: "personal", role: "writer" });
     if (url.pathname.endsWith("/head")) return Response.json({ revisionId: this.revisionId, manifestObjectId: this.manifestObjectId });
+    const revision = /\/revisions\/([^/]+)$/u.exec(url.pathname);
+    if (revision) {
+      const value = this.revisions.get(revision[1]);
+      return value ? Response.json(value) : Response.json({ error: { code: "NOT_FOUND" } }, { status: 404 });
+    }
+    if (url.pathname.endsWith("/snapshots") && method === "POST") {
+      const input = JSON.parse(String(init?.body)) as { id: string; name: string };
+      const snapshot = { id: input.id, name: input.name, revisionId: this.revisionId!, manifestObjectId: this.manifestObjectId!, protected: true as const, createdAt: 1 };
+      this.snapshots.set(snapshot.id, snapshot);
+      return Response.json(snapshot, { status: 201 });
+    }
+    if (url.pathname.endsWith("/snapshots") && method === "GET") return Response.json({ snapshots: [...this.snapshots.values()] });
+    const snapshot = /^\/v1\/vaults\/vlt_test\/snapshots\/([^/]+)$/u.exec(url.pathname);
+    if (snapshot && method === "DELETE") {
+      this.snapshots.delete(snapshot[1]);
+      return new Response(null, { status: 204 });
+    }
     const object = /^\/v1\/vaults\/vlt_test\/objects\/([^/]+)$/u.exec(url.pathname);
     if (object && method === "PUT") {
       const bytes = new Uint8Array(await new Response(init?.body).arrayBuffer());
@@ -168,6 +200,7 @@ class CliRemote {
       const body = JSON.parse(String(init?.body)) as { revisionId: string; manifestObjectId: string };
       this.revisionId = body.revisionId;
       this.manifestObjectId = body.manifestObjectId;
+      this.revisions.set(body.revisionId, { revisionId: body.revisionId, manifestObjectId: body.manifestObjectId, previousRevisionId: null });
       return Response.json({ outcome: "committed", revisionId: body.revisionId });
     }
     return Response.json({ error: { code: "NOT_FOUND", message: "not found" } }, { status: 404 });

@@ -10,6 +10,22 @@ export interface VaultHead {
   manifestObjectId: string;
 }
 
+export interface VaultRevision extends VaultHead {
+  previousRevisionId: string | null;
+}
+
+export interface VaultSnapshot extends VaultHead {
+  id: string;
+  name: string;
+  protected: true;
+  createdAt: number;
+}
+
+export type CreateSnapshotResult =
+  | { outcome: "created"; snapshot: VaultSnapshot }
+  | { outcome: "no-head" }
+  | { outcome: "id-conflict" };
+
 export type CommitResult =
   | { outcome: "committed"; revisionId: string; previousRevisionId: string | null }
   | { outcome: "idempotency-conflict" }
@@ -21,6 +37,8 @@ interface StoredOperation {
 }
 
 const HEAD_KEY = "head";
+const SNAPSHOTS_KEY = "snapshots";
+const MAX_SNAPSHOTS = 1_000;
 
 export class VaultCoordinatorCore {
   readonly #storage: CoordinatorStorage;
@@ -31,6 +49,37 @@ export class VaultCoordinatorCore {
 
   async head(): Promise<VaultHead | null> {
     return (await this.#storage.get<VaultHead>(HEAD_KEY)) ?? null;
+  }
+
+  async revision(revisionId: string): Promise<VaultRevision | null> {
+    return (await this.#storage.get<VaultRevision>(`revision:${revisionId}`)) ?? null;
+  }
+
+  async listSnapshots(): Promise<VaultSnapshot[]> {
+    return (await this.#storage.get<VaultSnapshot[]>(SNAPSHOTS_KEY)) ?? [];
+  }
+
+  async createSnapshot(input: { id: string; name: string; createdAt: number }): Promise<CreateSnapshotResult> {
+    const snapshots = await this.listSnapshots();
+    const existing = snapshots.find((snapshot) => snapshot.id === input.id);
+    if (existing) {
+      return existing.name === input.name
+        ? { outcome: "created", snapshot: existing }
+        : { outcome: "id-conflict" };
+    }
+    const head = await this.head();
+    if (!head) return { outcome: "no-head" };
+    if (snapshots.length >= MAX_SNAPSHOTS) throw new Error("snapshot limit reached");
+    const snapshot: VaultSnapshot = { id: input.id, name: input.name, ...head, protected: true, createdAt: input.createdAt };
+    await this.#storage.putMany({ [SNAPSHOTS_KEY]: [...snapshots, snapshot] });
+    return { outcome: "created", snapshot };
+  }
+
+  async deleteSnapshot(snapshotId: string): Promise<boolean> {
+    const snapshots = await this.listSnapshots();
+    if (!snapshots.some((snapshot) => snapshot.id === snapshotId)) return false;
+    await this.#storage.putMany({ [SNAPSHOTS_KEY]: snapshots.filter((snapshot) => snapshot.id !== snapshotId) });
+    return true;
   }
 
   async commit(unknownRequest: CommitRequest): Promise<CommitResult> {
@@ -54,6 +103,11 @@ export class VaultCoordinatorCore {
     };
     await this.#storage.putMany({
       [HEAD_KEY]: { revisionId: request.revisionId, manifestObjectId: request.manifestObjectId } satisfies VaultHead,
+      [`revision:${request.revisionId}`]: {
+        revisionId: request.revisionId,
+        manifestObjectId: request.manifestObjectId,
+        previousRevisionId: currentRevisionId,
+      } satisfies VaultRevision,
       [operationKey]: { fingerprint, result } satisfies StoredOperation,
     });
     return result;

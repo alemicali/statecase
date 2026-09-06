@@ -1,7 +1,15 @@
 import { DurableObject } from "cloudflare:workers";
 
 import type { CommitRequest } from "@statecase/protocol";
-import { VaultCoordinatorCore, type CommitResult, type CoordinatorStorage, type VaultHead } from "@statecase/sync-core";
+import {
+  VaultCoordinatorCore,
+  type CommitResult,
+  type CoordinatorStorage,
+  type CreateSnapshotResult,
+  type VaultHead,
+  type VaultRevision,
+  type VaultSnapshot,
+} from "@statecase/sync-core";
 
 import {
   ControlPlaneError,
@@ -36,8 +44,24 @@ export class VaultCoordinator extends DurableObject<StatecaseEnvironment> {
     return this.#core.head();
   }
 
+  async revision(revisionId: string): Promise<VaultRevision | null> {
+    return this.#core.revision(revisionId);
+  }
+
   async commit(request: CommitRequest): Promise<CommitResult> {
     return this.#core.commit(request);
+  }
+
+  async listSnapshots(): Promise<VaultSnapshot[]> {
+    return this.#core.listSnapshots();
+  }
+
+  async createSnapshot(input: { id: string; name: string; createdAt: number }): Promise<CreateSnapshotResult> {
+    return this.#core.createSnapshot(input);
+  }
+
+  async deleteSnapshot(snapshotId: string): Promise<boolean> {
+    return this.#core.deleteSnapshot(snapshotId);
   }
 }
 
@@ -295,7 +319,7 @@ async function authorizeVault(
   database: D1Database,
   principal: Principal,
   vaultId: string,
-  action: "read" | "write",
+  action: "read" | "write" | "admin",
 ): Promise<boolean> {
   const row = await database.prepare(`
     SELECT vm.role AS role
@@ -308,7 +332,9 @@ async function authorizeVault(
     LIMIT 1
   `).bind(vaultId, principal.accountId, principal.deviceId, principal.accountId).first<{ role: string }>();
   if (!row) return false;
-  return action === "read" || row.role === "owner" || row.role === "writer" || row.role === "append";
+  if (action === "read") return true;
+  if (action === "admin") return row.role === "owner";
+  return row.role === "owner" || row.role === "writer" || row.role === "append";
 }
 
 function objectKey(vaultId: string, objectId: string): string {

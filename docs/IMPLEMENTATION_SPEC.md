@@ -15,10 +15,11 @@ Cloudflare stack. Foreground `statecase run`, safe shims, tombstone propagation,
 transactional apply, the persistent daemon core, and native systemd/launchd
 service definitions are implemented. Exact Git index/worktree capsules are
 implemented for ordinary files, safe symlinks, unborn/detached repositories,
-and uninitialized gitlinks. Sections covering automatic merge,
-snapshots/restore, scoped bootstrap, automatic baseline fetch, initialized
-submodule hydration, and complete Session Capsules remain target requirements,
-not current claims.
+and uninitialized gitlinks. Durable revision pointers, protected snapshots,
+and selective restore to a staging target are implemented. Sections covering
+automatic merge, retention pruning, in-place restore, scoped bootstrap,
+automatic baseline fetch, initialized submodule hydration, and complete
+Session Capsules remain target requirements, not current claims.
 
 Persistent device identities, auth-session binding, device enumeration, and
 server-side revocation are implemented. Revocation blocks new service access

@@ -1,5 +1,6 @@
 import { homedir, hostname } from "node:os";
 import { join, resolve } from "node:path";
+import { lstat, readdir } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -146,6 +147,66 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
       key.fill(0);
     }
   });
+
+  const snapshot = program.command("snapshot").description("protect and inspect retained vault revisions");
+  snapshot.command("create <name>").action(async (name: string) => {
+    const { config, secrets, client } = await requireSession(store, io.fetch);
+    const vaultId = selectedVault(config, secrets);
+    const created = await client.createSnapshot(vaultId, name);
+    emit(io, program, created, `Protected snapshot ${created.name} (${created.id}) at ${created.revisionId}`);
+  });
+  snapshot.command("list").action(async () => {
+    const { config, secrets, client } = await requireSession(store, io.fetch);
+    const vaultId = selectedVault(config, secrets);
+    const snapshots = await client.listSnapshots(vaultId);
+    emit(io, program, { snapshots }, snapshots.map((item) => `${item.id}\t${item.revisionId}\t${item.name}`).join("\n") || "No snapshots");
+  });
+  snapshot.command("delete <snapshotId>").option("--yes", "confirm protected snapshot deletion").action(async (snapshotId: string, options: { yes?: boolean }) => {
+    if (!options.yes) throw new StatecaseUsageError("protected snapshot deletion requires --yes", 2);
+    const { config, secrets, client } = await requireSession(store, io.fetch);
+    const vaultId = selectedVault(config, secrets);
+    await client.deleteSnapshot(vaultId, snapshotId);
+    emit(io, program, { id: snapshotId, deleted: true }, `Deleted protected snapshot ${snapshotId}`);
+  });
+
+  program.command("restore")
+    .description("materialize one namespace from an immutable historical revision into a staging target")
+    .requiredOption("--revision <revisionId>")
+    .requiredOption("--mapping <mappingId>", "Drop/harness mapping ID or workspace ID")
+    .requiredOption("--target <path>")
+    .option("--dry-run")
+    .option("--yes", "allow a non-empty target; normal conflict checks still apply")
+    .action(async (options: { revision: string; mapping: string; target: string; dryRun?: boolean; yes?: boolean }) => {
+      const { config, secrets, client } = await requireSession(store, io.fetch);
+      const vaultId = selectedVault(config, secrets);
+      const mapping = config.mappings.find((item) => item.id === options.mapping);
+      const workspace = config.workspaces.find((item) => item.id === options.mapping);
+      if (!mapping && !workspace) throw new StatecaseUsageError("restore mapping is not configured on this device", 2);
+      if (mapping && workspace) throw new StatecaseUsageError("restore mapping ID is ambiguous", 2);
+      const target = resolve(options.target);
+      const targetInfo = await lstat(target).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? undefined : Promise.reject(error));
+      if (targetInfo && !targetInfo.isDirectory()) throw new StatecaseUsageError("restore target must be a directory", 2);
+      if (targetInfo && (await readdir(target)).length > 0 && !options.yes) {
+        throw new StatecaseUsageError("non-empty restore target requires --yes", 2);
+      }
+      const restoreConfig = structuredClone(config);
+      restoreConfig.applied = {};
+      if (mapping) {
+        restoreConfig.mappings = [{ ...mapping, mode: "consume", path: target }];
+        restoreConfig.workspaces = restoreConfig.workspaces.map((item) => ({ ...item, sync: "identity-only" }));
+      } else {
+        restoreConfig.mappings = [];
+        restoreConfig.workspaces = [{ ...workspace!, path: target, sync: "git" }];
+      }
+      const key = Buffer.from(secrets.vaultKeys[vaultId], "base64url");
+      try {
+        const result = await new SyncEngine(client, vaultId, key).pull(restoreConfig, options.dryRun, options.revision);
+        emit(io, program, { revisionId: options.revision, mappingId: options.mapping, target, dryRun: Boolean(options.dryRun), result },
+          `${options.dryRun ? "Would restore" : "Restored"} ${result.files} files from ${options.revision} to ${target}`);
+      } finally {
+        key.fill(0);
+      }
+    });
 
   const drop = program.command("drop").description("map arbitrary synchronized directories");
   drop.command("add <path>").requiredOption("--name <name>").option("--mode <mode>", "two-way, publish, consume, or append", "two-way").action(async (path: string, options: { name: string; mode: RootMapping["mode"] }) => {

@@ -272,6 +272,28 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     const key = await randomKey();
     await expect(new SyncEngine(client, "vlt_test", key).push(config(file))).rejects.toThrow("not a directory");
   });
+
+  it("restores an addressable historical revision without moving the remote head (BK-006)", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-historical-"));
+    temporary.push(base);
+    const source = join(base, "source");
+    const staging = join(base, "staging");
+    await Promise.all([mkdir(source), mkdir(staging)]);
+    await writeFile(join(source, "context.txt"), "version one\n");
+    const remote = new MemoryRemote();
+    const key = await randomKey();
+    const engine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    const sourceConfig = config(source);
+    const first = await engine.push(sourceConfig);
+    await writeFile(join(source, "context.txt"), "version two\n");
+    const second = await engine.push(sourceConfig);
+
+    await expect(engine.pull(config(staging), true, first.revisionId!)).resolves.toMatchObject({ outcome: "pulled", files: 1 });
+    await expect(readFile(join(staging, "context.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    await engine.pull(config(staging), false, first.revisionId!);
+    expect(await readFile(join(staging, "context.txt"), "utf8")).toBe("version one\n");
+    expect(remote.revisionId).toBe(second.revisionId);
+  });
 });
 
 function config(path: string): LocalConfig {
@@ -308,6 +330,7 @@ async function initializeRepository(path: string): Promise<void> {
 
 class MemoryRemote {
   readonly objects = new Map<string, Uint8Array>();
+  readonly revisions = new Map<string, { revisionId: string; manifestObjectId: string; previousRevisionId: string | null }>();
   revisionId: string | null = null;
   manifestObjectId: string | null = null;
   plaintext = "";
@@ -327,11 +350,17 @@ class MemoryRemote {
       return bytes ? new Response(bytes) : Response.json({ error: { code: "NOT_FOUND" } }, { status: 404 });
     }
     if (url.pathname.endsWith("/head")) return Response.json({ revisionId: this.revisionId, manifestObjectId: this.manifestObjectId });
+    const revision = /\/revisions\/([^/]+)$/u.exec(url.pathname);
+    if (revision) {
+      const value = this.revisions.get(revision[1]);
+      return value ? Response.json(value) : Response.json({ error: { code: "NOT_FOUND" } }, { status: 404 });
+    }
     if (url.pathname.endsWith("/commits")) {
       const request = JSON.parse(String(init?.body)) as { baseRevisionId: string | null; revisionId: string; manifestObjectId: string };
       if (request.baseRevisionId !== this.revisionId) return Response.json({ error: { code: "STALE_BASE", message: "advanced" } }, { status: 409 });
       this.revisionId = request.revisionId;
       this.manifestObjectId = request.manifestObjectId;
+      this.revisions.set(request.revisionId, { revisionId: request.revisionId, manifestObjectId: request.manifestObjectId, previousRevisionId: request.baseRevisionId });
       return Response.json({ outcome: "committed", revisionId: request.revisionId });
     }
     return Response.json({ error: { code: "NOT_FOUND" } }, { status: 404 });

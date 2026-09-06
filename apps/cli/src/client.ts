@@ -27,6 +27,21 @@ export interface RemoteHead {
   manifestObjectId: string | null;
 }
 
+export interface RemoteRevision extends RemoteHead {
+  revisionId: string;
+  manifestObjectId: string;
+  previousRevisionId: string | null;
+}
+
+export interface RemoteSnapshot extends RemoteHead {
+  id: string;
+  name: string;
+  revisionId: string;
+  manifestObjectId: string;
+  protected: true;
+  createdAt: number;
+}
+
 export interface DeviceRecord {
   id: string;
   name: string;
@@ -90,6 +105,25 @@ export class StatecaseClient {
 
   head(vaultId: string): Promise<RemoteHead> {
     return this.#json(`/v1/vaults/${encodeURIComponent(vaultId)}/head`);
+  }
+
+  revision(vaultId: string, revisionId: string): Promise<RemoteRevision> {
+    return this.#json(`/v1/vaults/${encodeURIComponent(vaultId)}/revisions/${encodeURIComponent(revisionId)}`);
+  }
+
+  createSnapshot(vaultId: string, name: string, snapshotId = `snp_${crypto.randomUUID().replaceAll("-", "")}`): Promise<RemoteSnapshot> {
+    return this.#json(`/v1/vaults/${encodeURIComponent(vaultId)}/snapshots`, {
+      method: "POST",
+      body: JSON.stringify({ id: snapshotId, name }),
+    });
+  }
+
+  async listSnapshots(vaultId: string): Promise<RemoteSnapshot[]> {
+    return (await this.#json<{ snapshots: RemoteSnapshot[] }>(`/v1/vaults/${encodeURIComponent(vaultId)}/snapshots`)).snapshots;
+  }
+
+  async deleteSnapshot(vaultId: string, snapshotId: string): Promise<void> {
+    await this.#request(`/v1/vaults/${encodeURIComponent(vaultId)}/snapshots/${encodeURIComponent(snapshotId)}`, { method: "DELETE" });
   }
 
   async putObject(vaultId: string, objectId: string, bytes: Uint8Array): Promise<void> {

@@ -25,8 +25,8 @@ exit status.
 The persistent daemon can run with `statecase daemon foreground` or be installed
 as a systemd user service / macOS LaunchAgent. Real-OS service UAT, automatic
 three-way merge, automatic missing-baseline fetch, initialized-submodule
-hydration, retained snapshots, scoped ephemeral capabilities, post-revocation
-key rewrapping, and full historical Session Capsules remain
+hydration, automatic retention/in-place restore, scoped ephemeral capabilities,
+post-revocation key rewrapping, and full historical Session Capsules remain
 release gates. This is not yet a public-production release.
 
 The approved direction lives in:
@@ -113,6 +113,12 @@ Use `device list` to inspect stable installation identities and `device revoke
 <id> --yes` to block a lost installation and all of its bound service sessions.
 Revocation prevents future server access; it cannot erase plaintext already
 present on the lost machine.
+
+Protect the current remote head with `snapshot create <name>`, inspect it with
+`snapshot list`, and recover one configured namespace without touching the
+live head using `restore --revision <id> --mapping <id> --target <staging-dir>`.
+Statecase refuses a non-empty staging target unless `--yes` is explicit, and
+normal conflict checks still apply after confirmation.
 
 Account creation is deliberately allowlisted for the private MVP. Never put
 `STATECASE_TOKEN`, `STATECASE_RECOVERY_PASSPHRASE`, or the recovery kit in a
