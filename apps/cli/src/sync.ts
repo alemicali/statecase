@@ -1,6 +1,6 @@
-import { lstat, mkdir, open, readdir, readFile, rename, rm, stat } from "node:fs/promises";
+import { lstat, readdir, readFile, stat } from "node:fs/promises";
 import { execFile } from "node:child_process";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { basename, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
 import { classifyClaudePath, claudeProjectDirectory } from "@statecase/adapter-claude";
@@ -12,6 +12,7 @@ import { canonicalJson, manifestSchema, type VaultManifestV1 } from "@statecase/
 
 import type { LocalConfig, RootMapping } from "./config.js";
 import type { StatecaseClient } from "./client.js";
+import { applyFileTransaction } from "./materialize.js";
 
 const encoder = new TextEncoder();
 const runFile = promisify(execFile);
@@ -59,7 +60,28 @@ export class SyncEngine {
     const head = await this.client.head(this.vaultId);
     const previous = head.manifestObjectId ? await this.#downloadManifest(head.manifestObjectId) : undefined;
     const writableNamespaces = new Set(writable.map((mapping) => mapping.namespace));
+    if (head.revisionId && previous) {
+      const unsafe = [...writableNamespaces].filter((namespace) => {
+        const remoteHasState = previous.entries.some((entry) => entry.namespace === namespace) ||
+          previous.tombstones.some((tombstone) => tombstone.namespace === namespace);
+        return remoteHasState && config.applied[namespace]?.revisionId !== head.revisionId;
+      });
+      if (unsafe.length > 0) throw new SyncConflict(unsafe.map((namespace) => `${namespace}:remote-head-not-applied`));
+    }
     const entries = previous?.entries.filter((entry) => !writableNamespaces.has(entry.namespace)) ?? [];
+    const scannedKeys = new Set(scanned.map((file) => `${file.namespace}\0${file.logicalPath}`));
+    const tombstones = previous?.tombstones.filter((item) =>
+      !writableNamespaces.has(item.namespace) || !scannedKeys.has(`${item.namespace}\0${item.logicalPath}`)
+    ) ?? [];
+    const tombstoneKeys = new Set(tombstones.map((item) => `${item.namespace}\0${item.logicalPath}`));
+    const deletedAt = new Date().toISOString();
+    for (const entry of previous?.entries ?? []) {
+      const key = `${entry.namespace}\0${entry.logicalPath}`;
+      if (writableNamespaces.has(entry.namespace) && !scannedKeys.has(key) && !tombstoneKeys.has(key)) {
+        tombstones.push({ namespace: entry.namespace, logicalPath: entry.logicalPath, deletedAt });
+        tombstoneKeys.add(key);
+      }
+    }
     const envelopes = new Map<string, Uint8Array>();
     let transferredBytes = 0;
 
@@ -100,7 +122,7 @@ export class SyncEngine {
       createdByDeviceId: config.deviceName ? safeIdentifier(config.deviceName, "device") : "device_unknown",
       operationId,
       entries,
-      tombstones: [],
+      tombstones: tombstones.sort((left, right) => left.namespace.localeCompare(right.namespace, "en") || left.logicalPath.localeCompare(right.logicalPath, "en")),
       conflicts: [],
     };
     const manifestBytes = encoder.encode(canonicalJson(manifest));
@@ -124,6 +146,14 @@ export class SyncEngine {
       manifestObjectId,
       requiredObjectIds: [...envelopes.keys()],
     });
+    for (const mapping of writable) {
+      const keys = await deriveScopeKey(this.vaultKey, mapping.namespace);
+      const digests: Record<string, string> = {};
+      for (const file of scanned.filter((candidate) => candidate.namespace === mapping.namespace)) {
+        digests[file.logicalPath] = await computeObjectId(keys.dedupKey, file.bytes);
+      }
+      config.applied[mapping.namespace] = { revisionId, digests };
+    }
     return { outcome: "pushed", revisionId, files: scanned.length, objects: envelopes.size + 1, bytes: transferredBytes + manifestEnvelope.byteLength };
   }
 
@@ -138,6 +168,7 @@ export class SyncEngine {
     if (manifest.revisionId !== head.revisionId) throw new Error("remote head and manifest revision do not match");
     const byNamespace = new Map(selected.map((mapping) => [mapping.namespace, mapping]));
     const materialized: Array<{ mapping: RootMapping; path: string; bytes: Uint8Array; digest: string }> = [];
+    const deletions: Array<{ mapping: RootMapping; path: string; logicalPath: string }> = [];
     let objectCount = 1;
     let byteCount = 0;
     for (const entry of manifest.entries) {
@@ -174,6 +205,15 @@ export class SyncEngine {
         digest: localDigest,
       });
     }
+    for (const tombstone of manifest.tombstones) {
+      const mapping = byNamespace.get(tombstone.namespace);
+      if (!mapping) continue;
+      deletions.push({
+        mapping,
+        path: sessionDestination(mapping, tombstone.logicalPath, config.workspaces),
+        logicalPath: tombstone.logicalPath,
+      });
+    }
 
     const conflicts: string[] = [];
     for (const item of materialized) {
@@ -186,10 +226,22 @@ export class SyncEngine {
         conflicts.push(item.path);
       }
     }
+    for (const item of deletions) {
+      const current = await optionalFile(item.path);
+      if (!current) continue;
+      const keys = await deriveScopeKey(this.vaultKey, item.mapping.namespace);
+      const currentDigest = await computeObjectId(keys.dedupKey, current);
+      const relativePath = relative(resolve(item.mapping.path), item.path).split(sep).join("/");
+      const prior = config.applied[item.mapping.namespace]?.digests[relativePath];
+      if (!prior || currentDigest !== prior) conflicts.push(item.path);
+    }
     if (conflicts.length > 0) throw new SyncConflict(conflicts);
-    if (dryRun) return { outcome: "pulled", revisionId: head.revisionId, files: materialized.length, objects: objectCount, bytes: byteCount };
+    if (dryRun) return { outcome: "pulled", revisionId: head.revisionId, files: materialized.length + deletions.length, objects: objectCount, bytes: byteCount };
 
-    for (const item of materialized) await atomicWrite(item.path, item.bytes);
+    await applyFileTransaction({
+      writes: materialized.map((item) => ({ path: item.path, bytes: item.bytes })),
+      deletes: deletions.map((item) => item.path),
+    });
     for (const mapping of selected) {
       const digests: Record<string, string> = {};
       for (const item of materialized.filter((candidate) => candidate.mapping.namespace === mapping.namespace)) {
@@ -197,7 +249,7 @@ export class SyncEngine {
       }
       config.applied[mapping.namespace] = { revisionId: head.revisionId, digests };
     }
-    return { outcome: "pulled", revisionId: head.revisionId, files: materialized.length, objects: objectCount, bytes: byteCount };
+    return { outcome: "pulled", revisionId: head.revisionId, files: materialized.length + deletions.length, objects: objectCount, bytes: byteCount };
   }
 
   async #downloadManifest(objectId: string): Promise<VaultManifestV1> {
@@ -392,22 +444,6 @@ function safeDestination(root: string, logicalPath: string): string {
   const destination = resolve(absoluteRoot, ...parts);
   if (!destination.startsWith(`${absoluteRoot}${sep}`)) throw new Error("unsafe remote path");
   return destination;
-}
-
-async function atomicWrite(path: string, bytes: Uint8Array): Promise<void> {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.statecase-${crypto.randomUUID()}.tmp`;
-  const handle = await open(temporary, "wx", 0o600);
-  try {
-    await handle.writeFile(bytes);
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-  await rename(temporary, path).catch(async (error) => {
-    await rm(temporary, { force: true });
-    throw error;
-  });
 }
 
 async function optionalFile(path: string): Promise<Uint8Array | undefined> {

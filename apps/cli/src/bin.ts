@@ -1,5 +1,5 @@
 import { homedir, hostname } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -8,13 +8,17 @@ import { resolveClaudeRoot } from "@statecase/adapter-claude";
 import { resolveCodexRoots } from "@statecase/adapter-codex";
 import { randomKey } from "@statecase/crypto";
 import { workspaceIdForRemote } from "@statecase/domain";
+import { LocalStateStore } from "@statecase/storage-local";
 import { Command } from "commander";
 
 import { StatecaseClient } from "./client.js";
 import { ConfigStore, type LocalConfig, type RootMapping } from "./config.js";
 import { readRecoveryKit, writeRecoveryKit } from "./recovery.js";
+import { DurableReconciler } from "./reconciler.js";
 import { exitCodeFor, requireSession, selectedVault, StatecaseUsageError } from "./runtime.js";
+import { installHarnessShim, removeHarnessShim, verifyHarnessShim } from "./shims.js";
 import { installSkill, uninstallSkill, verifySkill } from "./skills.js";
+import { HarnessSupervisor, resolveHarnessExecutable, type HarnessName, type ReconcileReason } from "./supervisor.js";
 import { SyncConflict, SyncEngine } from "./sync.js";
 
 export interface CliIO {
@@ -32,7 +36,9 @@ const defaultIo: CliIO = {
 export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promise<number> {
   const store = new ConfigStore();
   const program = new Command();
+  let requestedExitCode = 0;
   program.name("statecase").description("Take your agents anywhere.").option("--json", "emit stable JSON output");
+  program.enablePositionalOptions();
   program.exitOverride();
   program.configureOutput({ writeOut: (value) => io.stdout(value.trimEnd()), writeErr: (value) => io.stderr(value.trimEnd()) });
 
@@ -170,7 +176,11 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
     emit(io, program, { workspaces }, workspaces.map((item) => `${item.id}\t${item.path}`).join("\n") || "No workspaces");
   });
 
-  program.command("setup").requiredOption("--harness <names>", "codex, claude, or comma-separated values").action(async (options: { harness: string }) => {
+  program.command("setup")
+    .requiredOption("--harness <names>", "codex, claude, or comma-separated values")
+    .option("--transparent", "install safe harness shims")
+    .option("--shim-dir <path>", "directory that will contain transparent shims")
+    .action(async (options: { harness: string; transparent?: boolean; shimDir?: string }) => {
     const config = normalizeConfig(await store.loadConfig());
     const names = new Set(options.harness.split(",").map((name) => name.trim()));
     const additions: RootMapping[] = [];
@@ -186,9 +196,121 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
       config.mappings = config.mappings.filter((item) => item.id !== addition.id);
       config.mappings.push(addition);
     }
+    const shims: Array<{ harness: HarnessName; shimPath: string; realExecutable: string }> = [];
+    if (options.transparent) {
+      const shimDir = resolve(options.shimDir ?? join(store.home, "bin"));
+      config.runtime!.shimDir = shimDir;
+      for (const harness of [...names] as HarnessName[]) {
+        const shimPath = join(shimDir, harness);
+        const recorded = config.runtime!.harnesses[harness]?.realExecutable;
+        const realExecutable = recorded ?? await resolveHarnessExecutable(harness, process.env, [shimPath, argv[1] ?? ""]);
+        await installHarnessShim({ harness, shimPath, statecaseExecutable: resolve(argv[1] ?? "statecase"), realExecutable });
+        config.runtime!.harnesses[harness] = { realExecutable, shimPath };
+        shims.push({ harness, shimPath, realExecutable });
+      }
+    }
     const skillTargets = await installSkill();
     await store.saveConfig(config);
-    emit(io, program, { mappings: additions, skillTargets }, `Configured ${additions.map((item) => item.name).join(" and ")} and installed the Statecase skill`);
+    const pathHint = shims.length > 0 ? `; add ${config.runtime!.shimDir} before the harness binaries in PATH` : "";
+    emit(io, program, { mappings: additions, skillTargets, shims, pathPrepend: config.runtime!.shimDir ?? null }, `Configured ${additions.map((item) => item.name).join(" and ")} and installed the Statecase skill${pathHint}`);
+  });
+
+  program.command("run")
+    .description("run an unmodified harness with preflight, periodic, and final synchronization")
+    .argument("<harness>", "codex or claude")
+    .argument("[harnessArgs...]", "arguments passed unchanged after --")
+    .option("--executable <path>", "explicit real harness executable")
+    .option("--sync-interval <seconds>", "periodic publish interval", "30")
+    .action(async (
+      harnessInput: string,
+      harnessArgs: string[],
+      options: { executable?: string; syncInterval: string },
+    ) => {
+      if (harnessInput !== "codex" && harnessInput !== "claude") throw new StatecaseUsageError("supported harnesses are codex and claude", 2);
+      const harness: HarnessName = harnessInput;
+      const intervalSeconds = Number(options.syncInterval);
+      if (!Number.isSafeInteger(intervalSeconds) || intervalSeconds < 0 || intervalSeconds > 86_400) {
+        throw new StatecaseUsageError("--sync-interval must be an integer from 0 to 86400 seconds", 2);
+      }
+      const localConfig = normalizeConfig(await store.loadConfig());
+      const executable = options.executable
+        ? resolve(options.executable)
+        : localConfig.runtime!.harnesses[harness]?.realExecutable ?? await resolveHarnessExecutable(harness, process.env, [argv[1] ?? ""]);
+      const journal = new LocalStateStore(join(store.home, "state.db"));
+      let liveKey: Buffer | undefined;
+      const sync = async (reason: ReconcileReason): Promise<string | null> => {
+        const { config, secrets, client } = await requireSession(store, io.fetch);
+        const vaultId = selectedVault(config, secrets);
+        liveKey ??= Buffer.from(secrets.vaultKeys[vaultId], "base64url");
+        const engine = new SyncEngine(client, vaultId, liveKey);
+        const result = reason === "preflight" ? await engine.pull(config) : await engine.push(config);
+        if (reason === "preflight") await store.saveConfig(config);
+        return result.revisionId;
+      };
+      const reconciler = new DurableReconciler(journal, sync, harness);
+      const supervisor = new HarnessSupervisor({
+        reconcile: (reason) => reconciler.reconcile(reason),
+        intervalMs: intervalSeconds * 1000,
+        warn: io.stderr,
+      });
+      try {
+        const result = await supervisor.run({
+          harness,
+          executable,
+          args: harnessArgs,
+          cwd: process.cwd(),
+          env: process.env,
+        });
+        requestedExitCode = result.exitCode;
+      } finally {
+        liveKey?.fill(0);
+        journal.close();
+      }
+    });
+
+  program.command("which")
+    .description("show the Statecase shim and recorded real harness executable")
+    .argument("<harness>", "codex or claude")
+    .action(async (harnessInput: string) => {
+      if (harnessInput !== "codex" && harnessInput !== "claude") throw new StatecaseUsageError("supported harnesses are codex and claude", 2);
+      const config = normalizeConfig(await store.loadConfig());
+      const record = config.runtime!.harnesses[harnessInput];
+      if (!record) throw new StatecaseUsageError(`${harnessInput} is not configured for transparent execution`, 2);
+      emit(io, program, { harness: harnessInput, shimPath: record.shimPath ?? null, realExecutable: record.realExecutable }, `${record.shimPath ?? "no shim"}\n${record.realExecutable}`);
+    });
+
+  program.command("bypass")
+    .description("run the recorded real harness without synchronization")
+    .argument("<harness>", "codex or claude")
+    .argument("[harnessArgs...]", "arguments passed unchanged after --")
+    .action(async (harnessInput: string, harnessArgs: string[]) => {
+      if (harnessInput !== "codex" && harnessInput !== "claude") throw new StatecaseUsageError("supported harnesses are codex and claude", 2);
+      const config = normalizeConfig(await store.loadConfig());
+      const record = config.runtime!.harnesses[harnessInput];
+      if (!record) throw new StatecaseUsageError(`${harnessInput} has no recorded real executable`, 2);
+      const env = { ...process.env };
+      delete env.STATECASE_ACTIVE_HARNESS;
+      const supervisor = new HarnessSupervisor({ reconcile: async () => {}, intervalMs: 0, warn: io.stderr });
+      requestedExitCode = (await supervisor.run({ harness: harnessInput, executable: record.realExecutable, args: harnessArgs, cwd: process.cwd(), env })).exitCode;
+    });
+
+  const shim = program.command("shim").description("inspect or remove transparent harness shims");
+  shim.command("verify").argument("<harness>").action(async (harnessInput: string) => {
+    if (harnessInput !== "codex" && harnessInput !== "claude") throw new StatecaseUsageError("supported harnesses are codex and claude", 2);
+    const config = normalizeConfig(await store.loadConfig());
+    const record = config.runtime!.harnesses[harnessInput];
+    const valid = Boolean(record?.shimPath && await verifyHarnessShim(record.shimPath));
+    emit(io, program, { harness: harnessInput, valid, shimPath: record?.shimPath ?? null }, valid ? `ok\t${record!.shimPath}` : `missing\t${record?.shimPath ?? "not configured"}`);
+    if (!valid) requestedExitCode = 2;
+  });
+  shim.command("uninstall").argument("<harness>").requiredOption("--yes", "confirm removal").action(async (harnessInput: string) => {
+    if (harnessInput !== "codex" && harnessInput !== "claude") throw new StatecaseUsageError("supported harnesses are codex and claude", 2);
+    const config = normalizeConfig(await store.loadConfig());
+    const record = config.runtime!.harnesses[harnessInput];
+    const removed = record?.shimPath ? await removeHarnessShim(record.shimPath) : false;
+    delete config.runtime!.harnesses[harnessInput];
+    await store.saveConfig(config);
+    emit(io, program, { harness: harnessInput, removed }, removed ? `Removed ${harnessInput} shim` : `${harnessInput} shim was not installed`);
   });
 
   const skills = program.command("skills").description("install the agent-native Statecase skill");
@@ -239,7 +361,7 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
 
   try {
     await program.parseAsync(argv);
-    return 0;
+    return requestedExitCode;
   } catch (error) {
     if ((error as { code?: string }).code === "commander.helpDisplayed") return 0;
     const code = exitCodeFor(error);
@@ -254,6 +376,8 @@ function normalizeConfig(config: LocalConfig): LocalConfig {
   config.mappings ??= [];
   config.workspaces ??= [];
   config.applied ??= {};
+  config.runtime ??= { harnesses: {} };
+  config.runtime.harnesses ??= {};
   return config;
 }
 

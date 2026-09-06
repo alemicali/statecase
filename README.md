@@ -10,18 +10,22 @@ designed for agents generally.
 
 ## Status
 
-Private MVP. The manual CLI path is implemented and the Cloudflare stack is
+Private alpha. The foreground portability path is implemented and the Cloudflare stack is
 live at `https://statecase-api-mvp.hi-0e6.workers.dev`: Better Auth device
 authorization, D1 identity/catalogue, R2 encrypted objects, Durable Object
 commits, local XChaCha20-Poly1305 encryption, passphrase-protected recovery
 kits, Codex/Claude session and skill adapters, Git working overlays, arbitrary
-Drops, logical workspace remapping, and the canonical agent skill.
+Drops, logical workspace remapping, deletion tombstones, transactional local
+materialization, a crash-safe runtime journal, transparent harness shims, and
+the canonical agent skill. `statecase run codex|claude` performs a bounded
+preflight pull, supervises the unmodified harness, publishes periodically, and
+attempts a final flush without preventing offline use or changing the child
+exit status.
 
-The daemon, transparent harness shims, automatic three-way merge, tombstone
-propagation, retained snapshots, scoped ephemeral capabilities, and full
-historical Session Capsules remain release gates. Until those land, use manual
-`push`, `pull`, or `sync` and keep the recovery kit offline. This is not a
-public-production release.
+The persistent daemon/service installers, automatic three-way merge, exact Git
+index/baseline capsules, retained snapshots, scoped ephemeral capabilities,
+device revocation/key rewrapping, and full historical Session Capsules remain
+release gates. This is not yet a public-production release.
 
 The approved direction lives in:
 
@@ -72,7 +76,10 @@ printf '\n'
 ./apps/cli/dist/bin.js vault create personal --recovery-file "$PWD/personal.statecase-recovery.json"
 unset STATECASE_RECOVERY_PASSPHRASE
 ./apps/cli/dist/bin.js workspace attach --auto --path /path/to/checkout
-./apps/cli/dist/bin.js setup --harness codex,claude
+./apps/cli/dist/bin.js setup --harness codex,claude --transparent
+# Prepend the path printed by setup to PATH, then verify both shims:
+./apps/cli/dist/bin.js shim verify codex
+./apps/cli/dist/bin.js shim verify claude
 ./apps/cli/dist/bin.js push --dry-run
 ./apps/cli/dist/bin.js push
 ```
@@ -81,6 +88,10 @@ On a second machine, login, join the vault with the encrypted recovery kit,
 attach the same logical Git workspace at its new local path, map any Drops by
 their non-secret IDs, then run `pull`. `setup` installs the Statecase skill into
 both the Codex-compatible `.agents/skills` root and Claude's skills root.
+Until the persistent daemon lands, use the generated shims or invoke
+`statecase run codex -- <args>` / `statecase run claude -- <args>` explicitly.
+`statecase bypass codex -- <args>` starts the recorded real executable without
+synchronization.
 
 Account creation is deliberately allowlisted for the private MVP. Never put
 `STATECASE_TOKEN`, `STATECASE_RECOVERY_PASSPHRASE`, or the recovery kit in a

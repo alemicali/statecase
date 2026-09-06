@@ -1,6 +1,6 @@
 # Statecase synchronization implementation specification
 
-Status: normative design; private manual-sync MVP partially implemented
+Status: normative design; private foreground-sync alpha partially implemented
 Last updated: 2026-09-06
 Related: [Product strategy](./PRODUCT_STRATEGY.md),
 [Test and UAT plan](./TEST_AND_UAT_PLAN.md),
@@ -10,9 +10,12 @@ Related: [Product strategy](./PRODUCT_STRATEGY.md),
 
 `MUST`, `MUST NOT`, `SHOULD`, and `MAY` are normative. This document describes
 the target architecture. The current private MVP implements the encrypted
-manual CLI vertical slice and its single Cloudflare stack. Sections covering
-daemon/shims, automatic merge, tombstones, snapshots/restore, scoped bootstrap,
-and complete Session Capsules remain target requirements, not current claims.
+manual CLI and supervised foreground vertical slices plus its single
+Cloudflare stack. Foreground `statecase run`, safe shims, tombstone propagation,
+and transactional apply are implemented. Sections covering the persistent
+daemon/service installers, automatic merge, snapshots/restore, scoped
+bootstrap, exact Git index capsules, and complete Session Capsules remain
+target requirements, not current claims.
 
 ## 2. System boundaries
 

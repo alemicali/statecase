@@ -73,6 +73,30 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
     expect(JSON.parse(errors.at(-1)!)).toMatchObject({ error: { code: 3 } });
     expect(await command(io, "--json", "login", "--non-interactive")).toBe(3);
   });
+
+  it("runs an unmodified harness offline and preserves its exit code (RT-002, RT-004, RT-011)", async () => {
+    const home = await mkdtemp(join(tmpdir(), "statecase-cli-run-"));
+    temporary.push(home);
+    process.env.STATECASE_HOME = home;
+    const output: string[] = [];
+    const errors: string[] = [];
+    const io: CliIO = { stdout: (value) => output.push(value), stderr: (value) => errors.push(value), fetch };
+
+    expect(await command(
+      io,
+      "run",
+      "codex",
+      "--executable",
+      process.execPath,
+      "--sync-interval",
+      "0",
+      "--",
+      "-e",
+      "process.exit(19)",
+    )).toBe(19);
+    expect(errors).toContain("Statecase preflight sync is queued; starting Codex offline.");
+    expect(errors).toContain("Statecase final sync is queued and will be retried.");
+  });
 });
 
 function command(io: CliIO, ...arguments_: string[]): Promise<number> {

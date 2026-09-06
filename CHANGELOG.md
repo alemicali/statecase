@@ -12,3 +12,6 @@ All notable changes to Statecase will be documented here.
   Git working overlays, recovery kits, CLI, and agent-native skill.
 - Added isolated workerd and Docker verification, paranoid crypto/path tests,
   and a two-machine CLI UAT fixture.
+- Added supervised foreground `statecase run`, crash-safe queued reconciliation,
+  transparent harness shims with safe bypass/uninstall, deletion tombstones,
+  unhydrated-push protection, and rollback-safe filesystem materialization.

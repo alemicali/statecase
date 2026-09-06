@@ -1,6 +1,6 @@
 # Statecase design readiness review
 
-Status: private manual-sync MVP implemented and deployed; not ready for public
+Status: private foreground-sync alpha implemented and deployed; not ready for public
 production launch
 Last updated: 2026-09-06
 
@@ -106,10 +106,21 @@ Codex/Claude complete-record handling, skill transfer, arbitrary Drops,
 logical workspace path rewriting, and modified/untracked Git overlay transfer.
 The single Cloudflare MVP stack is provisioned and private-signup allowlisted.
 
-Automated steady state is not yet claimed. Daemon/shims, deletion/tombstone
-semantics, safe automatic merge, retained snapshots/restore, scoped ephemeral
-bootstrap, device revocation/key rewrap, and complete historical Session
-Capsules remain blocking work for a public or unattended release.
+The next foreground slice is implemented locally: `statecase run` supervises
+unmodified Codex/Claude processes with inherited terminal and signals, bounded
+preflight and final synchronization, periodic publishing, exact exit-code
+preservation, and durable queued retry. Statecase-owned transparent shims are
+atomically installed/verified/removed without overwriting unrelated binaries.
+Remote deletions now use manifest tombstones, unhydrated namespace pushes fail
+closed, and pull materialization rolls back as one transaction after injected
+mid-apply failure. Deployment of this slice follows isolated Docker and remote
+compatibility verification.
+
+Automated background steady state is not yet claimed. Persistent daemon/service
+installation, safe automatic merge, exact Git index/baseline capsules, retained
+snapshots/restore, scoped ephemeral bootstrap, device revocation/key rewrap,
+and complete historical Session Capsules remain blocking work for a public or
+unattended release.
 
 The design is intentionally not called production-complete. Crypto selection,
 identity provider, exact compatibility matrix, and legal/commercial decisions

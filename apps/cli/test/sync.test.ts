@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
@@ -70,6 +70,52 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     expect(await readFile(join(second, "file.txt"), "utf8")).toBe("local unsent edit");
   });
 
+  it("propagates deletion tombstones without silently deleting a modified destination (SY-006)", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-delete-"));
+    temporary.push(base);
+    const first = join(base, "a");
+    const second = join(base, "b");
+    await Promise.all([mkdir(first), mkdir(second)]);
+    await writeFile(join(first, "obsolete.txt"), "original");
+    const remote = new MemoryRemote();
+    const key = await randomKey();
+    const a = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    const b = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    const configA = config(first);
+    const configB = config(second);
+    await a.push(configA);
+    await b.pull(configB);
+
+    await rm(join(first, "obsolete.txt"));
+    await a.push(configA);
+    await b.pull(configB);
+    await expect(readFile(join(second, "obsolete.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+
+    await writeFile(join(first, "protected.txt"), "original");
+    await a.push(configA);
+    await b.pull(configB);
+    await writeFile(join(second, "protected.txt"), "local edit");
+    await rm(join(first, "protected.txt"));
+    await a.push(configA);
+    await expect(b.pull(configB)).rejects.toBeInstanceOf(SyncConflict);
+    expect(await readFile(join(second, "protected.txt"), "utf8")).toBe("local edit");
+  });
+
+  it("refuses a first push over an existing remote namespace that was never pulled", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-unhydrated-"));
+    temporary.push(base);
+    const first = join(base, "a");
+    const emptySecond = join(base, "b");
+    await Promise.all([mkdir(first), mkdir(emptySecond)]);
+    await writeFile(join(first, "valuable.txt"), "must survive");
+    const remote = new MemoryRemote();
+    const key = await randomKey();
+    await new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key).push(config(first));
+
+    await expect(new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key).push(config(emptySecond)))
+      .rejects.toBeInstanceOf(SyncConflict);
+  });
+
   it("publishes complete harness JSONL records and defers a live partial tail", async () => {
     const base = await mkdtemp(join(tmpdir(), "statecase-live-session-"));
     temporary.push(base);
@@ -126,7 +172,9 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     const sourceEngine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
     await sourceEngine.push(workspaceConfig(source));
     await expect(sourceEngine.pull(workspaceConfig(target))).rejects.toBeInstanceOf(SyncConflict);
-    expect(await sourceEngine.push(workspaceConfig(ordinary))).toMatchObject({ outcome: "pushed", files: 0 });
+    const emptyRemote = new MemoryRemote();
+    expect(await new SyncEngine(new StatecaseClient("https://remote.test", "token", emptyRemote.fetch), "vlt_test", key).push(workspaceConfig(ordinary)))
+      .toMatchObject({ outcome: "pushed", files: 0 });
   });
 
   it("handles empty heads, dry runs, and directional mapping policies without remote mutation", async () => {

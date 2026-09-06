@@ -22,6 +22,10 @@ export interface LocalConfig {
   mappings: RootMapping[];
   workspaces: Array<{ id: string; path: string; name?: string }>;
   applied: Record<string, { revisionId: string; digests: Record<string, string> }>;
+  runtime?: {
+    shimDir?: string;
+    harnesses: Partial<Record<"codex" | "claude", { realExecutable: string; shimPath?: string }>>;
+  };
 }
 
 export interface LocalSecrets {
