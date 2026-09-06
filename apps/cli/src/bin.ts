@@ -13,6 +13,7 @@ import { Command } from "commander";
 
 import { StatecaseClient } from "./client.js";
 import { ConfigStore, type LocalConfig, type RootMapping } from "./config.js";
+import { PersistentRuntime, readRuntimeStatus, type DaemonTrigger } from "./daemon.js";
 import { readRecoveryKit, writeRecoveryKit } from "./recovery.js";
 import { DurableReconciler } from "./reconciler.js";
 import { exitCodeFor, requireSession, selectedVault, StatecaseUsageError } from "./runtime.js";
@@ -313,6 +314,55 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
     emit(io, program, { harness: harnessInput, removed }, removed ? `Removed ${harnessInput} shim` : `${harnessInput} shim was not installed`);
   });
 
+  const daemon = program.command("daemon").description("run and inspect persistent background synchronization");
+  daemon.command("foreground")
+    .description("run the persistent reconciler in the foreground")
+    .option("--once", "perform startup reconciliation and exit")
+    .action(async (options: { once?: boolean }) => {
+      const initial = normalizeConfig(await store.loadConfig());
+      const roots = [
+        ...initial.mappings.map((mapping) => mapping.path),
+        ...initial.workspaces.map((workspaceValue) => workspaceValue.path),
+      ];
+      const journal = new LocalStateStore(join(store.home, "state.db"));
+      let liveKey: Buffer | undefined;
+      const sync = async (reason: ReconcileReason): Promise<string | null> => {
+        const { config, secrets, client } = await requireSession(store, io.fetch);
+        const vaultId = selectedVault(config, secrets);
+        liveKey ??= Buffer.from(secrets.vaultKeys[vaultId], "base64url");
+        const engine = new SyncEngine(client, vaultId, liveKey);
+        const pulled = await engine.pull(config);
+        const result = reason === "preflight" ? pulled : await engine.push(config);
+        await store.saveConfig(config);
+        return result.revisionId ?? pulled.revisionId;
+      };
+      const reconciler = new DurableReconciler(journal, sync, "daemon");
+      const runtime = new PersistentRuntime({
+        lockPath: join(store.home, "daemon.lock"),
+        socketPath: join(store.home, "daemon.sock"),
+        roots,
+        reconcile: (trigger: DaemonTrigger) => reconciler.reconcile(trigger === "startup" || trigger === "remote-poll" ? "preflight" : "periodic"),
+        warn: io.stderr,
+      });
+      try {
+        await runtime.start();
+        emit(io, program, runtime.status(), options.once ? "Statecase reconciliation completed" : `Statecase daemon running with PID ${process.pid}`);
+        if (!options.once) await waitForTermination();
+      } finally {
+        await runtime.stop();
+        liveKey?.fill(0);
+        journal.close();
+      }
+    });
+  daemon.command("status").description("read daemon status over local IPC").action(async () => {
+    try {
+      const status = await readRuntimeStatus(join(store.home, "daemon.sock"));
+      emit(io, program, status, `running; PID ${status.pid}; ${status.roots} roots; last ${status.lastTrigger ?? "never"}${status.queued ? "; sync queued" : ""}`);
+    } catch {
+      throw new StatecaseUsageError("Statecase daemon is not running", 8);
+    }
+  });
+
   const skills = program.command("skills").description("install the agent-native Statecase skill");
   skills.command("install").option("--target <path>").action(async (options: { target?: string }) => {
     const targets = await installSkill(options.target ? [options.target] : undefined);
@@ -393,6 +443,18 @@ function requireRecoveryPassphrase(): string {
 
 function randomLocalId(prefix: string): string {
   return `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
+}
+
+function waitForTermination(): Promise<void> {
+  return new Promise((resolveTermination) => {
+    const done = () => {
+      process.off("SIGINT", done);
+      process.off("SIGTERM", done);
+      resolveTermination();
+    };
+    process.on("SIGINT", done);
+    process.on("SIGTERM", done);
+  });
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

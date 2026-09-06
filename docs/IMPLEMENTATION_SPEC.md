@@ -12,8 +12,9 @@ Related: [Product strategy](./PRODUCT_STRATEGY.md),
 the target architecture. The current private MVP implements the encrypted
 manual CLI and supervised foreground vertical slices plus its single
 Cloudflare stack. Foreground `statecase run`, safe shims, tombstone propagation,
-and transactional apply are implemented. Sections covering the persistent
-daemon/service installers, automatic merge, snapshots/restore, scoped
+transactional apply, and the persistent daemon core are implemented. Sections
+covering native systemd/launchd service installers, automatic merge,
+snapshots/restore, scoped
 bootstrap, exact Git index capsules, and complete Session Capsules remain
 target requirements, not current claims.
 

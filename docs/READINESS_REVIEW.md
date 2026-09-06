@@ -116,6 +116,13 @@ closed, and pull materialization rolls back as one transaction after injected
 mid-apply failure. Deployment of this slice follows isolated Docker and remote
 compatibility verification.
 
+The persistent daemon core is also implemented locally with a single-profile
+crash-recoverable lock, recursive filesystem hints, periodic source-of-truth
+reconciliation, remote polling, serialized execution, bounded exponential
+retry, no-op revision suppression, and owner-only Unix-socket status. Native
+systemd/launchd installers and sleep/network lifecycle integration are still
+required before background steady state is claimed.
+
 Automated background steady state is not yet claimed. Persistent daemon/service
 installation, safe automatic merge, exact Git index/baseline capsules, retained
 snapshots/restore, scoped ephemeral bootstrap, device revocation/key rewrap,

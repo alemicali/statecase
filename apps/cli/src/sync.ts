@@ -82,8 +82,7 @@ export class SyncEngine {
         tombstoneKeys.add(key);
       }
     }
-    const envelopes = new Map<string, Uint8Array>();
-    let transferredBytes = 0;
+    const plaintextChunks = new Map<string, { bytes: Uint8Array; namespace: string }>();
 
     for (const file of scanned) {
       const keys = await deriveScopeKey(this.vaultKey, file.namespace);
@@ -91,16 +90,7 @@ export class SyncEngine {
       for (const chunk of chunkBytes(file.bytes, CHUNK_POLICY)) {
         const objectId = await computeObjectId(keys.dedupKey, chunk);
         objectIds.push(objectId);
-        if (!envelopes.has(objectId)) {
-          const envelope = await encryptEnvelope({
-            plaintext: chunk,
-            key: keys.encryptionKey,
-            dedupKey: keys.dedupKey,
-            context: { vaultId: this.vaultId, scopeId: file.namespace, compression: "none" },
-          });
-          envelopes.set(objectId, envelope);
-          transferredBytes += envelope.byteLength;
-        }
+        if (!plaintextChunks.has(objectId)) plaintextChunks.set(objectId, { bytes: chunk, namespace: file.namespace });
       }
       entries.push({
         namespace: file.namespace,
@@ -111,6 +101,28 @@ export class SyncEngine {
       });
     }
     entries.sort(compareEntries);
+    const conflicts = previous?.conflicts ?? [];
+    if (previous && canonicalJson({ entries, tombstones, conflicts }) === canonicalJson({
+      entries: previous.entries,
+      tombstones: previous.tombstones,
+      conflicts: previous.conflicts,
+    })) {
+      await this.#markApplied(config, writable, scanned, head.revisionId!);
+      return { outcome: "unchanged", revisionId: head.revisionId, files: 0, objects: 0, bytes: 0 };
+    }
+    const envelopes = new Map<string, Uint8Array>();
+    let transferredBytes = 0;
+    for (const [objectId, chunk] of plaintextChunks) {
+      const keys = await deriveScopeKey(this.vaultKey, chunk.namespace);
+      const envelope = await encryptEnvelope({
+        plaintext: chunk.bytes,
+        key: keys.encryptionKey,
+        dedupKey: keys.dedupKey,
+        context: { vaultId: this.vaultId, scopeId: chunk.namespace, compression: "none" },
+      });
+      envelopes.set(objectId, envelope);
+      transferredBytes += envelope.byteLength;
+    }
     const operationId = randomId("op");
     const revisionId = randomId("rev");
     const manifest: VaultManifestV1 = {
@@ -123,7 +135,7 @@ export class SyncEngine {
       operationId,
       entries,
       tombstones: tombstones.sort((left, right) => left.namespace.localeCompare(right.namespace, "en") || left.logicalPath.localeCompare(right.logicalPath, "en")),
-      conflicts: [],
+      conflicts,
     };
     const manifestBytes = encoder.encode(canonicalJson(manifest));
     const manifestKeys = await deriveScopeKey(this.vaultKey, "manifest");
@@ -146,14 +158,7 @@ export class SyncEngine {
       manifestObjectId,
       requiredObjectIds: [...envelopes.keys()],
     });
-    for (const mapping of writable) {
-      const keys = await deriveScopeKey(this.vaultKey, mapping.namespace);
-      const digests: Record<string, string> = {};
-      for (const file of scanned.filter((candidate) => candidate.namespace === mapping.namespace)) {
-        digests[file.logicalPath] = await computeObjectId(keys.dedupKey, file.bytes);
-      }
-      config.applied[mapping.namespace] = { revisionId, digests };
-    }
+    await this.#markApplied(config, writable, scanned, revisionId);
     return { outcome: "pushed", revisionId, files: scanned.length, objects: envelopes.size + 1, bytes: transferredBytes + manifestEnvelope.byteLength };
   }
 
@@ -262,6 +267,17 @@ export class SyncEngine {
       expected: { vaultId: this.vaultId, scopeId: "manifest", compression: "none" },
     });
     return manifestSchema.parse(JSON.parse(new TextDecoder("utf8", { fatal: true, ignoreBOM: false }).decode(plaintext)));
+  }
+
+  async #markApplied(config: LocalConfig, mappings: RootMapping[], scanned: ScannedEntry[], revisionId: string): Promise<void> {
+    for (const mapping of mappings) {
+      const keys = await deriveScopeKey(this.vaultKey, mapping.namespace);
+      const digests: Record<string, string> = {};
+      for (const file of scanned.filter((candidate) => candidate.namespace === mapping.namespace)) {
+        digests[file.logicalPath] = await computeObjectId(keys.dedupKey, file.bytes);
+      }
+      config.applied[mapping.namespace] = { revisionId, digests };
+    }
   }
 }
 

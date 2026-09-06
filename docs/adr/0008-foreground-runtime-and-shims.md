@@ -49,10 +49,11 @@ applied that remote head.
 ## Consequences
 
 Ephemeral systems can use foreground supervision without a service manager.
-Persistent installs still require the separately specified daemon so IDE and
-non-shim launches reconcile. The current journal records reconciliation intent;
-future capsule work will pin the exact immutable checkpoint associated with
-each queued publish.
+The daemon core supplies locking, filesystem hints, authoritative periodic
+reconciliation, remote polling, retry, and private local status for IDE and
+non-shim launches. Native systemd/launchd installation remains separate. The
+current journal records reconciliation intent; future capsule work will pin the
+exact immutable checkpoint associated with each queued publish.
 
 ## Security and privacy impact
 

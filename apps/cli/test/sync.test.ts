@@ -197,6 +197,21 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     expect(await engine.pull(publish, true)).toMatchObject({ outcome: "unchanged", files: 0 });
   });
 
+  it("does not create periodic remote revisions when synchronized content is unchanged", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-noop-push-"));
+    temporary.push(base);
+    await writeFile(join(base, "stable.txt"), "stable");
+    const remote = new MemoryRemote();
+    const key = await randomKey();
+    const engine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    const local = config(base);
+    const first = await engine.push(local);
+    const revision = remote.revisionId;
+    expect(first.outcome).toBe("pushed");
+    expect(await engine.push(local)).toMatchObject({ outcome: "unchanged", revisionId: revision, objects: 0, bytes: 0 });
+    expect(remote.revisionId).toBe(revision);
+  });
+
   it("fails closed on an invalid key or a mapping that is not a directory", async () => {
     const remote = new MemoryRemote();
     const client = new StatecaseClient("https://remote.test", "token", remote.fetch);

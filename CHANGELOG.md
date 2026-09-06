@@ -15,3 +15,7 @@ All notable changes to Statecase will be documented here.
 - Added supervised foreground `statecase run`, crash-safe queued reconciliation,
   transparent harness shims with safe bypass/uninstall, deletion tombstones,
   unhydrated-push protection, and rollback-safe filesystem materialization.
+- Added the persistent daemon core with an exclusive recoverable profile lock,
+  filesystem hints, remote polling, maximum reconciliation intervals,
+  serialized jittered retry, owner-only local IPC status, and no-op revision
+  suppression.

@@ -18,6 +18,7 @@
     "@statecase/chunking": "*",
     "@statecase/domain": "*",
     "@statecase/protocol": "*",
+    "@statecase/runtime": "*",
     "@statecase/storage-local": "*",
     "commander": "^15.0.0",
     "zod": "^4.5.4"

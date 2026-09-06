@@ -3,6 +3,7 @@ import { LocalStateStore, type StoredOperation } from "@statecase/storage-local"
 import type { HarnessName, ReconcileReason } from "./supervisor.js";
 
 type SyncFunction = (reason: ReconcileReason) => Promise<string | null>;
+type ReconcileActor = HarnessName | "daemon";
 
 /**
  * Makes runtime sync intent durable before network or filesystem work begins.
@@ -14,7 +15,7 @@ export class DurableReconciler {
   constructor(
     readonly store: LocalStateStore,
     readonly sync: SyncFunction,
-    readonly harness: HarnessName,
+    readonly harness: ReconcileActor,
   ) {}
 
   async reconcile(reason: ReconcileReason): Promise<void> {
@@ -38,9 +39,9 @@ export class DurableReconciler {
   }
 }
 
-function runtimePayload(operation: StoredOperation): { harness: HarnessName; reason: ReconcileReason } {
+function runtimePayload(operation: StoredOperation): { harness: ReconcileActor; reason: ReconcileReason } {
   const value = operation.payload as { harness?: unknown; reason?: unknown };
-  if ((value.harness !== "codex" && value.harness !== "claude") ||
+  if ((value.harness !== "codex" && value.harness !== "claude" && value.harness !== "daemon") ||
       (value.reason !== "preflight" && value.reason !== "periodic" && value.reason !== "final")) {
     throw new Error("invalid runtime journal operation");
   }
