@@ -148,11 +148,13 @@ export function createCloudApp(services: CloudServices): Hono<AppEnvironment> {
   app.get("/ui.css", (context) => context.body(UI_CSS, 200, { "content-type": "text/css; charset=utf-8" }));
   app.get("/ui.js", (context) => context.body(UI_JAVASCRIPT, 200, { "content-type": "text/javascript; charset=utf-8" }));
   app.post("/api/bootstrap/redeem", async (context) => {
+    context.header("cache-control", "no-store");
+    context.header("pragma", "no-cache");
     const body = await parseBody(context, z.object({ token: z.string().min(40).max(512) }).strict());
     if (!body.success) return body.response;
     const redeemed = await services.capabilities.redeem(body.data.token);
     return redeemed
-      ? context.json(redeemed, 200, { "cache-control": "no-store", pragma: "no-cache" })
+      ? context.json(redeemed)
       : jsonError(context, "AUTH_REQUIRED", "bootstrap capability is invalid, expired, revoked, or already used", 401);
   });
   app.all("/api/auth/*", (context) => services.auth.handle(context.req.raw));

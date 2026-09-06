@@ -205,7 +205,9 @@ describe("Statecase in workerd (PR-001, PR-005, PR-010, PR-011, AU-001)", () => 
     expect(redeemed.headers.get("cache-control")).toBe("no-store");
     const access = await redeemed.json() as { accessToken: string; keyEnvelope: string };
     expect(access).toMatchObject({ accessToken: expect.stringMatching(/^stc_access_/u), keyEnvelope: "opaque-e2ee-scope-keys" });
-    expect((await redemptionRequest()).status).toBe(401);
+    const replayed = await redemptionRequest();
+    expect(replayed.status).toBe(401);
+    expect(replayed.headers.get("cache-control")).toBe("no-store");
 
     const capabilityHeaders = { authorization: `Bearer ${access.accessToken}`, "content-type": "application/octet-stream" };
     expect((await exports.default.fetch(`http://statecase.test/v1/vaults/${vault.id}/head`, { headers: capabilityHeaders })).status).toBe(404);

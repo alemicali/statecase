@@ -142,6 +142,7 @@ describe("Cloud API contract (PR-001..PR-015)", () => {
 
     const redeemed = await app.request("/api/bootstrap/redeem", { method: "POST", body: JSON.stringify({ token }) });
     expect(redeemed.status).toBe(200);
+    expect(redeemed.headers.get("cache-control")).toBe("no-store");
     expect(await redeemed.json()).toMatchObject({
       accessToken: expect.stringMatching(/^stc_access_/u),
       vaultId: "vlt_01",
@@ -149,7 +150,9 @@ describe("Cloud API contract (PR-001..PR-015)", () => {
       actions: ["read", "append"],
       keyEnvelope: "opaque-client-encrypted-scope-keys",
     });
-    expect((await app.request("/api/bootstrap/redeem", { method: "POST", body: JSON.stringify({ token }) })).status).toBe(401);
+    const replay = await app.request("/api/bootstrap/redeem", { method: "POST", body: JSON.stringify({ token }) });
+    expect(replay.status).toBe(401);
+    expect(replay.headers.get("cache-control")).toBe("no-store");
     expect((await app.request("/v1/tokens/cap_01", { method: "DELETE" })).status).toBe(204);
     expect(await (await app.request("/v1/tokens")).json()).toMatchObject({ tokens: [{ id: "cap_01", revokedAt: expect.any(Number) }] });
   });
