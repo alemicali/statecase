@@ -3,8 +3,10 @@
 Status: deployed private stack
 Last verified: 2026-09-06
 
-Current Worker version: `3c9b903e-30cb-43d0-9325-6e73d8501ce1`.
-Remote D1 migrations through `0003_device_sessions.sql` are applied.
+Current Worker version: `621e2450-075f-4c67-b144-288835bc2a74`.
+Remote D1 migrations through `0004_capabilities.sql` are applied. The live
+health endpoint advertises scoped protocol `1.1` and legacy migration protocol
+`1.0`.
 
 ## Remote inventory
 
@@ -39,6 +41,10 @@ npx wrangler d1 migrations apply statecase-mvp --remote --config apps/cloud/wran
 npm run cloud:deploy
 curl --fail https://statecase-api-mvp.hi-0e6.workers.dev/health
 ```
+
+After deployment, verify that an invalid bootstrap redemption returns `401`
+with both `Cache-Control: no-store` and `Pragma: no-cache`, and that a protected
+namespace revision request without authorization returns `401`.
 
 Run migrations before deploying code that requires them. Wrangler versions are
 locked. Never inject the production Better Auth secret into tests or `.dev.vars`.
