@@ -1,0 +1,4 @@
+# Copy to .dev.vars for local Wrangler only. Never commit a real value.
+BETTER_AUTH_SECRET=replace-with-at-least-32-random-characters
+BETTER_AUTH_URL=http://localhost:8787
+STATECASE_ALLOWED_EMAILS=*

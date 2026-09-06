@@ -1,0 +1,437 @@
+import { lstat, mkdir, open, readdir, readFile, rename, rm, stat } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { promisify } from "node:util";
+
+import { classifyClaudePath, claudeProjectDirectory } from "@statecase/adapter-claude";
+import { classifyCodexPath } from "@statecase/adapter-codex";
+import { scanCompleteJsonl } from "@statecase/adapter-common";
+import { chunkBytes, concatChunks } from "@statecase/chunking";
+import { computeObjectId, decryptEnvelope, deriveScopeKey, encryptEnvelope } from "@statecase/crypto";
+import { canonicalJson, manifestSchema, type VaultManifestV1 } from "@statecase/protocol";
+
+import type { LocalConfig, RootMapping } from "./config.js";
+import type { StatecaseClient } from "./client.js";
+
+const encoder = new TextEncoder();
+const runFile = promisify(execFile);
+const MAX_FILE_BYTES = 256 * 1024 * 1024;
+const CHUNK_POLICY = { strategy: "fastcdc" as const, minSize: 1024 * 1024, targetSize: 4 * 1024 * 1024, maxSize: 8 * 1024 * 1024 };
+
+interface ScannedEntry {
+  namespace: string;
+  logicalPath: string;
+  bytes: Uint8Array;
+}
+
+export interface SyncResult {
+  outcome: "pushed" | "pulled" | "unchanged";
+  revisionId: string | null;
+  files: number;
+  objects: number;
+  bytes: number;
+}
+
+export class SyncConflict extends Error {
+  constructor(readonly paths: string[]) {
+    super(`local changes conflict with remote state (${paths.length} path${paths.length === 1 ? "" : "s"})`);
+    this.name = "SyncConflict";
+  }
+}
+
+export class SyncEngine {
+  constructor(
+    readonly client: StatecaseClient,
+    readonly vaultId: string,
+    readonly vaultKey: Uint8Array,
+  ) {
+    if (vaultKey.byteLength !== 32) throw new TypeError("invalid vault key");
+  }
+
+  async push(config: LocalConfig, dryRun = false): Promise<SyncResult> {
+    const writable = [
+      ...config.mappings.filter((mapping) => mapping.mode !== "consume"),
+      ...workspaceMappings(config),
+    ];
+    const scanned = (await Promise.all(writable.map((mapping) =>
+      mapping.id.startsWith("workspace_") ? scanGitOverlay(mapping) : scanMapping(mapping, config.workspaces)
+    ))).flat();
+    const head = await this.client.head(this.vaultId);
+    const previous = head.manifestObjectId ? await this.#downloadManifest(head.manifestObjectId) : undefined;
+    const writableNamespaces = new Set(writable.map((mapping) => mapping.namespace));
+    const entries = previous?.entries.filter((entry) => !writableNamespaces.has(entry.namespace)) ?? [];
+    const envelopes = new Map<string, Uint8Array>();
+    let transferredBytes = 0;
+
+    for (const file of scanned) {
+      const keys = await deriveScopeKey(this.vaultKey, file.namespace);
+      const objectIds: string[] = [];
+      for (const chunk of chunkBytes(file.bytes, CHUNK_POLICY)) {
+        const objectId = await computeObjectId(keys.dedupKey, chunk);
+        objectIds.push(objectId);
+        if (!envelopes.has(objectId)) {
+          const envelope = await encryptEnvelope({
+            plaintext: chunk,
+            key: keys.encryptionKey,
+            dedupKey: keys.dedupKey,
+            context: { vaultId: this.vaultId, scopeId: file.namespace, compression: "none" },
+          });
+          envelopes.set(objectId, envelope);
+          transferredBytes += envelope.byteLength;
+        }
+      }
+      entries.push({
+        namespace: file.namespace,
+        logicalPath: file.logicalPath,
+        objectIds,
+        totalSize: file.bytes.byteLength,
+        contentDigest: await computeObjectId(keys.dedupKey, file.bytes),
+      });
+    }
+    entries.sort(compareEntries);
+    const operationId = randomId("op");
+    const revisionId = randomId("rev");
+    const manifest: VaultManifestV1 = {
+      schemaVersion: 1,
+      vaultId: this.vaultId,
+      revisionId,
+      parentRevisionIds: head.revisionId ? [head.revisionId] : [],
+      createdAt: new Date().toISOString(),
+      createdByDeviceId: config.deviceName ? safeIdentifier(config.deviceName, "device") : "device_unknown",
+      operationId,
+      entries,
+      tombstones: [],
+      conflicts: [],
+    };
+    const manifestBytes = encoder.encode(canonicalJson(manifest));
+    const manifestKeys = await deriveScopeKey(this.vaultKey, "manifest");
+    const manifestObjectId = await computeObjectId(manifestKeys.dedupKey, manifestBytes);
+    const manifestEnvelope = await encryptEnvelope({
+      plaintext: manifestBytes,
+      key: manifestKeys.encryptionKey,
+      dedupKey: manifestKeys.dedupKey,
+      context: { vaultId: this.vaultId, scopeId: "manifest", compression: "none" },
+    });
+    if (dryRun) return { outcome: "pushed", revisionId, files: scanned.length, objects: envelopes.size + 1, bytes: transferredBytes + manifestEnvelope.byteLength };
+
+    for (const [objectId, envelope] of envelopes) await this.client.putObject(this.vaultId, objectId, envelope);
+    await this.client.putObject(this.vaultId, manifestObjectId, manifestEnvelope);
+    await this.client.commit(this.vaultId, {
+      protocolVersion: "1.0",
+      operationId,
+      baseRevisionId: head.revisionId,
+      revisionId,
+      manifestObjectId,
+      requiredObjectIds: [...envelopes.keys()],
+    });
+    return { outcome: "pushed", revisionId, files: scanned.length, objects: envelopes.size + 1, bytes: transferredBytes + manifestEnvelope.byteLength };
+  }
+
+  async pull(config: LocalConfig, dryRun = false): Promise<SyncResult> {
+    const head = await this.client.head(this.vaultId);
+    if (!head.revisionId || !head.manifestObjectId) return { outcome: "unchanged", revisionId: null, files: 0, objects: 0, bytes: 0 };
+    const selected = [...config.mappings.filter((mapping) => mapping.mode !== "publish"), ...workspaceMappings(config)];
+    if (selected.length > 0 && selected.every((mapping) => config.applied[mapping.namespace]?.revisionId === head.revisionId)) {
+      return { outcome: "unchanged", revisionId: head.revisionId, files: 0, objects: 0, bytes: 0 };
+    }
+    const manifest = await this.#downloadManifest(head.manifestObjectId);
+    if (manifest.revisionId !== head.revisionId) throw new Error("remote head and manifest revision do not match");
+    const byNamespace = new Map(selected.map((mapping) => [mapping.namespace, mapping]));
+    const materialized: Array<{ mapping: RootMapping; path: string; bytes: Uint8Array; digest: string }> = [];
+    let objectCount = 1;
+    let byteCount = 0;
+    for (const entry of manifest.entries) {
+      const mapping = byNamespace.get(entry.namespace);
+      if (!mapping) continue;
+      const keys = await deriveScopeKey(this.vaultKey, entry.namespace);
+      const chunks: Uint8Array[] = [];
+      for (const objectId of entry.objectIds) {
+        const envelope = await this.client.getObject(this.vaultId, objectId);
+        byteCount += envelope.byteLength;
+        objectCount += 1;
+        chunks.push(await decryptEnvelope({
+          envelope,
+          key: keys.encryptionKey,
+          dedupKey: keys.dedupKey,
+          expected: { vaultId: this.vaultId, scopeId: entry.namespace, compression: "none" },
+        }));
+      }
+      let bytes = concatChunks(chunks);
+      if (bytes.byteLength !== entry.totalSize || await computeObjectId(keys.dedupKey, bytes) !== entry.contentDigest) {
+        throw new Error("downloaded file failed content verification");
+      }
+      const portable = portableSession(entry.logicalPath);
+      if (portable && mapping.kind !== "drop") {
+        const workspace = config.workspaces.find((candidate) => candidate.id === portable.workspaceId);
+        if (!workspace) continue;
+        bytes = localizeSession(bytes, portable.workspaceId, resolve(workspace.path));
+      }
+      const localDigest = await computeObjectId(keys.dedupKey, bytes);
+      materialized.push({
+        mapping,
+        path: sessionDestination(mapping, entry.logicalPath, config.workspaces),
+        bytes,
+        digest: localDigest,
+      });
+    }
+
+    const conflicts: string[] = [];
+    for (const item of materialized) {
+      const current = await optionalFile(item.path);
+      if (!current || bytesEqual(current, item.bytes)) continue;
+      const keys = await deriveScopeKey(this.vaultKey, item.mapping.namespace);
+      const currentDigest = await computeObjectId(keys.dedupKey, current);
+      const prior = config.applied[item.mapping.namespace]?.digests[item.path.slice(resolve(item.mapping.path).length + 1).split(sep).join("/")];
+      if (currentDigest !== prior && !(item.mapping.id.startsWith("workspace_") && !prior && await cleanGitDestination(item.mapping.path, item.path))) {
+        conflicts.push(item.path);
+      }
+    }
+    if (conflicts.length > 0) throw new SyncConflict(conflicts);
+    if (dryRun) return { outcome: "pulled", revisionId: head.revisionId, files: materialized.length, objects: objectCount, bytes: byteCount };
+
+    for (const item of materialized) await atomicWrite(item.path, item.bytes);
+    for (const mapping of selected) {
+      const digests: Record<string, string> = {};
+      for (const item of materialized.filter((candidate) => candidate.mapping.namespace === mapping.namespace)) {
+        digests[relative(resolve(mapping.path), item.path).split(sep).join("/")] = item.digest;
+      }
+      config.applied[mapping.namespace] = { revisionId: head.revisionId, digests };
+    }
+    return { outcome: "pulled", revisionId: head.revisionId, files: materialized.length, objects: objectCount, bytes: byteCount };
+  }
+
+  async #downloadManifest(objectId: string): Promise<VaultManifestV1> {
+    const envelope = await this.client.getObject(this.vaultId, objectId);
+    const keys = await deriveScopeKey(this.vaultKey, "manifest");
+    const plaintext = await decryptEnvelope({
+      envelope,
+      key: keys.encryptionKey,
+      dedupKey: keys.dedupKey,
+      expected: { vaultId: this.vaultId, scopeId: "manifest", compression: "none" },
+    });
+    return manifestSchema.parse(JSON.parse(new TextDecoder("utf8", { fatal: true, ignoreBOM: false }).decode(plaintext)));
+  }
+}
+
+function workspaceMappings(config: LocalConfig): RootMapping[] {
+  return config.workspaces.map((workspace) => ({
+    id: `workspace_${workspace.id}`,
+    kind: "drop",
+    mode: "two-way",
+    name: workspace.name ?? workspace.id,
+    namespace: `workspace:${workspace.id}`,
+    path: resolve(workspace.path),
+  }));
+}
+
+async function scanGitOverlay(mapping: RootMapping): Promise<ScannedEntry[]> {
+  let names: string[];
+  try {
+    const [worktree, staged] = await Promise.all([
+      runFile("git", ["-C", mapping.path, "ls-files", "--modified", "--others", "--exclude-standard", "-z"], { encoding: "buffer", maxBuffer: 16 * 1024 * 1024 }),
+      runFile("git", ["-C", mapping.path, "diff", "--cached", "--name-only", "-z"], { encoding: "buffer", maxBuffer: 16 * 1024 * 1024 }),
+    ]);
+    names = [...new Set([...nulPaths(worktree.stdout), ...nulPaths(staged.stdout)])].sort((a, b) => a.localeCompare(b, "en"));
+  } catch {
+    return [];
+  }
+  const output: ScannedEntry[] = [];
+  for (const logicalPath of names) {
+    if (excludedBuiltIn(logicalPath)) continue;
+    const path = safeDestination(mapping.path, logicalPath);
+    const info = await lstat(path).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? undefined : Promise.reject(error));
+    if (!info?.isFile()) continue;
+    if (info.size > MAX_FILE_BYTES) throw new Error(`file exceeds the local safety limit: ${logicalPath}`);
+    output.push({ namespace: mapping.namespace, logicalPath, bytes: await readFile(path) });
+  }
+  return output;
+}
+
+function nulPaths(value: string | Buffer): string[] {
+  return value.toString("utf8").split("\0").filter(Boolean);
+}
+
+async function cleanGitDestination(root: string, path: string): Promise<boolean> {
+  const logicalPath = relative(resolve(root), path).split(sep).join("/");
+  try {
+    await runFile("git", ["-C", root, "diff", "--quiet", "--", logicalPath]);
+    await runFile("git", ["-C", root, "diff", "--cached", "--quiet", "--", logicalPath]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function scanMapping(mapping: RootMapping, workspaces: LocalConfig["workspaces"]): Promise<ScannedEntry[]> {
+  const root = resolve(mapping.path);
+  const info = await stat(root);
+  if (!info.isDirectory()) throw new Error(`sync root is not a directory: ${root}`);
+  const output: ScannedEntry[] = [];
+  await walk(root, "", mapping, workspaces, output);
+  return output;
+}
+
+async function walk(
+  root: string,
+  relativeDirectory: string,
+  mapping: RootMapping,
+  workspaces: LocalConfig["workspaces"],
+  output: ScannedEntry[],
+): Promise<void> {
+  const directory = join(root, relativeDirectory);
+  const entries = await readdir(directory, { withFileTypes: true });
+  entries.sort((left, right) => left.name.localeCompare(right.name, "en"));
+  for (const entry of entries) {
+    const logicalPath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
+    if (excludedBuiltIn(logicalPath)) continue;
+    if (entry.isSymbolicLink() || (!entry.isFile() && !entry.isDirectory())) continue;
+    if (entry.isDirectory()) {
+      await walk(root, logicalPath, mapping, workspaces, output);
+      continue;
+    }
+    const classification = harnessClassification(mapping.kind, logicalPath);
+    if (classification === "excluded") continue;
+    const path = join(root, ...logicalPath.split("/"));
+    const before = await lstat(path);
+    if (before.size > MAX_FILE_BYTES) throw new Error(`file exceeds the local safety limit: ${logicalPath}`);
+    let bytes: Uint8Array = await readFile(path);
+    const after = await lstat(path);
+    if (!after.isFile() || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs) {
+      throw new Error(`file changed while being scanned: ${logicalPath}`);
+    }
+    if (classification === "session") {
+      bytes = scanCompleteJsonl(bytes).acceptedPrefix;
+      if (bytes.byteLength === 0) continue;
+      const portable = portabilizeSession(bytes, workspaces);
+      bytes = portable.bytes;
+      if (portable.workspaceId) {
+        output.push({ namespace: mapping.namespace, logicalPath: `portable-sessions/${portable.workspaceId}/${basename(logicalPath)}`, bytes });
+        continue;
+      }
+    }
+    output.push({ namespace: mapping.namespace, logicalPath, bytes });
+  }
+}
+
+function portabilizeSession(bytes: Uint8Array, workspaces: LocalConfig["workspaces"]): { bytes: Uint8Array; workspaceId?: string } {
+  const decoder = new TextDecoder("utf8", { fatal: true, ignoreBOM: false });
+  const records = decoder.decode(bytes).trimEnd().split("\n").map((line) => JSON.parse(line) as unknown);
+  const matched = new Set<string>();
+  const transformed = records.map((record) => transformStrings(record, (value) => {
+    const workspace = [...workspaces].sort((a, b) => b.path.length - a.path.length).find((item) => {
+      const root = resolve(item.path);
+      return value === root || value.startsWith(`${root}${sep}`);
+    });
+    if (!workspace) return value;
+    matched.add(workspace.id);
+    const suffix = relative(resolve(workspace.path), value).split(sep).join("/");
+    return `statecase://workspace/${workspace.id}${suffix ? `/${suffix}` : ""}`;
+  }));
+  return {
+    bytes: encoder.encode(`${transformed.map((record) => JSON.stringify(record)).join("\n")}\n`),
+    ...(matched.size === 1 ? { workspaceId: [...matched][0] } : {}),
+  };
+}
+
+function localizeSession(bytes: Uint8Array, workspaceId: string, path: string): Uint8Array {
+  const decoder = new TextDecoder("utf8", { fatal: true, ignoreBOM: false });
+  const prefix = `statecase://workspace/${workspaceId}`;
+  const records = decoder.decode(bytes).trimEnd().split("\n").map((line) => transformStrings(JSON.parse(line) as unknown, (value) => {
+    if (value === prefix) return path;
+    if (!value.startsWith(`${prefix}/`)) return value;
+    return join(path, ...value.slice(prefix.length + 1).split("/"));
+  }));
+  return encoder.encode(`${records.map((record) => JSON.stringify(record)).join("\n")}\n`);
+}
+
+function transformStrings(value: unknown, transform: (value: string) => string): unknown {
+  if (typeof value === "string") return transform(value);
+  if (Array.isArray(value)) return value.map((entry) => transformStrings(entry, transform));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, entry]) => [key, transformStrings(entry, transform)]));
+  }
+  return value;
+}
+
+function portableSession(logicalPath: string): { workspaceId: string; filename: string } | undefined {
+  const match = /^portable-sessions\/([^/]+)\/([^/]+)$/u.exec(logicalPath);
+  return match ? { workspaceId: match[1], filename: match[2] } : undefined;
+}
+
+function sessionDestination(mapping: RootMapping, logicalPath: string, workspaces: LocalConfig["workspaces"]): string {
+  const portable = portableSession(logicalPath);
+  if (!portable || mapping.kind === "drop") return safeDestination(mapping.path, logicalPath);
+  const workspace = workspaces.find((candidate) => candidate.id === portable.workspaceId);
+  if (!workspace) throw new Error(`workspace ${portable.workspaceId} is not mapped on this device`);
+  if (mapping.kind === "claude") {
+    return safeDestination(claudeProjectDirectory(mapping.path, workspace.path), portable.filename);
+  }
+  return safeDestination(join(mapping.path, "sessions", "statecase", portable.workspaceId), portable.filename);
+}
+
+function harnessClassification(kind: RootMapping["kind"], path: string): "file" | "session" | "excluded" {
+  if (kind === "drop") return "file";
+  const classification = kind === "codex" ? classifyCodexPath(path) : classifyClaudePath(path);
+  if (classification === "session") return "session";
+  return classification === "skill" ? "file" : "excluded";
+}
+
+function excludedBuiltIn(path: string): boolean {
+  const parts = path.split("/");
+  const basename = parts.at(-1) ?? "";
+  return parts.some((part) => part === ".git" || part === "node_modules" || part === ".statecase") ||
+    basename === ".env" || basename.startsWith(".env.") || basename === "auth.json" ||
+    /(?:^|[._-])credentials?(?:[._-]|$)/iu.test(basename) || /\.(?:pem|key|p12|pfx)$/iu.test(basename);
+}
+
+function safeDestination(root: string, logicalPath: string): string {
+  if (logicalPath.length === 0 || logicalPath.includes("\0") || logicalPath.includes("\\")) throw new Error("unsafe remote path");
+  const parts = logicalPath.split("/");
+  if (parts.some((part) => part.length === 0 || part === "." || part === "..")) throw new Error("unsafe remote path");
+  const absoluteRoot = resolve(root);
+  const destination = resolve(absoluteRoot, ...parts);
+  if (!destination.startsWith(`${absoluteRoot}${sep}`)) throw new Error("unsafe remote path");
+  return destination;
+}
+
+async function atomicWrite(path: string, bytes: Uint8Array): Promise<void> {
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  const temporary = `${path}.statecase-${crypto.randomUUID()}.tmp`;
+  const handle = await open(temporary, "wx", 0o600);
+  try {
+    await handle.writeFile(bytes);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await rename(temporary, path).catch(async (error) => {
+    await rm(temporary, { force: true });
+    throw error;
+  });
+}
+
+async function optionalFile(path: string): Promise<Uint8Array | undefined> {
+  try {
+    return await readFile(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+function compareEntries(left: VaultManifestV1["entries"][number], right: VaultManifestV1["entries"][number]): number {
+  return left.namespace.localeCompare(right.namespace, "en") || left.logicalPath.localeCompare(right.logicalPath, "en");
+}
+
+function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  return left.byteLength === right.byteLength && left.every((byte, index) => byte === right[index]);
+}
+
+function randomId(prefix: string): string {
+  return `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
+}
+
+function safeIdentifier(input: string, prefix: string): string {
+  const normalized = input.replaceAll(/[^A-Za-z0-9._:-]/gu, "_").slice(0, 200);
+  return normalized.length > 0 && /^[A-Za-z0-9]/u.test(normalized) ? normalized : `${prefix}_unknown`;
+}

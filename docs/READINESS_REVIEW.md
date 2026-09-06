@@ -1,8 +1,8 @@
 # Statecase design readiness review
 
-Status: ready to begin architecture/TDD implementation; not ready for public
-data or production launch
-Last updated: 2026-09-05
+Status: private manual-sync MVP implemented and deployed; not ready for public
+production launch
+Last updated: 2026-09-06
 
 ## Decisions now clear
 
@@ -33,6 +33,16 @@ Last updated: 2026-09-05
   stack yet. Accepted in ADR-0002.
 - Security: local E2EE, device identity, separately wrapped scope keys, scoped
   single-use bootstrap capability, secrets excluded by default.
+- Crypto: libsodium XChaCha20-Poly1305-IETF envelopes, Argon2id recovery-key
+  derivation, and keyed scope-local object IDs. Accepted in ADR-0003.
+- Auth: Better Auth on Hono/D1 with RFC 8628 device authorization plus
+  Statecase-owned scoped bootstrap capabilities. Accepted in ADR-0004.
+- Local database: `better-sqlite3` behind a Statecase storage interface.
+  Accepted in ADR-0005.
+- Chunking: complete-record JSONL, FastCDC-style ordinary files, and fixed
+  chunks for compressed/encrypted formats. Accepted in ADR-0006.
+- Credentials: system Git with explicit fetch policy; harness, model-provider,
+  and Git credentials are never synchronized in v1. Accepted in ADR-0007.
 - Sync: local durable journal, incremental chunks, optimistic commits, safe
   merges, preserved conflicts, offline retry.
 - Recovery: every sync is a revision; retention and protected snapshots prevent
@@ -71,19 +81,14 @@ Last updated: 2026-09-05
 These do not block starting implementation, but each blocks the indicated
 milestone and must become an ADR:
 
-1. **Cryptographic library and exact AEAD** — blocks accepting production data.
-2. **Hosted identity provider/device-code implementation** — blocks hosted beta;
-   local development can use a test issuer.
-3. **Git credential/fetch integration boundaries** — blocks automatic baseline
-   acquisition; manual/pre-provisioned baselines can be built first.
-4. **Supported Codex/Claude version window and fixture acquisition process** —
+1. **Supported Codex/Claude version window and fixture acquisition process** —
    blocks compatibility claims.
-5. **Native Windows semantics** — deferred; WSL smoke support only for MVP.
-6. **Hosted pricing, data-region, metadata retention, and legal terms** — blocks
+2. **Native Windows semantics** — deferred; WSL smoke support only for MVP.
+3. **Hosted pricing, data-region, metadata retention, and legal terms** — blocks
    commercial launch, not OSS implementation.
-7. **Trademark/domain clearance for Statecase** — blocks brand investment, not
+4. **Trademark/domain clearance for Statecase** — blocks brand investment, not
    technical work.
-8. **Control-panel decryption UX** — deferred; CLI is the MVP control plane.
+5. **Control-panel decryption UX** — deferred; CLI is the MVP control plane.
 
 ## Scope completeness verdict
 
@@ -91,6 +96,20 @@ The product scope, initial and steady-state behavior, core trust model,
 workspace continuity, arbitrary file synchronization, concurrency, recovery,
 automation, schema evolution, and major operating environments are sufficiently clear
 to begin TDD implementation.
+
+## Implementation checkpoint — 2026-09-06
+
+The first usable vertical slice is complete: manual first-device and
+second-device enrollment, encrypted recovery kit, account-scoped vaults,
+client-side encrypted/chunked object transfer, atomic optimistic commits,
+Codex/Claude complete-record handling, skill transfer, arbitrary Drops,
+logical workspace path rewriting, and modified/untracked Git overlay transfer.
+The single Cloudflare MVP stack is provisioned and private-signup allowlisted.
+
+Automated steady state is not yet claimed. Daemon/shims, deletion/tombstone
+semantics, safe automatic merge, retained snapshots/restore, scoped ephemeral
+bootstrap, device revocation/key rewrap, and complete historical Session
+Capsules remain blocking work for a public or unattended release.
 
 The design is intentionally not called production-complete. Crypto selection,
 identity provider, exact compatibility matrix, and legal/commercial decisions

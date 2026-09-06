@@ -1,6 +1,6 @@
 # Statecase product strategy
 
-Status: approved product direction, implementation not yet complete
+Status: approved product direction; private manual-sync MVP implemented
 Last updated: 2026-09-05
 Owners: Statecase maintainers
 
@@ -188,7 +188,7 @@ statecase token create \
   --single-use
 ```
 
-The secret manager injects it as `AGENTSTASH_BOOTSTRAP_TOKEN`. The sandbox
+The secret manager injects it as `STATECASE_BOOTSTRAP_TOKEN`. The sandbox
 runs:
 
 ```bash

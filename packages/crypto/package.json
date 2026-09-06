@@ -1,0 +1,11 @@
+{
+  "name": "@statecase/crypto",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@statecase/protocol": "*",
+    "libsodium-wrappers-sumo": "^0.8.4"
+  }
+}

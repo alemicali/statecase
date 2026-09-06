@@ -1,7 +1,7 @@
 # Statecase synchronization implementation specification
 
-Status: normative design for implementation
-Last updated: 2026-09-05
+Status: normative design; private manual-sync MVP partially implemented
+Last updated: 2026-09-06
 Related: [Product strategy](./PRODUCT_STRATEGY.md),
 [Test and UAT plan](./TEST_AND_UAT_PLAN.md),
 [Threat model](./THREAT_MODEL.md)
@@ -9,8 +9,10 @@ Related: [Product strategy](./PRODUCT_STRATEGY.md),
 ## 1. Normative language and current-state warning
 
 `MUST`, `MUST NOT`, `SHOULD`, and `MAY` are normative. This document describes
-the target architecture. The standalone repository begins as a pre-alpha
-greenfield scaffold and does not yet provide this synchronization system.
+the target architecture. The current private MVP implements the encrypted
+manual CLI vertical slice and its single Cloudflare stack. Sections covering
+daemon/shims, automatic merge, tombstones, snapshots/restore, scoped bootstrap,
+and complete Session Capsules remain target requirements, not current claims.
 
 ## 2. System boundaries
 
@@ -230,7 +232,7 @@ content-addressed. They MUST not expose local paths or Git credentials.
 
 Resolution precedence:
 
-1. explicit `AGENTSTASH_WORKSPACE_ID`;
+1. explicit `STATECASE_WORKSPACE_ID`;
 2. stored mapping for the current path or an ancestor;
 3. normalized Git remote plus optional monorepo relative root;
 4. explicit user-created identity for a non-Git directory;
@@ -332,7 +334,7 @@ access to every session or secret in the vault.
 
 ### 6.2 Object envelope
 
-- Compute `objectId = HMAC-SHA-256(scopeDedupKey, domain || plaintextChunk)`.
+- Compute `objectId = BLAKE2b-256(scopeDedupKey, domain || plaintextChunk)`.
 - Compress before encryption only when the adapter marks the content safe and
   compression saves a configured minimum.
 - Encrypt with an authenticated-encryption algorithm from a maintained,
@@ -364,7 +366,7 @@ verification step during onboarding.
 
 ### 6.4 Bootstrap capability
 
-`AGENTSTASH_BOOTSTRAP_TOKEN` is a single secret envelope containing or
+`STATECASE_BOOTSTRAP_TOKEN` is a single secret envelope containing or
 referencing:
 
 - server-verifiable authorization;
@@ -373,18 +375,19 @@ referencing:
 - material required to unwrap only the authorized scope keys.
 
 It MUST be safe to revoke, MUST be redacted in all outputs, and SHOULD be
-injected through a secret manager. Long-lived `AGENTSTASH_TOKEN` is supported
+injected through a secret manager. Long-lived `STATECASE_TOKEN` is supported
 only for trusted automation. Tokens MUST NOT be placed in prompts or command
 arguments visible in process listings; stdin, a protected file, or environment
 secret injection is preferred.
 
 ## 7. Local state
 
-Statecase stores its own state under `AGENTSTASH_HOME`, defaulting to
+Statecase stores its own state under `STATECASE_HOME`, defaulting to
 `~/.statecase`:
 
 ```text
-config.toml                 non-secret profiles and mappings
+config.json                non-secret profiles and mappings
+credentials.json           owner-only bearer session and vault keys (MVP)
 state.db                    WAL-enabled local operation journal
 cache/objects/              bounded encrypted/plaintext-safe cache by policy
 locks/                      instance locks
@@ -396,7 +399,7 @@ skills/                     canonical installed skill payload
 Credential resolution order:
 
 1. explicit protected file/stdin option for one invocation;
-2. `AGENTSTASH_BOOTSTRAP_TOKEN` for bootstrap only;
+2. `STATECASE_BOOTSTRAP_TOKEN` for bootstrap only;
 3. scoped environment token for automation;
 4. OS keychain/credential store;
 5. interactive login.

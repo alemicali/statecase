@@ -9,7 +9,8 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
     "forceConsistentCasingInFileNames": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "types": ["node", "@cloudflare/vitest-plugin/types"]
   },
   "include": ["apps/**/*.ts", "packages/**/*.ts", "test/**/*.ts", "vitest.config.ts"]
 }

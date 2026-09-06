@@ -26,4 +26,11 @@ describe("standalone product identity", () => {
     expect(dependencyNames).not.toContain("clawstash");
     expect(dependencyNames).not.toContain("restic");
   });
+
+  it("IS-003: uses only Statecase-owned environment variable names", async () => {
+    const implementationPath = join(import.meta.dirname, "..", "docs", "IMPLEMENTATION_SPEC.md");
+    const implementation = await readFile(implementationPath, "utf8");
+    expect(implementation).not.toContain("AGENTSTASH_");
+    expect(implementation).toContain("STATECASE_HOME");
+  });
 });

@@ -1,0 +1,25 @@
+{
+  "name": "@statecase/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "statecase": "./dist/bin.js"
+  },
+  "scripts": {
+    "build": "esbuild src/bin.ts --bundle --platform=node --format=esm --target=node22 --external:better-sqlite3 --banner:js='#!/usr/bin/env node' --outfile=dist/bin.js",
+    "test": "vitest run test"
+  },
+  "dependencies": {
+    "@statecase/adapter-claude": "*",
+    "@statecase/adapter-codex": "*",
+    "@statecase/adapter-common": "*",
+    "@statecase/crypto": "*",
+    "@statecase/chunking": "*",
+    "@statecase/domain": "*",
+    "@statecase/protocol": "*",
+    "@statecase/storage-local": "*",
+    "commander": "^15.0.0",
+    "zod": "^4.5.4"
+  }
+}

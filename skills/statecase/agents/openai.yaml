@@ -1,0 +1,7 @@
+interface:
+  display_name: "Statecase"
+  short_description: "Carry agent context safely across machines"
+  default_prompt: "Use $statecase to inspect portable agent context, configure safe mappings, and synchronize or recover it without exposing secrets."
+
+policy:
+  allow_implicit_invocation: true

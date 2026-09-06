@@ -1,0 +1,12 @@
+services:
+  test:
+    build:
+      context: .
+      dockerfile: docker/test.Dockerfile
+    network_mode: bridge
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=1g
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
