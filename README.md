@@ -22,8 +22,9 @@ preflight pull, supervises the unmodified harness, publishes periodically, and
 attempts a final flush without preventing offline use or changing the child
 exit status.
 
-The persistent daemon core can run with `statecase daemon foreground`; native
-systemd/launchd service installers, automatic three-way merge, exact Git
+The persistent daemon can run with `statecase daemon foreground` or be installed
+as a systemd user service / macOS LaunchAgent. Real-OS service UAT, automatic
+three-way merge, exact Git
 index/baseline capsules, retained snapshots, scoped ephemeral capabilities,
 device revocation/key rewrapping, and full historical Session Capsules remain
 release gates. This is not yet a public-production release.
@@ -99,12 +100,14 @@ For a persistent process under an existing supervisor:
 ```bash
 ./apps/cli/dist/bin.js daemon foreground
 ./apps/cli/dist/bin.js daemon status
+./apps/cli/dist/bin.js daemon install
 ```
 
 The daemon owns one profile lock, watches mapped roots, polls the remote head,
 reconciles on a maximum deadline, retries with jitter, and exposes status only
-through an owner-only Unix socket. Native service installation is still a
-release gate.
+through an owner-only Unix socket. Service definitions are Statecase-owned,
+atomically written, hardened on systemd, and safely removable with
+`daemon uninstall --yes`; release claims still require Linux and macOS UAT.
 
 Account creation is deliberately allowlisted for the private MVP. Never put
 `STATECASE_TOKEN`, `STATECASE_RECOVERY_PASSPHRASE`, or the recovery kit in a

@@ -120,11 +120,12 @@ The persistent daemon core is also implemented locally with a single-profile
 crash-recoverable lock, recursive filesystem hints, periodic source-of-truth
 reconciliation, remote polling, serialized execution, bounded exponential
 retry, no-op revision suppression, and owner-only Unix-socket status. Native
-systemd/launchd installers and sleep/network lifecycle integration are still
-required before background steady state is claimed.
+systemd-user and launchd installers are implemented with safe ownership and
+uninstall semantics; actual Linux/macOS lifecycle UAT plus sleep/network-change
+integration are still required before background steady state is claimed.
 
-Automated background steady state is not yet claimed. Persistent daemon/service
-installation, safe automatic merge, exact Git index/baseline capsules, retained
+Automated background steady state is not yet claimed. Real-OS daemon/service
+UAT, safe automatic merge, exact Git index/baseline capsules, retained
 snapshots/restore, scoped ephemeral bootstrap, device revocation/key rewrap,
 and complete historical Session Capsules remain blocking work for a public or
 unattended release.

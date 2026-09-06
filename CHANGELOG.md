@@ -19,3 +19,5 @@ All notable changes to Statecase will be documented here.
   filesystem hints, remote polling, maximum reconciliation intervals,
   serialized jittered retry, owner-only local IPC status, and no-op revision
   suppression.
+- Added atomically managed systemd-user and macOS LaunchAgent definitions,
+  hardened service settings, explicit activation, and ownership-safe uninstall.

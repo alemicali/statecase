@@ -51,8 +51,9 @@ applied that remote head.
 Ephemeral systems can use foreground supervision without a service manager.
 The daemon core supplies locking, filesystem hints, authoritative periodic
 reconciliation, remote polling, retry, and private local status for IDE and
-non-shim launches. Native systemd/launchd installation remains separate. The
-current journal records reconciliation intent; future capsule work will pin the
+non-shim launches. Statecase atomically manages a hardened systemd user unit or
+macOS LaunchAgent without invoking a shell; release still requires real-OS
+lifecycle UAT. The current journal records reconciliation intent; future capsule work will pin the
 exact immutable checkpoint associated with each queued publish.
 
 ## Security and privacy impact

@@ -17,6 +17,7 @@ import { PersistentRuntime, readRuntimeStatus, type DaemonTrigger } from "./daem
 import { readRecoveryKit, writeRecoveryKit } from "./recovery.js";
 import { DurableReconciler } from "./reconciler.js";
 import { exitCodeFor, requireSession, selectedVault, StatecaseUsageError } from "./runtime.js";
+import { activateService, installServiceDefinition, removeServiceDefinition, serviceDefinition } from "./service.js";
 import { installHarnessShim, removeHarnessShim, verifyHarnessShim } from "./shims.js";
 import { installSkill, uninstallSkill, verifySkill } from "./skills.js";
 import { HarnessSupervisor, resolveHarnessExecutable, type HarnessName, type ReconcileReason } from "./supervisor.js";
@@ -362,6 +363,25 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
       throw new StatecaseUsageError("Statecase daemon is not running", 8);
     }
   });
+  daemon.command("install")
+    .description("install and start the native per-user background service")
+    .option("--no-start", "write the definition without activating it")
+    .action(async (options: { start: boolean }) => {
+      const definition = await daemonServiceDefinition(store, argv);
+      const result = await installServiceDefinition(definition);
+      if (options.start) await activateService(definition, "enable");
+      emit(io, program, { ...result, platform: definition.source.platform, activated: options.start }, `${result.created ? "Installed" : "Verified"} ${definition.path}${options.start ? " and started the daemon" : ""}`);
+    });
+  daemon.command("uninstall")
+    .description("stop and remove only the Statecase-owned background service")
+    .requiredOption("--yes", "confirm removal")
+    .option("--no-stop", "remove the definition without invoking the service manager")
+    .action(async (options: { stop: boolean }) => {
+      const definition = await daemonServiceDefinition(store, argv);
+      if (options.stop) await activateService(definition, "disable");
+      const removed = await removeServiceDefinition(definition);
+      emit(io, program, { removed, platform: definition.source.platform, stopped: options.stop }, removed ? `Removed ${definition.path}` : "Statecase daemon service was not installed");
+    });
 
   const skills = program.command("skills").description("install the agent-native Statecase skill");
   skills.command("install").option("--target <path>").action(async (options: { target?: string }) => {
@@ -454,6 +474,25 @@ function waitForTermination(): Promise<void> {
     };
     process.on("SIGINT", done);
     process.on("SIGTERM", done);
+  });
+}
+
+function daemonServiceDefinition(store: ConfigStore, argv: string[]) {
+  if (process.platform !== "linux" && process.platform !== "darwin") {
+    throw new StatecaseUsageError("native daemon services are supported on Linux and macOS", 2);
+  }
+  const platform: "linux" | "darwin" = process.platform;
+  const statecaseExecutable = resolve(argv[1] ?? "statecase");
+  return store.loadConfig().then((raw) => {
+    const config = normalizeConfig(raw);
+    return serviceDefinition({
+      platform,
+      home: homedir(),
+      statecaseExecutable,
+      statecaseHome: store.home,
+      roots: [...config.mappings.map((mapping) => mapping.path), ...config.workspaces.map((workspace) => workspace.path)],
+      ...(platform === "darwin" && process.getuid ? { uid: process.getuid() } : {}),
+    });
   });
 }
 
