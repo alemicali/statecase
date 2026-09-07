@@ -41,9 +41,9 @@ portable session size during localization and must be available before apply.
 Orphaned encrypted objects may remain after a failed commit and are safe for
 later garbage collection.
 
-Concurrent three-way append merge is deliberately unchanged and remains
-bounded to 256 MiB per input. A suffix-only merge design and literal 2-GiB
-acceptance test are required before claiming full multi-gigabyte conflict merge.
+Concurrent three-way append merge streams the common base and limits only each
+concurrent suffix to 256 MiB and 100,000 records. A literal 2-GiB acceptance
+test is still required before claiming full multi-gigabyte conflict merge.
 
 ## Security and privacy impact
 

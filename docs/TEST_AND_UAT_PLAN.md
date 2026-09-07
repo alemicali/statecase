@@ -401,8 +401,9 @@ incremental digest compatibility, secure staging cleanup, corrupt envelope and
 false size/digest rejection, file-backed atomic install, protocol descriptors,
 new-vault 1.1 bootstrap, and an end-to-end multi-chunk append proving that no
 previously present object ID is uploaded. `PERF-002` and the literal 2-GiB
-`PERF-003` run remain release acceptance tests; concurrent suffix-only merge is
-also still outstanding.
+`PERF-003` run remain release acceptance tests. Automated file and two-device
+tests cover suffix-only concurrent merge over a streamed common base and the
+streaming supersequence acceptance check.
 
 Performance baselines run on recorded hardware profiles. A statistically
 significant regression requires an explicit approved waiver.

@@ -86,7 +86,7 @@ export async function downloadVerifiedEntry(input: {
       if (plaintextBytes > input.totalSize || plaintextBytes > input.maximumSize) {
         throw new Error("downloaded session exceeds its declared size");
       }
-      await destination.write(chunk);
+      await destination.writeFile(chunk);
     }
     await destination.sync();
   } catch (error) {

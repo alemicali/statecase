@@ -28,6 +28,30 @@ export interface StagedSession {
   dispose(): Promise<void>;
 }
 
+export async function inspectPortableSessionActivity(
+  sourcePath: string,
+  workspaceId: string,
+  workspacePath: string,
+  options: { maxRecordBytes?: number } = {},
+): Promise<ActivityReference[]> {
+  const maxRecordBytes = options.maxRecordBytes ?? DEFAULT_MAX_RECORD_BYTES;
+  if (!Number.isSafeInteger(maxRecordBytes) || maxRecordBytes <= 0) {
+    throw new RangeError("maximum JSONL record size must be positive");
+  }
+  let cwd: string | undefined;
+  const activity = new Map<string, ActivityReference>();
+  const accepted = await forEachCompleteRecord(sourcePath, maxRecordBytes, async (record) => {
+    const localized = transformStrings(record, (value) => localizeWorkspaceUri(value, workspaceId, workspacePath));
+    cwd = sessionWorkingDirectory([localized]) ?? cwd;
+    const records = cwd ? [{ type: "session_meta", cwd }, localized] : [localized];
+    for (const reference of extractActivityReferences(records)) {
+      activity.set(`${reference.access}\0${reference.path}`, reference);
+    }
+  });
+  if (accepted !== (await lstat(sourcePath)).size) throw new Error("portable session has an incomplete JSONL tail");
+  return [...activity.values()];
+}
+
 export async function localizePortableSession(
   sourcePath: string,
   destinationPath: string,
@@ -43,13 +67,12 @@ export async function localizePortableSession(
   let written = 0;
   let accepted = 0;
   try {
-    await forEachCompleteRecord(sourcePath, maxRecordBytes, async (record, original) => {
-      accepted += original.byteLength;
+    accepted = await forEachCompleteRecord(sourcePath, maxRecordBytes, async (record) => {
       const transformed = transformStrings(record, (value) => {
         return localizeWorkspaceUri(value, workspaceId, workspacePath);
       });
       const bytes = encoder.encode(`${JSON.stringify(transformed)}\n`);
-      await destination.write(bytes);
+      await destination.writeFile(bytes);
       written += bytes.byteLength;
     });
     if (accepted !== (await lstat(sourcePath)).size) throw new Error("portable session has an incomplete JSONL tail");
@@ -100,7 +123,7 @@ export async function stagePortableSession(
 
   try {
     await forEachCompleteRecord(sourcePath, maxRecordBytes, async (record, original) => {
-      await accepted.write(original);
+      await accepted.writeFile(original);
       acceptedSize += original.byteLength;
       cwd = sessionWorkingDirectory([record]) ?? cwd;
       transformStrings(record, (value) => {
@@ -144,7 +167,7 @@ export async function stagePortableSession(
       await forEachCompleteRecord(acceptedPath, maxRecordBytes, async (record) => {
         const transformed = transformStrings(record, (value) => portablePathValue(value, workspace));
         const bytes = encoder.encode(`${JSON.stringify(transformed)}\n`);
-        await portable.write(bytes);
+        await portable.writeFile(bytes);
         size += bytes.byteLength;
       });
     } finally {
@@ -166,7 +189,7 @@ async function forEachCompleteRecord(
   path: string,
   maxRecordBytes: number,
   accept: (record: unknown, original: Uint8Array) => Promise<void>,
-): Promise<void> {
+): Promise<number> {
   let parts: Uint8Array[] = [];
   let length = 0;
   let offset = 0;
@@ -204,6 +227,7 @@ async function forEachCompleteRecord(
       if (length > maxRecordBytes) throw new Error(`session JSONL record exceeds ${maxRecordBytes} bytes`);
     }
   }
+  return offset;
 }
 
 function joinParts(parts: readonly Uint8Array[], length: number): Uint8Array {

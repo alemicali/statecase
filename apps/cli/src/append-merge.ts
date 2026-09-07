@@ -5,7 +5,7 @@ export type JsonlAppendMergeResult =
   | { outcome: "merged"; bytes: Uint8Array; appendedRecords: number }
   | { outcome: "diverged"; reason: JsonlAppendFailure };
 
-type JsonlAppendFailure = "prefix-rewritten" | "incomplete-record" | "malformed-record" | "order-conflict" | "limit-exceeded";
+export type JsonlAppendFailure = "prefix-rewritten" | "incomplete-record" | "malformed-record" | "order-conflict" | "limit-exceeded";
 
 const MAX_APPEND_MERGE_BYTES = 256 * 1024 * 1024;
 const MAX_APPEND_MERGE_RECORDS = 100_000;

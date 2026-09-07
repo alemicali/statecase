@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { localizePortableSession, stagePortableSession } from "../src/session-stream.js";
+import { inspectPortableSessionActivity, localizePortableSession, stagePortableSession } from "../src/session-stream.js";
 
 const temporary: string[] = [];
 
@@ -108,5 +108,36 @@ describe("streamed session staging (AD-CX-008, PERF-003)", () => {
     const root = await mkdtemp(join(tmpdir(), "statecase-session-directory-"));
     temporary.push(root);
     await expect(stagePortableSession(root, [])).rejects.toThrow("regular file");
+  });
+
+  it("extracts localized activity from a merged portable session without retaining its records", async () => {
+    const root = await mkdtemp(join(tmpdir(), "statecase-session-inspect-"));
+    temporary.push(root);
+    const source = join(root, "portable.jsonl");
+    const workspace = join(root, "workspace");
+    await writeFile(source, [
+      JSON.stringify({ type: "session_meta", payload: { cwd: "statecase://workspace/ws_test" } }),
+      JSON.stringify({ type: "tool_call", name: "read_file", arguments: { path: "remote.md" } }),
+      JSON.stringify({ type: "tool_call", name: "write_file", arguments: { path: "statecase://workspace/ws_test/local.md" } }),
+      "",
+    ].join("\n"));
+
+    await expect(inspectPortableSessionActivity(source, "ws_test", workspace)).resolves.toEqual(expect.arrayContaining([
+      { path: join(workspace, "remote.md"), access: "read", source: "native-event" },
+      { path: join(workspace, "local.md"), access: "write", source: "native-event" },
+    ]));
+
+    await writeFile(source, `${JSON.stringify({
+      type: "tool_call",
+      name: "read_file",
+      arguments: { path: "statecase://workspace/ws_test/direct.md" },
+    })}\n`);
+    await expect(inspectPortableSessionActivity(source, "ws_test", workspace)).resolves.toEqual([
+      { path: join(workspace, "direct.md"), access: "read", source: "native-event" },
+    ]);
+    await expect(inspectPortableSessionActivity(source, "ws_test", workspace, { maxRecordBytes: 0 }))
+      .rejects.toThrow("positive");
+    await writeFile(source, "{\"incomplete\":true}");
+    await expect(inspectPortableSessionActivity(source, "ws_test", workspace)).rejects.toThrow("incomplete");
   });
 });

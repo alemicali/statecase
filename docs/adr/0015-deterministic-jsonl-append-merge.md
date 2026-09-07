@@ -1,6 +1,6 @@
 # ADR 0015: Deterministic client-side JSONL append merge
 
-Status: accepted and implemented for bounded session files
+Status: accepted and implemented with streamed common history and bounded suffixes
 Date: 2026-09-07
 Owners: Statecase maintainers
 Test IDs: ID-012, SY-004, SY-005, PR-006
@@ -60,10 +60,12 @@ Scoped capability clients do not perform this merge. Their updates remain
 immutable namespace deltas governed by ADR-0013 and ADR-0014; conflicting
 same-path content requires reconciliation by a trusted full-key client.
 
-The current in-memory merge profile rejects any input above 256 MiB or 100,000
-records before graph construction. This is a safety bound, not satisfaction of
-the multi-gigabyte streaming requirement. Incremental, constant-memory merge
-and transfer remain a release gate.
+The common base and both prefix comparisons are processed incrementally. Only
+the concurrent suffix of each branch enters the deterministic graph; each
+suffix is limited to 256 MiB and 100,000 records. The merged result is emitted
+to owner-only staging, and the accepting pull checks record subsequence order
+with two-record memory. This makes merge memory independent of total history
+size while retaining an explicit bound on concurrent divergence.
 
 ## Alternatives considered
 
@@ -88,8 +90,10 @@ local branch stay intact for inspection and guarded resolution. A successful
 merged push intentionally requires a subsequent pull on its originating
 device.
 
-The bounded implementation temporarily downloads and decrypts base and remote
-session versions. It cannot yet qualify real multi-gigabyte Codex histories.
+The implementation temporarily downloads and decrypts authenticated base and
+remote session versions to owner-only staging. Temporary disk therefore needs
+space for those inputs and the merged output. Literal 2-GiB acceptance evidence
+is still required before qualifying real multi-gigabyte Codex histories.
 
 The local binding prevents a merge from creating a second native file while
 leaving the harness-owned original stale. Unsafe, adapter-incompatible, or
@@ -100,7 +104,8 @@ colliding binding destinations fail before the materialization transaction.
 Pure tests cover symmetric convergence, branch partial orders, canonical
 deduplication, repeated occurrences, empty/CRLF input, invalid UTF-8, malformed
 and incomplete records, rewritten prefixes, incompatible order, safety limits,
-and randomized disjoint branches. Two-device integration proves rejected
+randomized disjoint branches, a common base larger than the suffix limit, and
+streaming supersequence validation. Two-device integration proves rejected
 rewrites do not advance the remote head, merged pushes retain the old applied
 marker, dependency activity from both branches enters the Session Capsule, and
 verified pull materializes every record exactly once. Malicious oversized

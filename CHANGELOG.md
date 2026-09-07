@@ -11,6 +11,10 @@ All notable changes to Statecase will be documented here.
   1.1 bootstrap for new vaults. Appends no longer upload content-addressed
   chunks already present in the authenticated remote manifest. Legacy 1.0
   heads remain readable and migratable.
+- Made same-session concurrent append merge independent of common-history size:
+  the client verifies the base and both prefixes as streams, retains only
+  bounded concurrent suffixes, writes the merged result to secure staging, and
+  verifies the subsequent pull as a record stream.
 - Added deterministic full-key client merge for concurrent complete-record
   appends to the same portable Codex or Claude JSONL session. The merge requires
   a byte-identical accepted prefix, preserves both branch orders, deduplicates

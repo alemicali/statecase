@@ -35,9 +35,15 @@ import {
 import { sessionBindingKey, type LocalConfig, type RootMapping } from "./config.js";
 import type { ScopedVaultKeys } from "./capability.js";
 import type { StatecaseClient } from "./client.js";
-import { isCompleteJsonlRecordSupersequence, mergeJsonlAppends } from "./append-merge.js";
+import { isCompleteJsonlRecordSupersequence } from "./append-merge.js";
+import { isCompleteJsonlFileRecordSupersequence, mergeJsonlAppendFiles } from "./append-merge-file.js";
 import { applyFileTransaction } from "./materialize.js";
-import { localizePortableSession, localizeWorkspaceUri, stagePortableSession } from "./session-stream.js";
+import {
+  inspectPortableSessionActivity,
+  localizePortableSession,
+  localizeWorkspaceUri,
+  stagePortableSession,
+} from "./session-stream.js";
 import { describeStagedJsonl, downloadVerifiedEntry, uploadStagedJsonl } from "./stream-transfer.js";
 
 const encoder = new TextEncoder();
@@ -500,36 +506,23 @@ export class SyncEngine {
             baseEntry.contentDigest === remoteEntry.contentDigest ||
             baseEntry.contentDigest === localEntry.contentDigest ||
             remoteEntry.contentDigest === localEntry.contentDigest) continue;
-        const [baseBytes, remoteBytes] = await Promise.all([
-          this.#downloadNamespaceEntry(baseEntry, keys),
-          this.#downloadNamespaceEntry(remoteEntry, keys),
-        ]);
-        const localBytes = file.bytes ?? (file.stagedPath && file.stagedSize !== undefined && file.stagedSize <= MAX_FILE_BYTES
-          ? await readFile(file.stagedPath)
-          : undefined);
-        if (!localBytes) continue;
-        const merged = mergeJsonlAppends(baseBytes, remoteBytes, localBytes);
-        if (merged.outcome !== "merged") continue;
-        file.bytes = merged.bytes;
-        file.stagedPath = undefined;
-        file.stagedSize = undefined;
-        encoded.streamedFiles.delete(file.logicalPath);
-        const workspace = file.session?.workspaceId
-          ? config.workspaces.find((candidate) => candidate.id === file.session!.workspaceId)
-          : undefined;
-        if (file.session && workspace) {
-          const localized = localizeSession(file.bytes, workspace.id, resolve(workspace.path));
-          file.session.activity = extractActivityReferences(scanCompleteJsonl(localized).records);
-        }
-        const objectIds: string[] = [];
-        for (const chunk of chunkBytes(file.bytes, CHUNK_POLICY)) {
-          const objectId = await computeObjectId(keys.dedupKey, chunk);
-          objectIds.push(objectId);
-          if (!encoded.plaintextChunks.has(objectId)) encoded.plaintextChunks.set(objectId, chunk);
-        }
-        const contentDigest = await computeObjectId(keys.dedupKey, file.bytes);
-        encoded.entries[localIndex] = { ...localEntry, objectIds, totalSize: file.bytes.byteLength, contentDigest };
-        encoded.digests[file.logicalPath] = contentDigest;
+        const merged = await this.#mergeStagedSessionAppend(baseEntry, remoteEntry, file, keys, config);
+        if (!merged) continue;
+        const previousDispose = file.dispose!;
+        file.stagedPath = merged.path;
+        file.stagedSize = merged.size;
+        file.dispose = async () => {
+          await Promise.all([previousDispose(), merged.dispose()]);
+        };
+        file.session!.activity = merged.activity;
+        encoded.entries[localIndex] = {
+          ...localEntry,
+          objectIds: merged.objectIds,
+          totalSize: merged.size,
+          contentDigest: merged.contentDigest,
+          chunking: { strategy: "jsonl-records", ...JSONL_CHUNK_POLICY },
+        };
+        encoded.digests[file.logicalPath] = merged.contentDigest;
         const paths = appendMergedPaths.get(namespace) ?? new Set<string>();
         paths.add(file.logicalPath);
         appendMergedPaths.set(namespace, paths);
@@ -923,9 +916,7 @@ export class SyncEngine {
         const currentDigest = await optionalFileDigest(item.path, await this.#scopeKeys(item.mapping.namespace));
         if (!currentDigest || currentDigest === item.digest) continue;
         const prior = config.applied[item.mapping.namespace]?.digests[item.logicalPath];
-        const [currentInfo, remoteInfo] = await Promise.all([lstat(item.path), lstat(remoteSourcePath)]);
-        const safeSessionMerge = currentInfo.size <= MAX_FILE_BYTES && remoteInfo.size <= MAX_FILE_BYTES &&
-          isCompleteJsonlRecordSupersequence(await readFile(item.path), await readFile(remoteSourcePath));
+        const safeSessionMerge = await isCompleteJsonlFileRecordSupersequence(item.path, remoteSourcePath);
         if (currentDigest !== prior && !safeSessionMerge) conflicts.push(item.path);
         continue;
       }
@@ -1144,29 +1135,65 @@ export class SyncEngine {
     if (coveredPaths.size !== manifest.entries.length + manifest.tombstones.length) throw new Error("namespace manifest path claims do not cover its content");
   }
 
-  async #downloadNamespaceEntry(
-    entry: NamespaceManifestV1["entries"][number],
+  async #mergeStagedSessionAppend(
+    baseEntry: NamespaceManifestV1["entries"][number],
+    remoteEntry: NamespaceManifestV1["entries"][number],
+    local: ScannedEntry,
     keys: { encryptionKey: Uint8Array; dedupKey: Uint8Array },
-  ): Promise<Uint8Array> {
-    if (entry.totalSize > MAX_FILE_BYTES) throw new Error("remote append candidate exceeds the local safety limit");
-    const chunks: Uint8Array[] = [];
-    let total = 0;
-    for (const objectId of entry.objectIds) {
-      const chunk = await decryptEnvelope({
-        envelope: await this.client.getNamespaceObject(this.vaultId, entry.namespace, objectId),
-        key: keys.encryptionKey,
-        dedupKey: keys.dedupKey,
-        expected: { vaultId: this.vaultId, scopeId: entry.namespace, compression: "none" },
+    config: LocalConfig,
+  ): Promise<{
+    path: string;
+    size: number;
+    objectIds: string[];
+    contentDigest: string;
+    activity: ActivityReference[];
+    dispose(): Promise<void>;
+  } | undefined> {
+    if (!local.stagedPath) throw new Error("streaming append merge requires a staged local session");
+    if (!local.session) throw new Error("streaming append merge requires session metadata");
+    const workspace = config.workspaces.find((candidate) => candidate.id === local.session!.workspaceId);
+    if (!workspace) throw new Error(`workspace ${local.session.workspaceId} is not mapped on this device`);
+    const downloaded: Array<Awaited<ReturnType<typeof downloadVerifiedEntry>>> = [];
+    try {
+      const base = await downloadVerifiedEntry({
+        objectIds: baseEntry.objectIds,
+        totalSize: baseEntry.totalSize,
+        contentDigest: baseEntry.contentDigest,
+        maximumSize: MAX_STREAMED_SESSION_BYTES,
+        keys,
+        vaultId: this.vaultId,
+        namespace: baseEntry.namespace,
+        getObject: (objectId) => this.client.getNamespaceObject(this.vaultId, baseEntry.namespace, objectId),
       });
-      total += chunk.byteLength;
-      if (total > MAX_FILE_BYTES || total > entry.totalSize) throw new Error("remote append candidate exceeds its declared size");
-      chunks.push(chunk);
+      downloaded.push(base);
+      const remote = await downloadVerifiedEntry({
+        objectIds: remoteEntry.objectIds,
+        totalSize: remoteEntry.totalSize,
+        contentDigest: remoteEntry.contentDigest,
+        maximumSize: MAX_STREAMED_SESSION_BYTES,
+        keys,
+        vaultId: this.vaultId,
+        namespace: remoteEntry.namespace,
+        getObject: (objectId) => this.client.getNamespaceObject(this.vaultId, remoteEntry.namespace, objectId),
+      });
+      downloaded.push(remote);
+      const merged = await mergeJsonlAppendFiles({
+        basePath: base.path,
+        remotePath: remote.path,
+        localPath: local.stagedPath,
+      });
+      if (merged.outcome === "diverged") return undefined;
+      try {
+        const described = await describeStagedJsonl(merged.path, keys.dedupKey, JSONL_CHUNK_POLICY);
+        const activity = await inspectPortableSessionActivity(merged.path, workspace.id, resolve(workspace.path));
+        return { ...merged, ...described, activity };
+      } catch (error) {
+        await merged.dispose();
+        throw error;
+      }
+    } finally {
+      await Promise.all(downloaded.map((item) => item.dispose()));
     }
-    const bytes = concatChunks(chunks);
-    if (bytes.byteLength !== entry.totalSize || await computeObjectId(keys.dedupKey, bytes) !== entry.contentDigest) {
-      throw new Error("downloaded append base failed content verification");
-    }
-    return bytes;
   }
 
   async #downloadManifest(objectId: string): Promise<VaultManifestV1> {

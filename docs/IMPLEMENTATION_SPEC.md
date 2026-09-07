@@ -26,8 +26,8 @@ single-use scoped capability grants, client-encrypted scope-key bootstrap, and
 rootless read+append synchronization. Full-key clients now deterministically
 merge bounded, complete-record same-session JSONL appends and rebuild their
 Session Capsule activity closure; rewrites and incompatible order fail closed.
-Sections covering multi-gigabyte streaming append merge, safe parsed text
-merge, retention pruning, in-place restore, and
+Sections covering scaled multi-gigabyte acceptance, safe parsed text merge,
+retention pruning, in-place restore, and
 initialized submodule hydration remain target requirements, not current claims.
 
 Persistent device identities, auth-session binding, device enumeration, and
@@ -759,9 +759,12 @@ partial records, prefix rewrites, and order cycles fail closed. The Worker sees
 only encrypted objects and authenticated manifest metadata. Scoped capability
 clients never use this same-path merge path. A merged publisher deliberately
 keeps its prior applied marker until a subsequent pull proves that the remote
-record stream retains every local occurrence in order. The current client
-implementation is bounded to 256 MiB and 100,000 records per merge input;
-constant-memory multi-gigabyte operation remains required by section 16.
+record stream retains every local occurrence in order. The client validates and
+copies the common base as a stream, compares both prefixes byte for byte, and
+holds only the two concurrent suffixes and their merge graph. Each suffix is
+bounded to 256 MiB and 100,000 records; total session history is bounded by the
+20-GiB session limit. The merged output and the accepting supersequence check
+are file-backed and record-streamed.
 
 No last-writer-wins rule is allowed for user content. Same-key R2 behavior is
 irrelevant to correctness because objects are immutable and the Durable Object
@@ -963,9 +966,13 @@ localizes portable paths record by record, then atomically installs the
 verified file-backed staging artifact. New empty vaults start directly on
 protocol 1.1; existing protocol 1.0 heads retain the fail-closed migration path.
 
-This completes the bounded transfer path, not the concurrent merge path:
-automatic three-way JSONL append merge remains limited to 256 MiB per input
-until suffix-only merge is implemented and separately accepted at 2 GiB.
+The concurrent merge path uses the same staging discipline. It downloads and
+authenticates base and remote versions one object at a time, validates the
+potentially multi-gigabyte base without retaining it, loads only the bounded
+branch suffixes, and emits base plus deterministic merged suffix to a new 0600
+staging file. A subsequent pull validates the local record stream as an ordered
+subsequence of the merged remote stream with two-record memory. Literal 2-GiB
+acceptance remains required before the scaled claim is released.
 
 ## 17. Failure behavior
 
