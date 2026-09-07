@@ -191,18 +191,20 @@ unbound harness JSONL. It stages records securely, hashes incrementally,
 encrypts/decrypts one 4 MiB object at a time, installs from a verified staged
 file, and skips remote content-addressed chunks during append. Automated
 multi-chunk transfer and paranoid integrity cases are green. The literal 2-GiB
-acceptance run remains outstanding. Concurrent append merge now validates and
-copies common history as a stream, retains only bounded branch suffixes, emits
-file-backed staging, and verifies the accepting pull record by record. All new
+acceptance run passed on Daytona with 514 initial objects, bounded two-object
+tail uploads, and convergence on both native paths. Concurrent append merge now
+validates and copies common history as a stream, retains only bounded branch
+suffixes, emits file-backed staging, and verifies the accepting pull record by
+record. All new
 plaintext staging paths preflight available temporary-disk capacity with a
 safety reserve and retain fail-clean semantics if capacity later changes. A
 Daytona object-backed temporary mount exposed and now has regression coverage
 for an empty temporary root disappearing between sync commands.
 
 Automated background steady state is not yet claimed. Real-OS daemon/service
-UAT, scaled 2-GiB streaming acceptance, automatic retention/in-place restore,
-post-revocation key rewrap, and complete historical Session Capsules remain
-blocking work for a public or unattended release.
+UAT, automatic retention/in-place restore, post-revocation key rewrap, and
+complete historical Session Capsules remain blocking work for a public or
+unattended release.
 
 The design is intentionally not called production-complete. Crypto selection,
 identity provider, exact compatibility matrix, and legal/commercial decisions

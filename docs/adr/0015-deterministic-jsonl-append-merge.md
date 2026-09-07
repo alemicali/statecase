@@ -92,8 +92,9 @@ device.
 
 The implementation temporarily downloads and decrypts authenticated base and
 remote session versions to owner-only staging. Temporary disk therefore needs
-space for those inputs and the merged output. Literal 2-GiB acceptance evidence
-is still required before qualifying real multi-gigabyte Codex histories.
+space for those inputs and the merged output. A real Daytona acceptance run
+qualified a 2,147,483,737-byte common history with two bounded tail uploads and
+verified convergence on both native paths.
 
 The local binding prevents a merge from creating a second native file while
 leaving the harness-owned original stale. Unsafe, adapter-incompatible, or

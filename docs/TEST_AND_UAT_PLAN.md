@@ -400,12 +400,16 @@ Current automated evidence covers segmentation-independent streaming chunks,
 incremental digest compatibility, secure staging cleanup, corrupt envelope and
 false size/digest rejection, file-backed atomic install, protocol descriptors,
 new-vault 1.1 bootstrap, and an end-to-end multi-chunk append proving that no
-previously present object ID is uploaded. `PERF-002` and the literal 2-GiB
-`PERF-003` run remain release acceptance tests. Automated file and two-device
-tests cover suffix-only concurrent merge over a streamed common base and the
-streaming supersequence acceptance check. Disk-space unit tests cover numeric
-and bigint filesystem counters, exact reserve boundaries, and invalid sizes;
-all staging paths also exercise the real filesystem preflight in integration.
+previously present object ID is uploaded. `PERF-002` remains a release
+acceptance test. `PERF-003` passed with a 2,147,483,737-byte session, 514
+initial objects, two-object append uploads, two-object concurrent-merge upload,
+and verified convergence on both native paths; see the
+[two-GiB Daytona UAT](uat/2026-09-07-two-gib-session-daytona.md). Automated file
+and two-device tests cover suffix-only concurrent merge over a streamed common
+base and the streaming supersequence acceptance check. Disk-space unit tests
+cover numeric and bigint filesystem counters, exact reserve boundaries, and
+invalid sizes; all staging paths also exercise the real filesystem preflight
+in integration.
 Regression coverage recreates a missing temporary root before allocation and
 removes the empty private staging directory when preflight capacity is
 insufficient.

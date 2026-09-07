@@ -50,8 +50,9 @@ Orphaned encrypted objects may remain after a failed commit and are safe for
 later garbage collection.
 
 Concurrent three-way append merge streams the common base and limits only each
-concurrent suffix to 256 MiB and 100,000 records. A literal 2-GiB acceptance
-test is still required before claiming full multi-gigabyte conflict merge.
+concurrent suffix to 256 MiB and 100,000 records. A real Daytona acceptance run
+qualified push, pull, concurrent merge, and two-device convergence with a
+2,147,483,737-byte session while each tail update uploaded only two objects.
 
 ## Security and privacy impact
 

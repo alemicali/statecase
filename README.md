@@ -44,9 +44,10 @@ through bounded secure staging, use record-aware 4 MiB chunks, and transfer only
 changed tail chunks. Concurrent append merge also streams and verifies the
 common history while retaining only bounded branch suffixes, and the accepting
 pull verifies record order as a stream. Staging preflights temporary-disk space
-and retains a safety reserve before copying plaintext. Remaining release gates
-include the scaled 2-GiB acceptance run, real-OS service UAT, initialized-submodule
-hydration, automatic retention/in-place restore, post-revocation key
+and retains a safety reserve before copying plaintext. A real Daytona run has
+qualified 2-GiB transfer and concurrent append merge. Remaining release gates
+include real-OS service UAT, initialized-submodule hydration, automatic
+retention/in-place restore, post-revocation key
 rewrapping, key rotation, and real-version Codex/Claude fixture certification.
 This is not yet a public-production release.
 
@@ -55,6 +56,7 @@ The approved direction lives in:
 - [Product strategy](docs/PRODUCT_STRATEGY.md)
 - [Implementation specification](docs/IMPLEMENTATION_SPEC.md)
 - [Test and UAT plan](docs/TEST_AND_UAT_PLAN.md)
+- [Two-GiB Daytona UAT](docs/uat/2026-09-07-two-gib-session-daytona.md)
 - [Threat model](docs/THREAT_MODEL.md)
 - [Readiness review](docs/READINESS_REVIEW.md)
 - [Operations](docs/OPERATIONS.md)

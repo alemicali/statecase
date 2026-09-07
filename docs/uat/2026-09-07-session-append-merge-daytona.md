@@ -103,6 +103,6 @@ prefix, D1 row, Cloudflare resource, or sandbox was modified.
 
 ## Remaining boundary
 
-This UAT qualifies the currently bounded merge profile. It does not satisfy the
-separate constant-memory, multi-gigabyte streaming requirement; that remains a
-release gate.
+This UAT qualifies the small-session behavioral merge matrix. The separate
+[two-GiB Daytona UAT](2026-09-07-two-gib-session-daytona.md) subsequently
+qualified bounded multi-gigabyte transfer and merge on the same live service.
