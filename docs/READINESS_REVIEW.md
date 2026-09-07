@@ -181,8 +181,12 @@ trusted same-path merge. Unit and in-memory two-device integration evidence is
 green. Device-local native session bindings now route the merged result back to
 the file each harness already owns, persist through supervised final flush and
 hydration, use a canonical fallback on fresh devices, and fail closed on unsafe
-or colliding destinations. Packaged cross-machine UAT and constant-memory
-multi-gigabyte handling remain outstanding.
+or colliding destinations. The packaged four-device Daytona run passed against
+the live Cloudflare service, including rejected rewrite, deterministic merge,
+dependency retention, native origin-path writeback, and absence of a duplicate
+canonical file. See the
+[same-session append merge UAT](uat/2026-09-07-session-append-merge-daytona.md).
+Constant-memory multi-gigabyte handling remains outstanding.
 
 Automated background steady state is not yet claimed. Real-OS daemon/service
 UAT, multi-gigabyte incremental session streaming, automatic retention/in-place restore,
