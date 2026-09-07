@@ -13,7 +13,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY . .
-RUN npm ci
+RUN npm ci --include=optional \
+    && test -x node_modules/@cloudflare/workerd-linux-64/bin/workerd
 RUN mkdir -p "$CODEX_HOME" "$CLAUDE_CONFIG_DIR" "$STATECASE_HOME" "$STATECASE_PACKAGE_SMOKE_ROOT"
 
 CMD ["sh", "-c", "npm run check && npm run cloud:test"]
