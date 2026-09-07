@@ -1,6 +1,8 @@
 import { chmod, constants, copyFile, lstat, mkdir, open, rename, rm, symlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
+import { assertTemporarySpace } from "./disk-space.js";
+
 interface MaterializedWriteBase {
   path: string;
   mode?: number;
@@ -46,6 +48,7 @@ export async function applyFileTransaction(transaction: FileTransaction): Promis
       await mkdir(dirname(target.path), { recursive: true, mode: 0o700 });
       target.staging = `${target.path}.statecase-transaction-${transactionId}.staged`;
       if (write.sourcePath === undefined) {
+        await assertTemporarySpace(dirname(target.staging), write.bytes.byteLength);
         const handle = await open(target.staging, "wx", 0o600);
         try {
           await handle.writeFile(write.bytes);
@@ -56,6 +59,7 @@ export async function applyFileTransaction(transaction: FileTransaction): Promis
       } else {
         const source = await lstat(write.sourcePath);
         if (!source.isFile()) throw new Error("file-backed transaction source is not a regular file");
+        await assertTemporarySpace(dirname(target.staging), source.size);
         await copyFile(write.sourcePath, target.staging, constants.COPYFILE_EXCL);
         const copied = await open(target.staging, "r");
         try { await copied.sync(); } finally { await copied.close(); }

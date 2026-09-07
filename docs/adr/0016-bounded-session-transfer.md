@@ -34,8 +34,9 @@ MiB. Existing protocol 1.0 heads keep their migration path.
 
 Every plaintext staging allocation first checks available blocks on the target
 temporary filesystem. The required copy count plus a 64-MiB safety reserve must
-fit. Capacity is rechecked as download, localization, and merge artifacts
-accumulate; this does not replace fail-clean handling if free space changes.
+fit. Capacity is rechecked as download, localization, merge, and atomic
+materialization artifacts accumulate; this does not replace fail-clean handling
+if free space changes.
 
 ## Consequences
 
