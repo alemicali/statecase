@@ -227,6 +227,123 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
     expect(await readFile(configPath, "utf8")).toBe(beforeInvalidMove);
   });
 
+  it("reports Drop revision alignment and removes only the device-local mapping (DR-003, DR-004)", async () => {
+    const home = await mkdtemp(join(tmpdir(), "statecase-cli-drop-lifecycle-"));
+    const source = join(home, "source");
+    const destination = join(home, "destination");
+    temporary.push(home);
+    await Promise.all([mkdir(source), mkdir(destination)]);
+    await writeFile(join(source, "context.txt"), "portable context\n");
+    await writeFile(join(destination, "existing.txt"), "do not overwrite\n");
+    process.env.STATECASE_HOME = join(home, "statecase-home");
+    process.env.STATECASE_API_URL = "https://remote.test";
+    process.env.STATECASE_TOKEN = "injected-token-value";
+    process.env.STATECASE_RECOVERY_PASSPHRASE = "correct horse battery staple";
+    const output: string[] = [];
+    const errors: string[] = [];
+    const remote = new CliRemote();
+    const io: CliIO = { stdout: (value) => output.push(value), stderr: (value) => errors.push(value), fetch: remote.fetch };
+
+    expect(await command(io, "--json", "login", "--non-interactive", "--device-name", "laptop")).toBe(0);
+    expect(await command(io, "--json", "vault", "create", "personal", "--recovery-file", join(home, "recovery.json"))).toBe(0);
+    expect(await command(io, "--json", "drop", "add", source, "--name", "knowledge", "--mode", "append")).toBe(0);
+    const added = JSON.parse(output.at(-1)!) as { id: string };
+    expect(await command(io, "--json", "push")).toBe(0);
+
+    expect(await command(io, "--json", "drop", "status", added.id)).toBe(0);
+    const current = JSON.parse(output.at(-1)!) as { drops: Array<Record<string, unknown>> };
+    expect(current.drops).toEqual([expect.objectContaining({
+      id: added.id,
+      name: "knowledge",
+      mode: "append",
+      path: source,
+      localState: "ready",
+      remoteRelation: "applied",
+      appliedRevisionId: expect.stringMatching(/^nrev_/u),
+      remoteRevisionId: expect.stringMatching(/^nrev_/u),
+    })]);
+
+    const configPath = join(process.env.STATECASE_HOME, "config.json");
+    const appliedAtSource = (JSON.parse(await readFile(configPath, "utf8")) as { applied: Record<string, unknown> }).applied[`drop:${added.id}`];
+    expect(await command(io, "--json", "drop", "map", added.id, source)).toBe(0);
+    const samePath = JSON.parse(await readFile(configPath, "utf8")) as { mappings: Array<{ id: string; name: string; mode: string; path: string }>; applied: Record<string, unknown> };
+    expect(samePath.mappings.find((mapping) => mapping.id === added.id)).toMatchObject({ name: "knowledge", mode: "append", path: source });
+    expect(samePath.applied[`drop:${added.id}`]).toEqual(appliedAtSource);
+
+    const namespace = `drop:${added.id}`;
+    const head = remote.namespaceHeads.get(namespace)!;
+    remote.namespaceHeads.set(namespace, { ...head, revisionId: "nrev_remote_advanced" });
+    expect(await command(io, "--json", "drop", "status", added.id)).toBe(0);
+    expect(JSON.parse(output.at(-1)!).drops).toEqual([expect.objectContaining({
+      id: added.id,
+      remoteRelation: "remote-ahead",
+      remoteRevisionId: "nrev_remote_advanced",
+    })]);
+
+    const beforeInvalidMode = await readFile(configPath, "utf8");
+    expect(await command(io, "--json", "drop", "map", added.id, source, "--mode", "surprise")).toBe(2);
+    expect(await readFile(configPath, "utf8")).toBe(beforeInvalidMode);
+
+    expect(await command(io, "--json", "drop", "map", added.id, destination)).toBe(0);
+    const remapped = JSON.parse(await readFile(configPath, "utf8")) as typeof samePath;
+    expect(remapped.mappings.find((mapping) => mapping.id === added.id)).toMatchObject({ name: "knowledge", mode: "append", path: destination });
+    expect(remapped.applied[namespace]).toBeUndefined();
+    expect(await command(io, "--json", "drop", "status", added.id)).toBe(0);
+    expect(JSON.parse(output.at(-1)!).drops).toEqual([expect.objectContaining({
+      id: added.id,
+      path: destination,
+      appliedRevisionId: null,
+      remoteRelation: "remote-ahead",
+    })]);
+
+    const missingPath = join(home, "not-materialized");
+    expect(await command(io, "--json", "drop", "map", "drop_missing", missingPath, "--name", "future")).toBe(0);
+    expect(await command(io, "--json", "drop", "status", "drop_missing")).toBe(0);
+    expect(JSON.parse(output.at(-1)!).drops).toEqual([expect.objectContaining({
+      id: "drop_missing",
+      localState: "missing",
+      appliedRevisionId: null,
+      remoteRevisionId: null,
+      remoteRelation: "uninitialized",
+    })]);
+    expect(await command(io, "--json", "drop", "remove", "drop_missing")).toBe(0);
+
+    const configWithVault = JSON.parse(await readFile(configPath, "utf8")) as { selectedVaultId: string };
+    const credentialsPath = join(process.env.STATECASE_HOME, "credentials.json");
+    const credentials = JSON.parse(await readFile(credentialsPath, "utf8")) as {
+      vaultKeys: Record<string, string>;
+      scopedVaults?: Record<string, unknown>;
+    };
+    credentials.vaultKeys = {};
+    credentials.scopedVaults = {
+      [configWithVault.selectedVaultId]: {
+        vaultId: configWithVault.selectedVaultId,
+        namespaces: ["drop:some_other_drop"],
+        actions: ["read"],
+        expiresAt: Date.now() + 60_000,
+        namespaceKeys: {},
+      },
+    };
+    await writeFile(credentialsPath, `${JSON.stringify(credentials, null, 2)}\n`);
+    expect(await command(io, "--json", "drop", "status", added.id)).toBe(0);
+    expect(JSON.parse(output.at(-1)!).drops).toEqual([expect.objectContaining({
+      id: added.id,
+      remoteRevisionId: null,
+      remoteRelation: "unauthorized",
+    })]);
+
+    expect(await command(io, "--json", "drop", "remove", added.id)).toBe(0);
+    expect(JSON.parse(output.at(-1)!)).toMatchObject({ id: added.id, path: destination, removed: true });
+    const removed = JSON.parse(await readFile(configPath, "utf8")) as { mappings: Array<{ id: string }>; applied: Record<string, unknown> };
+    expect(removed.mappings.find((mapping) => mapping.id === added.id)).toBeUndefined();
+    expect(removed.applied[namespace]).toBeUndefined();
+    expect(await readFile(join(source, "context.txt"), "utf8")).toBe("portable context\n");
+    expect(await readFile(join(destination, "existing.txt"), "utf8")).toBe("do not overwrite\n");
+    expect(remote.namespaceHeads.get(namespace)).toMatchObject({ revisionId: "nrev_remote_advanced" });
+    expect(await command(io, "--json", "drop", "status", added.id)).toBe(2);
+    expect(await command(io, "--json", "drop", "remove", added.id)).toBe(2);
+  });
+
   it("runs an unmodified harness offline and preserves its exit code (RT-002, RT-004, RT-011)", async () => {
     const home = await mkdtemp(join(tmpdir(), "statecase-cli-run-"));
     temporary.push(home);

@@ -146,6 +146,10 @@ regression ID.
 - `DR-001`: Drop relative paths round-trip across separators and filesystem
   case rules.
 - `DR-002`: publish/consume/append/two-way modes reject forbidden mutations.
+- `DR-003`: removing a Drop deletes only its device-local mapping and applied
+  marker; local files and the encrypted remote namespace remain unchanged.
+- `DR-004`: Drop status reports local-root availability and applied-versus-head
+  revision alignment without claiming to have scanned local file changes.
 
 ## 5. Adapter fixture tests
 

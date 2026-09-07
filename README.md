@@ -122,6 +122,11 @@ If a checkout moves later, use `workspace move <id> <new-path>`; use
 `workspace detach <id>` to stop mapping it on that device. Both commands leave
 the checkout and cloud namespace untouched. A changed path invalidates the
 local applied marker so the next pull must verify and hydrate the destination.
+Drops have the corresponding device-local lifecycle commands: `drop status
+[id]` reports root availability and applied-versus-remote revision alignment,
+while `drop remove <id>` forgets only the local mapping. It never deletes the
+directory or its encrypted remote namespace. Status is deliberately fast: an
+`applied` result does not claim that unscanned local files are unchanged.
 Use the generated shims, the installed daemon, or invoke `statecase run codex
 -- <args>` / `statecase run claude -- <args>` explicitly.
 `statecase bypass codex -- <args>` starts the recorded real executable without

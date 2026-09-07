@@ -644,6 +644,8 @@ A Drop is a logical tree selected by the user:
 ```bash
 statecase drop add ~/agent-material --name agent-material
 statecase drop map agent-material /srv/agent-material
+statecase drop status agent-material
+statecase drop remove agent-material
 ```
 
 Each Drop has an ID, display name, device-local root mapping, category/scope
@@ -662,6 +664,14 @@ validated encoding exist. All other conflicts preserve both variants with
 device/revision metadata. Case collisions, Unicode normalization collisions,
 reserved Windows names, and path-length incompatibilities block
 materialization and appear in `statecase conflicts`.
+
+`drop status [dropId]` is a bounded metadata check: it reports whether the
+device-local root is available and compares the locally applied namespace
+revision with the visible remote head. `applied` therefore means revision-head
+alignment, not that local content was scanned for pending changes. A scoped
+client reports an ungranted namespace as `unauthorized`, never as an absent
+remote Drop. `drop remove` removes only the device-local mapping and applied
+marker; it does not delete local files or the encrypted remote namespace.
 
 ## 10. Sync protocol
 

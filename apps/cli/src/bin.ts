@@ -342,25 +342,77 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
     });
 
   const drop = program.command("drop").description("map arbitrary synchronized directories");
-  drop.command("add <path>").requiredOption("--name <name>").option("--mode <mode>", "two-way, publish, consume, or append", "two-way").action(async (path: string, options: { name: string; mode: RootMapping["mode"] }) => {
-    if (!new Set(["two-way", "publish", "consume", "append"]).has(options.mode)) throw new StatecaseUsageError("invalid Drop mode", 2);
+  drop.command("add <path>").requiredOption("--name <name>").option("--mode <mode>", "two-way, publish, consume, or append", "two-way").action(async (path: string, options: { name: string; mode: string }) => {
+    const mode = parseDropMode(options.mode);
     const config = normalizeConfig(await store.loadConfig());
     const id = randomLocalId("drop");
-    config.mappings.push({ id, kind: "drop", mode: options.mode, name: options.name, namespace: `drop:${id}`, path: resolve(path) });
+    config.mappings.push({ id, kind: "drop", mode, name: options.name, namespace: `drop:${id}`, path: resolve(path) });
     await store.saveConfig(config);
-    emit(io, program, { id, name: options.name, path: resolve(path), mode: options.mode }, `Added Drop ${options.name} (${id})`);
+    emit(io, program, { id, name: options.name, path: resolve(path), mode }, `Added Drop ${options.name} (${id})`);
   });
-  drop.command("map <dropId> <path>").option("--name <name>").option("--mode <mode>", "mapping mode", "two-way").action(async (dropId: string, path: string, options: { name?: string; mode: RootMapping["mode"] }) => {
+  drop.command("map <dropId> <path>").option("--name <name>").option("--mode <mode>", "mapping mode").action(async (dropId: string, path: string, options: { name?: string; mode?: string }) => {
     const config = normalizeConfig(await store.loadConfig());
-    config.mappings = config.mappings.filter((item) => item.id !== dropId);
-    config.mappings.push({ id: dropId, kind: "drop", mode: options.mode, name: options.name ?? dropId, namespace: `drop:${dropId}`, path: resolve(path) });
+    const previous = config.mappings.find((item) => item.kind === "drop" && item.id === dropId);
+    const mode = parseDropMode(options.mode ?? previous?.mode ?? "two-way");
+    const resolvedPath = resolve(path);
+    if (previous && resolve(previous.path) !== resolvedPath) delete config.applied[previous.namespace];
+    config.mappings = config.mappings.filter((item) => item.kind !== "drop" || item.id !== dropId);
+    config.mappings.push({ id: dropId, kind: "drop", mode, name: options.name ?? previous?.name ?? dropId, namespace: `drop:${dropId}`, path: resolvedPath });
     await store.saveConfig(config);
-    emit(io, program, { id: dropId, path: resolve(path), mode: options.mode }, `Mapped ${dropId} to ${resolve(path)}`);
+    emit(io, program, { id: dropId, path: resolvedPath, mode }, `Mapped ${dropId} to ${resolvedPath}`);
   });
   drop.command("list").action(async () => {
     const mappings = normalizeConfig(await store.loadConfig()).mappings.filter((item) => item.kind === "drop");
     emit(io, program, { drops: mappings }, mappings.map((item) => `${item.id}\t${item.mode}\t${item.path}`).join("\n") || "No Drops");
   });
+  drop.command("remove <dropId>")
+    .description("remove a device-local Drop mapping without deleting files or cloud state")
+    .action(async (dropId: string) => {
+      const config = normalizeConfig(await store.loadConfig());
+      const index = config.mappings.findIndex((item) => item.kind === "drop" && item.id === dropId);
+      if (index < 0) throw new StatecaseUsageError(`Drop is not mapped on this device: ${dropId}`, 2);
+      const [removed] = config.mappings.splice(index, 1);
+      delete config.applied[removed!.namespace];
+      await store.saveConfig(config);
+      emit(io, program, { id: dropId, path: resolve(removed!.path), removed: true }, `Removed Drop ${dropId} mapping; local files and cloud state were not changed`);
+    });
+  drop.command("status [dropId]")
+    .description("compare local Drop availability and applied revisions with remote heads")
+    .action(async (dropId?: string) => {
+      const localConfig = normalizeConfig(await store.loadConfig());
+      const selected = localConfig.mappings.filter((item) => item.kind === "drop" && (!dropId || item.id === dropId));
+      if (dropId && selected.length === 0) throw new StatecaseUsageError(`Drop is not mapped on this device: ${dropId}`, 2);
+      const { config, secrets, client } = await requireSession(store, io.fetch);
+      const vaultId = selectedVault(config, secrets);
+      const scoped = secrets.scopedVaults?.[vaultId];
+      const fullAccess = Boolean(secrets.vaultKeys[vaultId]);
+      const remotelyVisible = selected.filter((mapping) => fullAccess || scoped?.namespaces.includes(mapping.namespace));
+      const heads = remotelyVisible.length > 0
+        ? new Map((await client.namespaceHeads(vaultId)).namespaces.map((head) => [head.namespace, head.revisionId]))
+        : new Map<string, string>();
+      const statuses = await Promise.all(selected.map(async (mapping) => {
+        const appliedRevisionId = config.applied[mapping.namespace]?.revisionId ?? null;
+        const authorized = fullAccess || Boolean(scoped?.namespaces.includes(mapping.namespace));
+        const remoteRevisionId = authorized ? heads.get(mapping.namespace) ?? null : null;
+        const remoteRelation = !authorized
+          ? "unauthorized"
+          : remoteRevisionId === null
+            ? appliedRevisionId === null ? "uninitialized" : "remote-missing"
+            : remoteRevisionId === appliedRevisionId ? "applied" : "remote-ahead";
+        return {
+          id: mapping.id,
+          name: mapping.name,
+          mode: mapping.mode,
+          namespace: mapping.namespace,
+          path: resolve(mapping.path),
+          localState: await dropLocalState(mapping.path),
+          appliedRevisionId,
+          remoteRevisionId,
+          remoteRelation,
+        };
+      }));
+      emit(io, program, { drops: statuses }, statuses.map((status) => `${status.id}\t${status.localState}\t${status.remoteRelation}\t${status.path}`).join("\n") || "No Drops");
+    });
 
   const workspace = program.command("workspace").description("map logical projects independently of absolute paths");
   workspace.command("attach")
@@ -776,6 +828,20 @@ function normalizeConfig(config: LocalConfig): LocalConfig {
 async function isGitWorkingTree(path: string): Promise<boolean> {
   return promisify(execFile)("git", ["-C", path, "rev-parse", "--is-inside-work-tree"], { encoding: "utf8" })
     .then(({ stdout }) => stdout.trim() === "true", () => false);
+}
+
+function parseDropMode(value: string): RootMapping["mode"] {
+  if (value === "two-way" || value === "publish" || value === "consume" || value === "append") return value;
+  throw new StatecaseUsageError("Drop mode must be two-way, publish, consume, or append", 2);
+}
+
+async function dropLocalState(path: string): Promise<"ready" | "missing" | "not-directory"> {
+  try {
+    return (await lstat(path)).isDirectory() ? "ready" : "not-directory";
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "missing";
+    throw error;
+  }
 }
 
 function emit(io: CliIO, program: Command, data: unknown, human: string): void {

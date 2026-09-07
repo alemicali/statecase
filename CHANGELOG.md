@@ -36,6 +36,10 @@ All notable changes to Statecase will be documented here.
   commands. Neither command moves or deletes files or cloud state; changed-path
   bindings clear stale applied markers and path collisions fail without
   modifying configuration.
+- Completed the Drop CLI lifecycle with `drop remove` and remote-aware `drop
+  status`. Removal is local-only, remapping invalidates stale applied state,
+  invalid modes fail before configuration mutation, and scoped clients report
+  unauthorized namespaces without presenting them as absent.
 - Added per-device `ask|auto|never` Git baseline acquisition. Auto mode obtains
   missing commits from the checkout's existing `origin` with bounded,
   non-interactive system Git; shallow clones are supported, raw remote errors
