@@ -209,6 +209,9 @@ recorded closure rather than pulling whichever workspace happens to be latest:
 reports baseline/ref and aggregate record/blob sizes without printing captured
 file bytes or changing Statecase configuration. `workspace dependencies`
 inspects the distinct immutable Session Capsules already stored remotely.
+Capsules may pin the harness, workspace, and individual Drops to different
+vault checkpoints; hydration composes those exact namespace revisions and
+materializes them atomically instead of substituting current heads.
 
 `warn` reports a partial resume with exit code `8`; `best-effort` is available
 only as an explicit acceptance of missing context. Map a reported external

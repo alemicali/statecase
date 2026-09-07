@@ -31,9 +31,12 @@ Ignored, excluded, deleted, or otherwise absent content remains visible as an
 unresolved dependency and is not silently uploaded. The CLI exposes inspection
 through `statecase workspace dependencies` and exact historical materialization
 through `statecase workspace hydrate --session ...`. Hydration modes are
-`strict`, `warn`, and explicitly accepted `best-effort`. The initial writer
-creates an atomic closure whose components share one vault revision; a client
-fails closed if it encounters a multi-revision closure it cannot yet hydrate.
+`strict`, `warn`, and explicitly accepted `best-effort`. Harness, workspace,
+and Drop pins may refer to different immutable vault checkpoints. The client
+resolves and authenticates each pinned namespace chain, composes only those
+namespace states, and sends them through one local filesystem/Git transaction.
+A missing revision, namespace, manifest, or content object fails before any
+target is changed.
 
 ## Consequences
 
@@ -50,4 +53,7 @@ Protocol tests reject malformed dependency identities. Adapter tests cover
 provider event variants, malformed arguments, narrative false positives,
 duplicates, and unsafe relative paths. The two-device sync test proves clean
 Git reads, overlays, Drops, excluded files, external paths, strict failure, and
-historical hydration after the remote head has advanced.
+historical hydration after the remote head has advanced. It also constructs
+independent harness/workspace/Drop pins, verifies exact applied namespace
+revision IDs, proves dry-run is non-mutating, and injects a missing pinned
+object to prove the combined apply is atomic.

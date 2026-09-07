@@ -711,7 +711,6 @@ export class SyncEngine {
       report.workspace.capsuleRevisionId,
       ...report.drops.map((drop) => drop.revisionId),
     ]);
-    if (pinnedRevisions.size !== 1) throw new Error("multi-revision session hydration is not supported by this client version");
 
     const warnings = report.dependencies
       .filter((dependency) => dependency.required && dependency.status === "unresolved")
@@ -733,13 +732,89 @@ export class SyncEngine {
       .filter((mapping) => mapping.namespace === report.harness.namespace || (mapping.kind === "drop" && dropIds.has(mapping.id)))
       .map((mapping) => ({ ...mapping, mode: "consume" as const }));
     scoped.workspaces = workspace ? [{ ...workspace, sync: "git" }] : [];
-    const revisionId = [...pinnedRevisions][0]!;
-    const result = await this.pull(scoped, options.dryRun ?? false, revisionId);
+    const result = pinnedRevisions.size === 1
+      ? await this.pull(scoped, options.dryRun ?? false, [...pinnedRevisions][0]!)
+      : await this.#hydratePinnedNamespaces(scoped, report, options.dryRun ?? false);
     if (!options.dryRun) {
       for (const [namespace, applied] of Object.entries(scoped.applied)) config.applied[namespace] = applied;
       config.sessionBindings = scoped.sessionBindings;
     }
     return { result, report, warnings };
+  }
+
+  async #hydratePinnedNamespaces(
+    config: LocalConfig,
+    report: DependencyReport,
+    dryRun: boolean,
+  ): Promise<SyncResult> {
+    const pins = new Map<string, string>();
+    const addPin = (namespace: string, revisionId: string): void => {
+      const existing = pins.get(namespace);
+      if (existing && existing !== revisionId) throw new Error(`session capsule has conflicting pins for namespace ${namespace}`);
+      pins.set(namespace, revisionId);
+    };
+    addPin(report.harness.namespace, report.harnessRevisionId);
+    addPin(`workspace:${report.workspace.workspaceId}`, report.workspace.capsuleRevisionId);
+    for (const drop of report.drops) addPin(`drop:${drop.dropId}`, drop.revisionId);
+
+    const selected = [...config.mappings.filter((mapping) => mapping.mode !== "publish"), ...workspaceMappings(config)];
+    const selectedNamespaces = new Set(selected.map((mapping) => mapping.namespace));
+    const pointers = new Map<string, Awaited<ReturnType<StatecaseClient["scopedRevision"]>>>();
+    const entries: VaultManifestV1["entries"] = [];
+    const tombstones: VaultManifestV1["tombstones"] = [];
+    const conflicts: VaultManifestV1["conflicts"] = [];
+    const sessionCapsules = new Map<string, SessionCapsuleV1>();
+    const appliedRevisions = new Map<string, string>();
+    let manifestObjects = 0;
+
+    for (const [namespace, revisionId] of pins) {
+      if (!selectedNamespaces.has(namespace)) continue;
+      let pointer = pointers.get(revisionId);
+      if (!pointer) {
+        pointer = await this.client.scopedRevision(this.vaultId, revisionId);
+        if (pointer.revisionId !== revisionId) throw new Error("pinned scoped revision does not match its request");
+        pointers.set(revisionId, pointer);
+      }
+      const head = pointer.namespaces.find((candidate) => candidate.namespace === namespace);
+      if (!head) throw new Error(`pinned namespace revision is unavailable: ${namespace}`);
+      const resolved = await this.#resolveNamespaceManifest(head);
+      manifestObjects += resolved.manifestObjects;
+      appliedRevisions.set(namespace, head.revisionId);
+      entries.push(...resolved.manifest.entries);
+      tombstones.push(...resolved.manifest.tombstones);
+      conflicts.push(...resolved.manifest.conflicts);
+      for (const capsule of resolved.manifest.sessionCapsules ?? []) {
+        sessionCapsules.set(capsule.sessionKey, capsule);
+      }
+    }
+
+    const combined: VaultManifestV1 = {
+      schemaVersion: 1,
+      vaultId: this.vaultId,
+      revisionId: report.harnessRevisionId,
+      parentRevisionIds: [],
+      createdAt: report.createdAt,
+      createdByDeviceId: report.createdByDeviceId,
+      operationId: `hydrate_${report.sessionCapsuleId}`,
+      entries: entries.sort(compareEntries),
+      tombstones: tombstones.sort((left, right) => left.namespace.localeCompare(right.namespace, "en") || left.logicalPath.localeCompare(right.logicalPath, "en")),
+      conflicts,
+      sessionCapsules: [...sessionCapsules.values()].sort((left, right) => left.sessionKey.localeCompare(right.sessionKey, "en")),
+    };
+    return this.#materializeManifest(
+      config,
+      dryRun,
+      report.harnessRevisionId,
+      combined,
+      selected,
+      manifestObjects,
+      (namespace, objectId) => this.client.getNamespaceObject(this.vaultId, namespace, objectId),
+      (namespace) => {
+        const revisionId = appliedRevisions.get(namespace);
+        if (!revisionId) throw new Error(`pinned namespace revision is unavailable: ${namespace}`);
+        return revisionId;
+      },
+    );
   }
 
   async pull(config: LocalConfig, dryRun = false, historicalRevisionId?: string): Promise<SyncResult> {
@@ -783,6 +858,7 @@ export class SyncEngine {
     const materialized: MaterializedEntry[] = [];
     const deletions: Array<{ mapping: RootMapping; path: string; logicalPath: string }> = [];
     const workspacePayloads = new Map<string, { mapping: RootMapping; capsule?: CapturedWorkspace["capsule"]; blobs: WorkspaceBlob[] }>();
+    const incompleteNamespaces = new Set<string>();
     let objectCount = manifestObjectCount;
     let byteCount = 0;
     const stagedDisposers: Array<() => Promise<void>> = [];
@@ -798,7 +874,10 @@ export class SyncEngine {
         const workspace = portable
           ? config.workspaces.find((candidate) => candidate.id === portable.workspaceId)
           : undefined;
-        if (portable && !workspace) continue;
+        if (portable && !workspace) {
+          incompleteNamespaces.add(entry.namespace);
+          continue;
+        }
         const staged = await downloadVerifiedEntry({
           objectIds: entry.objectIds,
           totalSize: entry.totalSize,
@@ -885,6 +964,11 @@ export class SyncEngine {
     for (const tombstone of manifest.tombstones) {
       const mapping = byNamespace.get(tombstone.namespace);
       if (!mapping) continue;
+      const portable = portableSession(tombstone.logicalPath);
+      if (portable && mapping.kind !== "drop" && !config.workspaces.some((candidate) => candidate.id === portable.workspaceId)) {
+        incompleteNamespaces.add(tombstone.namespace);
+        continue;
+      }
       deletions.push({
         mapping,
         path: sessionDestination(mapping, tombstone.logicalPath, config),
@@ -951,6 +1035,7 @@ export class SyncEngine {
       { materialize: applyFileTransaction },
     );
     for (const mapping of selected) {
+      if (incompleteNamespaces.has(mapping.namespace)) continue;
       const digests: Record<string, string> = {};
       for (const item of materialized.filter((candidate) => candidate.mapping.namespace === mapping.namespace)) {
         digests[item.logicalPath] = item.digest;

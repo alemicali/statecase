@@ -57,6 +57,8 @@ statecase --json workspace hydrate --session <sessionCapsuleId> --mode strict
 
 Use `strict` for unattended work. In an interactive workflow, `warn` may materialize the available closure and exits `8` when dependencies remain unresolved; explain those paths before launching the harness. Use `best-effort` only when the operator explicitly accepts an incomplete context. An external dependency must be mapped as a Drop and checkpointed; never copy it ad hoc.
 
+Treat the capsule as the authority even when its harness, workspace, and Drops pin different revision IDs. The CLI authenticates and atomically composes those historical namespace states; never replace a pinned revision with the current head.
+
 ## Error policy
 
 - Exit `3`: authentication or enrollment is required; ask the operator to complete it outside chat.

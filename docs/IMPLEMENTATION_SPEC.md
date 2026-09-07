@@ -19,8 +19,8 @@ and uninitialized gitlinks. Durable revision pointers, protected snapshots,
 and selective restore to a staging target are implemented. Content-addressed
 three-way merge handles disjoint/identical namespace changes and preserves
 same-path conflicts; workspace transports are atomic and append-only mappings
-cannot mutate prior paths. Immutable Session Capsules and historical closure
-hydration are implemented. Protocol 1.1 provides namespace-isolated R2
+cannot mutate prior paths. Immutable Session Capsules and atomic multi-revision
+historical closure hydration are implemented. Protocol 1.1 provides namespace-isolated R2
 objects, immutable per-namespace revision chains, atomic namespace heads,
 single-use scoped capability grants, client-encrypted scope-key bootstrap, and
 rootless read+append synchronization. Full-key clients now deterministically

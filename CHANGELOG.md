@@ -8,6 +8,10 @@ All notable changes to Statecase will be documented here.
   Cloudflare service in Daytona: a 2,147,483,737-byte Codex JSONL round trip,
   two bounded tail uploads, deterministic concurrent append merge, and
   convergence on both devices' native paths.
+- Completed multi-revision Session Capsule hydration. Harness, workspace, and
+  Drop namespaces are resolved from their independently pinned encrypted
+  revision chains, validated before mutation, and applied in one atomic local
+  transaction; dry-run and missing-object failure remain non-mutating.
 - Added bounded-memory session transfer for Codex and Claude JSONL: secure
   record-by-record staging, incremental keyed digests, deterministic 4 MiB
   record-aware chunks, manifest chunking descriptors, one-envelope-at-a-time

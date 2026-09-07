@@ -186,6 +186,10 @@ the live Cloudflare service, including rejected rewrite, deterministic merge,
 dependency retention, native origin-path writeback, and absence of a duplicate
 canonical file. See the
 [same-session append merge UAT](uat/2026-09-07-session-append-merge-daytona.md).
+Session hydration now also resolves harness, workspace, and Drop namespaces
+from independently pinned vault checkpoints and applies their authenticated
+state in one filesystem/Git transaction. Multi-revision dry-run and a missing
+pinned object are verified non-mutating.
 Bounded-memory push/pull is now implemented for both workspace-bound and
 unbound harness JSONL. It stages records securely, hashes incrementally,
 encrypts/decrypts one 4 MiB object at a time, installs from a verified staged
@@ -203,7 +207,7 @@ for an empty temporary root disappearing between sync commands.
 
 Automated background steady state is not yet claimed. Real-OS daemon/service
 UAT, automatic retention/in-place restore, post-revocation key rewrap, and
-complete historical Session Capsules remain blocking work for a public or
+real harness-version compatibility remain blocking work for a public or
 unattended release.
 
 The design is intentionally not called production-complete. Crypto selection,

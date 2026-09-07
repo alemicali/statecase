@@ -354,7 +354,28 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
       logicalPath: "portable-sessions/ws_missing/unmapped.jsonl",
       bytes: portableBytes,
     });
-    expect(await engineFor(missingWorkspace).pull(local("unmapped"))).toMatchObject({ outcome: "pulled", files: 0 });
+    const missingWorkspaceConfig = local("unmapped");
+    expect(await engineFor(missingWorkspace).pull(missingWorkspaceConfig)).toMatchObject({ outcome: "pulled", files: 0 });
+    expect(missingWorkspaceConfig.applied[namespace]).toBeUndefined();
+
+    const missingWorkspaceTombstone = new MemoryRemote();
+    const tombstonePath = "portable-sessions/ws_missing/deleted.jsonl";
+    const tombstoneManifest = namespaceManifest("nrev_missing_workspace_tombstone", "snapshot", []);
+    tombstoneManifest.namespace = namespace;
+    tombstoneManifest.tombstones.push({ namespace, logicalPath: tombstonePath, deletedAt: "2026-09-07T10:00:00.000Z" });
+    const tombstoneKeys = await deriveScopeKey(rootKey, namespace);
+    tombstoneManifest.pathClaims.push({ pathId: await testPathId(tombstoneKeys.dedupKey, tombstonePath), mutation: "delete" });
+    const tombstoneObject = await storeNamespaceManifest(missingWorkspaceTombstone, rootKey, tombstoneManifest);
+    missingWorkspaceTombstone.namespaceHeads.set(namespace, {
+      namespace,
+      revisionId: tombstoneManifest.namespaceRevisionId,
+      manifestObjectId: tombstoneObject,
+    });
+    missingWorkspaceTombstone.scopedRevisionId = "srev_missing_workspace_tombstone";
+    const missingWorkspaceTombstoneConfig = local("unmapped-tombstone");
+    expect(await engineFor(missingWorkspaceTombstone).pull(missingWorkspaceTombstoneConfig))
+      .toMatchObject({ outcome: "pulled", files: 0 });
+    expect(missingWorkspaceTombstoneConfig.applied[namespace]).toBeUndefined();
 
     const normal = new MemoryRemote();
     await publishStreamFixture(normal, rootKey, {
@@ -518,7 +539,7 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     await expect(engine.hydrate(local, "cap_missing", { mode: "strict", dryRun: true })).rejects.toThrow("session capsule not found");
 
     await writeFile(join(drop, "brief.md"), "newer brief that the old session never saw\n");
-    await engine.push(local);
+    const dropAdvanced = await engine.push(local);
     const retained = (await engine.dependencies())[0]!;
     expect(retained.harnessRevisionId).toBe(pushed.revisionId);
 
@@ -546,6 +567,9 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     expect(await readFile(join(targetWorkspace, "changed.txt"), "utf8")).toBe("uncommitted context\n");
     expect(targetConfig.sessionBindings?.[sessionBindingKey("harness:codex:default", "portable-sessions/ws_project/native-01.jsonl")])
       .toBe("sessions/statecase/ws_project/native-01.jsonl");
+    const targetDropKeys = await deriveScopeKey(key, "drop:drop_reference");
+    expect(targetConfig.applied["drop:drop_reference"]?.digests["brief.md"])
+      .toBe(await computeObjectId(targetDropKeys.dedupKey, new TextEncoder().encode("portable brief\n")));
 
     await writeFile(join(harness, "sessions", "2026", "native-01.jsonl"), `${session.concat([
       { type: "tool_call", name: "read_file", arguments: { path: "changed.txt" } },
@@ -555,6 +579,127 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     expect(updated.harnessRevisionId).toBe(scopedPush.revisionId);
     expect(updated.workspace.capsuleRevisionId).toBe(scopedPush.revisionId);
     expect(updated.dependencies.find((dependency) => dependency.logicalPath === "changed.txt")).toMatchObject({ status: "resolved" });
+
+    await rewriteCurrentCapsulePins(remote, key, updated.sessionCapsuleId, {
+      workspaceRevisionId: pushed.revisionId!,
+      dropRevisionIds: { drop_reference: dropAdvanced.revisionId! },
+    });
+    const multiRevision = (await engine.dependencies()).find((report) => report.sessionCapsuleId === updated.sessionCapsuleId)!;
+    expect(new Set([
+      multiRevision.harnessRevisionId,
+      multiRevision.workspace.capsuleRevisionId,
+      ...multiRevision.drops.map((item) => item.revisionId),
+    ]).size).toBe(3);
+
+    const multiTargetHarness = join(base, "multi-target-codex");
+    const multiTargetWorkspace = join(base, "multi-target-project");
+    const multiTargetDrop = join(base, "multi-target-reference");
+    await Promise.all([mkdir(multiTargetHarness), mkdir(multiTargetDrop)]);
+    await runFile("git", ["clone", "-q", workspace, multiTargetWorkspace]);
+    const multiTargetConfig: LocalConfig = {
+      ...targetConfig,
+      mappings: targetConfig.mappings.map((mapping) => ({
+        ...mapping,
+        path: mapping.kind === "drop" ? multiTargetDrop : multiTargetHarness,
+      })),
+      workspaces: [{ id: "ws_project", path: multiTargetWorkspace }],
+      applied: {},
+      sessionBindings: {},
+    };
+    await expect(engine.hydrate(multiTargetConfig, multiRevision.sessionCapsuleId, { mode: "warn", dryRun: true }))
+      .resolves.toMatchObject({ result: { outcome: "pulled", revisionId: scopedPush.revisionId } });
+    await expect(readFile(join(multiTargetDrop, "brief.md"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(join(multiTargetWorkspace, "changed.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(join(multiTargetHarness, "sessions", "statecase", "ws_project", "native-01.jsonl")))
+      .rejects.toMatchObject({ code: "ENOENT" });
+
+    const multiHydrated = await engine.hydrate(multiTargetConfig, multiRevision.sessionCapsuleId, { mode: "warn" });
+    expect(multiHydrated.result).toMatchObject({ outcome: "pulled", revisionId: scopedPush.revisionId });
+    expect(await readFile(join(multiTargetDrop, "brief.md"), "utf8")).toBe("newer brief that the old session never saw\n");
+    expect(await readFile(join(multiTargetWorkspace, "changed.txt"), "utf8")).toBe("uncommitted context\n");
+    const hydratedSession = await readFile(join(multiTargetHarness, "sessions", "statecase", "ws_project", "native-01.jsonl"), "utf8");
+    expect(hydratedSession).toContain(JSON.stringify({ type: "tool_call", name: "read_file", arguments: { path: "changed.txt" } }));
+    for (const [namespace, revisionId] of [
+      ["harness:codex:default", scopedPush.revisionId],
+      ["workspace:ws_project", pushed.revisionId],
+      ["drop:drop_reference", dropAdvanced.revisionId],
+    ] as const) {
+      const scoped = remote.scopedRevisions.get(revisionId!)!;
+      expect(multiTargetConfig.applied[namespace]?.revisionId)
+        .toBe(scoped.namespaces.find((head) => head.namespace === namespace)?.revisionId);
+    }
+
+    const partialHarness = join(base, "partial-target-codex");
+    await mkdir(partialHarness);
+    const partialConfig: LocalConfig = {
+      ...multiTargetConfig,
+      mappings: multiTargetConfig.mappings.filter((mapping) => mapping.kind !== "drop")
+        .map((mapping) => ({ ...mapping, path: partialHarness })),
+      workspaces: [],
+      applied: {},
+      sessionBindings: {},
+    };
+    await expect(engine.hydrate(partialConfig, multiRevision.sessionCapsuleId, { mode: "best-effort" }))
+      .resolves.toMatchObject({ warnings: expect.arrayContaining(["mapping:workspace:ws_project", "mapping:drop:drop_reference"]) });
+    expect(partialConfig.applied["harness:codex:default"]).toBeUndefined();
+    await expect(readFile(join(partialHarness, "sessions", "statecase", "ws_project", "native-01.jsonl")))
+      .rejects.toMatchObject({ code: "ENOENT" });
+
+    await rewriteCurrentCapsulePins(remote, key, updated.sessionCapsuleId, {
+      workspaceRevisionId: pushed.revisionId!,
+      dropRevisionIds: { drop_reference: pushed.revisionId! },
+    });
+    const sharedPinReport = (await engine.dependencies()).find((report) => report.sessionCapsuleId === updated.sessionCapsuleId)!;
+    const sharedWorkspace = join(base, "shared-pin-project");
+    const sharedDrop = join(base, "shared-pin-reference");
+    await mkdir(sharedDrop);
+    await runFile("git", ["clone", "-q", workspace, sharedWorkspace]);
+    const sharedConfig: LocalConfig = {
+      ...multiTargetConfig,
+      mappings: multiTargetConfig.mappings.filter((mapping) => mapping.kind === "drop")
+        .map((mapping) => ({ ...mapping, path: sharedDrop })),
+      workspaces: [{ id: "ws_project", path: sharedWorkspace }],
+      applied: {},
+      sessionBindings: {},
+    };
+    await expect(engine.hydrate(sharedConfig, sharedPinReport.sessionCapsuleId, { mode: "best-effort", dryRun: true }))
+      .resolves.toMatchObject({ result: { outcome: "pulled" } });
+    const sharedPointer = remote.scopedRevisions.get(pushed.revisionId!)!;
+    const sharedNamespaces = sharedPointer.namespaces;
+    sharedPointer.namespaces = sharedNamespaces.filter((head) => head.namespace !== "drop:drop_reference");
+    await expect(engine.hydrate(sharedConfig, sharedPinReport.sessionCapsuleId, { mode: "warn", dryRun: true }))
+      .rejects.toThrow("pinned namespace revision is unavailable: drop:drop_reference");
+    sharedPointer.namespaces = sharedNamespaces;
+    await rewriteCurrentCapsulePins(remote, key, updated.sessionCapsuleId, {
+      workspaceRevisionId: pushed.revisionId!,
+      dropRevisionIds: { drop_reference: dropAdvanced.revisionId! },
+    });
+
+    const dropPointer = remote.scopedRevisions.get(dropAdvanced.revisionId!)!.namespaces
+      .find((head) => head.namespace === "drop:drop_reference")!;
+    const pinnedDropManifest = await readTestNamespaceManifest(remote, key, dropPointer);
+    const missingObjectId = pinnedDropManifest.entries.find((entry) => entry.logicalPath === "brief.md")!.objectIds[0]!;
+    remote.namespaceObjects.delete(`drop:drop_reference\0${missingObjectId}`);
+    const brokenHarness = join(base, "broken-target-codex");
+    const brokenWorkspace = join(base, "broken-target-project");
+    const brokenDrop = join(base, "broken-target-reference");
+    await Promise.all([mkdir(brokenHarness), mkdir(brokenDrop)]);
+    await runFile("git", ["clone", "-q", workspace, brokenWorkspace]);
+    const brokenConfig: LocalConfig = {
+      ...multiTargetConfig,
+      mappings: multiTargetConfig.mappings.map((mapping) => ({
+        ...mapping,
+        path: mapping.kind === "drop" ? brokenDrop : brokenHarness,
+      })),
+      workspaces: [{ id: "ws_project", path: brokenWorkspace }],
+      applied: {},
+      sessionBindings: {},
+    };
+    await expect(engine.hydrate(brokenConfig, multiRevision.sessionCapsuleId, { mode: "warn" })).rejects.toBeInstanceOf(Error);
+    await expect(readFile(join(brokenDrop, "brief.md"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(join(brokenWorkspace, "changed.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(join(brokenHarness, "sessions", "statecase", "ws_project", "native-01.jsonl")))
+      .rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("carries modified and untracked Git work over a clean baseline at a different path", async () => {
@@ -1431,6 +1576,56 @@ async function publishStreamFixture(
 
 async function testPathId(dedupKey: Uint8Array, logicalPath: string): Promise<string> {
   return computeObjectId(dedupKey, new TextEncoder().encode(`statecase:path:v1\0${logicalPath}`));
+}
+
+async function rewriteCurrentCapsulePins(
+  remote: MemoryRemote,
+  rootKey: Uint8Array,
+  sessionCapsuleId: string,
+  pins: { workspaceRevisionId: string; dropRevisionIds: Record<string, string> },
+): Promise<void> {
+  const namespace = "harness:codex:default";
+  const head = remote.namespaceHeads.get(namespace)!;
+  const keys = await deriveScopeKey(rootKey, namespace);
+  const manifest = await readTestNamespaceManifest(remote, rootKey, head);
+  const capsule = manifest.sessionCapsules?.find((candidate) => candidate.sessionCapsuleId === sessionCapsuleId);
+  if (!capsule) throw new Error("test session capsule is missing");
+  capsule.workspace.capsuleRevisionId = pins.workspaceRevisionId;
+  capsule.drops = capsule.drops.map((drop) => ({
+    ...drop,
+    revisionId: pins.dropRevisionIds[drop.dropId] ?? drop.revisionId,
+  }));
+  const nextBytes = new TextEncoder().encode(canonicalJson(manifest));
+  const manifestObjectId = await computeObjectId(keys.dedupKey, nextBytes);
+  remote.namespaceObjects.set(`${namespace}\0${manifestObjectId}`, await encryptEnvelope({
+    plaintext: nextBytes,
+    key: keys.encryptionKey,
+    dedupKey: keys.dedupKey,
+    context: { vaultId: "vlt_test", scopeId: namespace, compression: "none" },
+  }));
+  const nextHead = { ...head, manifestObjectId };
+  remote.namespaceHeads.set(namespace, nextHead);
+  const current = remote.scopedRevisions.get(remote.scopedRevisionId!)!;
+  remote.scopedRevisions.set(current.revisionId, {
+    ...current,
+    namespaces: current.namespaces.map((candidate) => candidate.namespace === namespace ? nextHead : candidate),
+  });
+}
+
+async function readTestNamespaceManifest(
+  remote: MemoryRemote,
+  rootKey: Uint8Array,
+  head: { namespace: string; manifestObjectId: string },
+): Promise<NamespaceManifestV1> {
+  const keys = await deriveScopeKey(rootKey, head.namespace);
+  const envelope = remote.namespaceObjects.get(`${head.namespace}\0${head.manifestObjectId}`)!;
+  const plaintext = await decryptEnvelope({
+    envelope,
+    key: keys.encryptionKey,
+    dedupKey: keys.dedupKey,
+    expected: { vaultId: "vlt_test", scopeId: head.namespace, compression: "none" },
+  });
+  return namespaceManifestSchema.parse(JSON.parse(new TextDecoder().decode(plaintext)));
 }
 
 async function initializeRepository(path: string): Promise<void> {

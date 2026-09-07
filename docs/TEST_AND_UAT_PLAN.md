@@ -225,8 +225,9 @@ policy; they are never uploaded merely because they are present.
 - `WS-026`: baseline plus overlay produces the recorded final content digest.
 - `WS-027`: a Session Capsule pins the exact harness, workspace, baseline, and
   Drop revisions observed at checkpoint time.
-- `WS-028`: historical resume hydrates its recorded dependency closure even
-  when workspace and Drop heads have advanced.
+- `WS-028`: historical resume atomically hydrates independently pinned harness,
+  workspace, and Drop revisions even when their current heads have advanced;
+  dry-run and any missing pinned object leave every target untouched.
 - `WS-029`: a missed filesystem event is recovered by final Git/index
   reconciliation and included in the overlay.
 - `WS-030`: unchanged tracked reads record Git object IDs and upload no source
