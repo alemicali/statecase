@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { chunkJsonlStream, type JsonlStreamPolicy } from "@statecase/chunking";
 import { computeObjectId, computeObjectIdStream, decryptEnvelope, encryptEnvelope } from "@statecase/crypto";
 
+import { assertTemporarySpace } from "./disk-space.js";
+
 export interface TransferKeys {
   encryptionKey: Uint8Array;
   dedupKey: Uint8Array;
@@ -68,6 +70,12 @@ export async function downloadVerifiedEntry(input: {
   getObject(objectId: string): Promise<Uint8Array>;
   onEnvelope?(bytes: number): void;
 }): Promise<{ root: string; path: string; dispose: () => Promise<void> }> {
+  if (!Number.isSafeInteger(input.totalSize) || input.totalSize < 0 ||
+      !Number.isSafeInteger(input.maximumSize) || input.maximumSize < 0 ||
+      input.totalSize > input.maximumSize) {
+    throw new Error("downloaded session exceeds its declared size");
+  }
+  await assertTemporarySpace(tmpdir(), input.totalSize);
   const root = await mkdtemp(join(tmpdir(), "statecase-download-"));
   const path = join(root, "portable.staged");
   const destination = await open(path, "wx", 0o600);

@@ -43,8 +43,9 @@ as a systemd user service / macOS LaunchAgent. Session push and pull now stream
 through bounded secure staging, use record-aware 4 MiB chunks, and transfer only
 changed tail chunks. Concurrent append merge also streams and verifies the
 common history while retaining only bounded branch suffixes, and the accepting
-pull verifies record order as a stream. Remaining release gates include the
-scaled 2-GiB acceptance run, real-OS service UAT, initialized-submodule
+pull verifies record order as a stream. Staging preflights temporary-disk space
+and retains a safety reserve before copying plaintext. Remaining release gates
+include the scaled 2-GiB acceptance run, real-OS service UAT, initialized-submodule
 hydration, automatic retention/in-place restore, post-revocation key
 rewrapping, key rotation, and real-version Codex/Claude fixture certification.
 This is not yet a public-production release.

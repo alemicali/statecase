@@ -1,7 +1,7 @@
 import { createReadStream } from "node:fs";
 import { lstat, mkdtemp, open, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 
 import {
   AdapterFormatError,
@@ -9,6 +9,8 @@ import {
   sessionWorkingDirectory,
   type ActivityReference,
 } from "@statecase/adapter-common";
+
+import { assertTemporarySpace } from "./disk-space.js";
 
 const DEFAULT_MAX_RECORD_BYTES = 64 * 1024 * 1024;
 const READ_BUFFER_BYTES = 64 * 1024;
@@ -63,6 +65,9 @@ export async function localizePortableSession(
   if (!Number.isSafeInteger(maxRecordBytes) || maxRecordBytes <= 0) {
     throw new RangeError("maximum JSONL record size must be positive");
   }
+  const source = await lstat(sourcePath);
+  if (!source.isFile()) throw new Error("portable session source is not a regular file");
+  await assertTemporarySpace(dirname(destinationPath), source.size);
   const destination = await open(destinationPath, "wx", 0o600);
   let written = 0;
   let accepted = 0;
@@ -112,6 +117,7 @@ export async function stagePortableSession(
   }
   const before = await lstat(sourcePath);
   if (!before.isFile()) throw new Error("session source is not a regular file");
+  await assertTemporarySpace(tmpdir(), before.size, 2);
   const stagingRoot = await mkdtemp(join(tmpdir(), "statecase-session-"));
   const acceptedPath = join(stagingRoot, "accepted.jsonl");
   const portablePath = join(stagingRoot, "portable.jsonl");

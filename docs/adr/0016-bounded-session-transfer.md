@@ -32,6 +32,11 @@ localization, and atomically installs from the verified file rather than a RAM
 buffer. The session limit is 20 GiB and the single-record parser bound is 64
 MiB. Existing protocol 1.0 heads keep their migration path.
 
+Every plaintext staging allocation first checks available blocks on the target
+temporary filesystem. The required copy count plus a 64-MiB safety reserve must
+fit. Capacity is rechecked as download, localization, and merge artifacts
+accumulate; this does not replace fail-clean handling if free space changes.
+
 ## Consequences
 
 Memory use is bounded by one JSONL record plus one plaintext/encrypted object,
@@ -60,4 +65,5 @@ Unit and integration tests cover arbitrary source segmentation, oversized and
 unterminated records, digest equivalence, dry-run behavior, missing-object
 invariants, corrupt ciphertext, false declared sizes/digests, staging cleanup,
 atomic file-backed installation, workspace-bound and unbound sessions, legacy
-migration, and absence of redundant object PUTs after append.
+migration, absence of redundant object PUTs after append, and disk-capacity
+boundary calculations for numeric and bigint filesystem counters.

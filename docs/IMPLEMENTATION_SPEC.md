@@ -974,6 +974,13 @@ staging file. A subsequent pull validates the local record stream as an ordered
 subsequence of the merged remote stream with two-record memory. Literal 2-GiB
 acceptance remains required before the scaled claim is released.
 
+Before each plaintext staging allocation, the client queries the destination
+filesystem's available blocks and requires the predicted copy count plus a
+64-MiB safety reserve. Push uses a conservative two-copy estimate; download,
+localization, and merged-output creation recheck capacity as earlier staging
+files accumulate. This is a preflight rather than a reservation, so `ENOSPC`
+must still trigger cleanup and leave native destinations unchanged.
+
 ## 17. Failure behavior
 
 | Failure | Required behavior |

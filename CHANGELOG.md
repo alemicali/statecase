@@ -10,7 +10,8 @@ All notable changes to Statecase will be documented here.
   encryption/decryption, atomic file-backed installation, and direct protocol
   1.1 bootstrap for new vaults. Appends no longer upload content-addressed
   chunks already present in the authenticated remote manifest. Legacy 1.0
-  heads remain readable and migratable.
+  heads remain readable and migratable. Plaintext staging now checks available
+  temporary-disk capacity, including a safety reserve, before allocation.
 - Made same-session concurrent append merge independent of common-history size:
   the client verifies the base and both prefixes as streams, retains only
   bounded concurrent suffixes, writes the merged result to secure staging, and

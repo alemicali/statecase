@@ -193,7 +193,9 @@ file, and skips remote content-addressed chunks during append. Automated
 multi-chunk transfer and paranoid integrity cases are green. The literal 2-GiB
 acceptance run remains outstanding. Concurrent append merge now validates and
 copies common history as a stream, retains only bounded branch suffixes, emits
-file-backed staging, and verifies the accepting pull record by record.
+file-backed staging, and verifies the accepting pull record by record. All new
+plaintext staging paths preflight available temporary-disk capacity with a
+safety reserve and retain fail-clean semantics if capacity later changes.
 
 Automated background steady state is not yet claimed. Real-OS daemon/service
 UAT, scaled 2-GiB streaming acceptance, automatic retention/in-place restore,

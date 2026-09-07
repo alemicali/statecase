@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { canonicalJson } from "@statecase/protocol";
 
 import { mergeJsonlAppends, type JsonlAppendFailure } from "./append-merge.js";
+import { assertTemporarySpace } from "./disk-space.js";
 
 const DEFAULT_MAX_SUFFIX_BYTES = 256 * 1024 * 1024;
 const DEFAULT_MAX_RECORD_BYTES = 64 * 1024 * 1024;
@@ -59,6 +60,7 @@ export async function mergeJsonlAppendFiles(input: {
   const merged = mergeJsonlAppends(new Uint8Array(), remoteSuffix, localSuffix);
   if (merged.outcome === "diverged") return merged;
 
+  await assertTemporarySpace(tmpdir(), base.size + merged.bytes.byteLength);
   const root = await mkdtemp(join(tmpdir(), "statecase-session-merge-"));
   const path = join(root, "merged.jsonl");
   const destination = await open(path, "wx", 0o600);

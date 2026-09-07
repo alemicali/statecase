@@ -99,7 +99,15 @@ describe("bounded encrypted stream transfer (PERF-003, AD-CX-008)", () => {
     const base = { objectIds: [objectId], keys, vaultId: "vlt_test", namespace: "scope", getObject: async () => envelope };
     await expect(downloadVerifiedEntry({ ...base, totalSize: 1, contentDigest: objectId, maximumSize: 100 })).rejects.toThrow("declared size");
     await expect(downloadVerifiedEntry({ ...base, totalSize: bytes.byteLength, contentDigest: "obj_wrong", maximumSize: 100 })).rejects.toThrow("content verification");
-    await expect(downloadVerifiedEntry({ ...base, totalSize: bytes.byteLength, contentDigest: objectId, maximumSize: 1 })).rejects.toThrow("declared size");
+    let fetched = false;
+    await expect(downloadVerifiedEntry({
+      ...base,
+      totalSize: bytes.byteLength,
+      contentDigest: objectId,
+      maximumSize: 1,
+      getObject: async () => { fetched = true; return envelope; },
+    })).rejects.toThrow("declared size");
+    expect(fetched).toBe(false);
     const corrupt = envelope.slice();
     corrupt[corrupt.length - 1] ^= 1;
     await expect(downloadVerifiedEntry({ ...base, totalSize: bytes.byteLength, contentDigest: objectId, maximumSize: 100, getObject: async () => corrupt }))

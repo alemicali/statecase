@@ -154,7 +154,9 @@ Controls:
 - no-follow/open checks and target containment verification;
 - exclude unsafe file types and cross-root links;
 - normalized relative logical paths and target capability preflight;
-- staging transaction, byte/file/depth/compression limits, disk-space check;
+- staging transaction and byte/file/depth/compression limits;
+- available-block preflight before each plaintext temporary-copy allocation,
+  with reserved headroom and fail-clean `ENOSPC` handling;
 - atomic apply where supported and rollback otherwise;
 - case/normalization/reserved-name conflicts block apply.
 
