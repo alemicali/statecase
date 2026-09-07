@@ -11,7 +11,9 @@ import {
   applyWorkspaceCapsule,
   applyWorkspaceTransaction,
   assertWorkspaceDestination,
+  assertWorkspaceReplacement,
   captureWorkspace,
+  replaceWorkspaceCapsule,
   WorkspaceBaselineUnavailable,
   workspaceMatchesCapsule,
   type WorkspaceMaterializedWrite,
@@ -126,8 +128,20 @@ describe("exact Git workspace capsules (WS-010..WS-018, WS-025..WS-026)", () => 
     const target = await shallowClone(remote, "fetch-auto");
     await applyWorkspaceCapsule(target, captured, { materialize, gitFetch: "auto" });
     expect((await git(target, "rev-parse", "HEAD")).trim()).toBe(baseline);
+    expect((await git(target, "symbolic-ref", "--short", "HEAD")).trim()).toBe("main");
     expect(await readFile(join(target, "tracked.txt"), "utf8")).toBe("portable uncommitted overlay\n");
     expect(await git(target, "status", "--porcelain=v1", "-z")).toBe(expectedStatus);
+
+    const rollbackTarget = await shallowClone(remote, "fetch-auto-rollback");
+    const rollbackHead = (await git(rollbackTarget, "rev-parse", "HEAD")).trim();
+    await expect(applyWorkspaceCapsule(rollbackTarget, captured, {
+      materialize: async () => { throw new Error("injected post-identity failure"); },
+      gitFetch: "auto",
+    })).rejects.toThrow("injected post-identity failure");
+    expect((await git(rollbackTarget, "rev-parse", "HEAD")).trim()).toBe(rollbackHead);
+    expect((await git(rollbackTarget, "rev-parse", "refs/heads/main")).trim()).toBe(rollbackHead);
+    expect((await git(rollbackTarget, "symbolic-ref", "--short", "HEAD")).trim()).toBe("main");
+    expect(await git(rollbackTarget, "status", "--porcelain=v1")).toBe("");
   });
 
   it("reports an unreachable baseline without leaking Git errors or partially switching HEAD", async () => {
@@ -164,16 +178,18 @@ describe("exact Git workspace capsules (WS-010..WS-018, WS-025..WS-026)", () => 
       code: "GIT_LFS_CONTENT_UNAVAILABLE",
       paths: ["asset.bin"],
     };
-    await expect(captureWorkspace(root)).rejects.toMatchObject(expected);
-    await expect(assertWorkspaceDestination(root, {
+    const baselineCapsule = {
       capsule: {
-        schemaVersion: 1,
+        schemaVersion: 1 as const,
         baseCommit: (await git(root, "rev-parse", "HEAD")).trim(),
         headRef: (await git(root, "symbolic-ref", "--short", "HEAD")).trim(),
         records: [],
       },
       blobs: [],
-    })).rejects.toMatchObject(expected);
+    };
+    await expect(captureWorkspace(root)).rejects.toMatchObject(expected);
+    await expect(assertWorkspaceDestination(root, baselineCapsule)).rejects.toMatchObject(expected);
+    await expect(assertWorkspaceReplacement(root, baselineCapsule)).rejects.toMatchObject(expected);
     await expect(assertWorkspaceDestination(root, {
       capsule: {
         schemaVersion: 1,
@@ -686,6 +702,34 @@ describe("exact Git workspace capsules (WS-010..WS-018, WS-025..WS-026)", () => 
     await expect(captureWorkspace(root)).rejects.toThrow("unmerged index");
   });
 
+  it("applies detached workspace identity and restores a symbolic target after failure (WS-014, WS-015)", async () => {
+    const source = await repository("apply-detached-source");
+    await git(source, "checkout", "--detach", "-q");
+    await writeFile(join(source, "tracked.txt"), "detached overlay\n");
+    const captured = await captureWorkspace(source);
+    expect(captured.capsule.headRef).toBeNull();
+
+    const parent = await mkdtemp(join(tmpdir(), "statecase-workspace-apply-detached-"));
+    temporary.push(parent);
+    const target = join(parent, "target");
+    const rollbackTarget = join(parent, "rollback-target");
+    await run("git", ["clone", "--quiet", source, target]);
+    await run("git", ["clone", "--quiet", source, rollbackTarget]);
+
+    await applyWorkspaceCapsule(target, captured, { materialize });
+    await expect(git(target, "symbolic-ref", "--short", "HEAD")).rejects.toBeInstanceOf(Error);
+    expect(await readFile(join(target, "tracked.txt"), "utf8")).toBe("detached overlay\n");
+
+    const originalHead = (await git(rollbackTarget, "rev-parse", "HEAD")).trim();
+    const originalRef = (await git(rollbackTarget, "symbolic-ref", "--short", "HEAD")).trim();
+    await expect(applyWorkspaceCapsule(rollbackTarget, captured, {
+      materialize: async () => { throw new Error("injected detached identity failure"); },
+    })).rejects.toThrow("injected detached identity failure");
+    expect((await git(rollbackTarget, "rev-parse", "HEAD")).trim()).toBe(originalHead);
+    expect((await git(rollbackTarget, "symbolic-ref", "--short", "HEAD")).trim()).toBe(originalRef);
+    expect(await git(rollbackTarget, "status", "--porcelain=v1")).toBe("");
+  });
+
   it("rejects a changed symlink that escapes the workspace", async () => {
     const root = await repository("unsafe-link");
     await symlink("../../outside", join(root, "escape"));
@@ -833,6 +877,254 @@ describe("exact Git workspace capsules (WS-010..WS-018, WS-025..WS-026)", () => 
     await git(root, "update-index", "--add", "--cacheinfo", "160000", oid, "module");
     await mkdir(join(root, "module"));
     await expect(captureWorkspace(root)).rejects.toThrow("initialized submodule worktrees are not supported");
+  });
+
+  it("replaces a dirty workspace with an exact historical branch, index, and worktree (WS-030)", async () => {
+    const root = await repository("replace-history");
+    await git(root, "branch", "-M", "main");
+    const historicalCommit = (await git(root, "rev-parse", "HEAD")).trim();
+    await writeFile(join(root, "tracked.txt"), "historical index\n");
+    await git(root, "add", "tracked.txt");
+    await writeFile(join(root, "tracked.txt"), "historical worktree\n");
+    await writeFile(join(root, "historical-only.txt"), "portable untracked\n");
+    const historical = await captureWorkspace(root);
+    const historicalStatus = await git(root, "status", "--porcelain=v1", "-z");
+
+    await git(root, "reset", "--hard", "-q", "HEAD");
+    await writeFile(join(root, "tracked.txt"), "later committed\n");
+    await git(root, "add", "tracked.txt");
+    await git(root, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "later");
+    await writeFile(join(root, "tracked.txt"), "current dirty\n");
+    await writeFile(join(root, "current-only.txt"), "remove on replacement\n");
+    const laterCommit = (await git(root, "rev-parse", "HEAD")).trim();
+    let prepared = false;
+
+    await replaceWorkspaceCapsule(root, historical, {
+      gitFetch: "auto",
+      materialize,
+      beforeMutation: async ({ paths, targetHeadRef }) => {
+        expect((await git(root, "rev-parse", "HEAD")).trim()).toBe(laterCommit);
+        expect(await readFile(join(root, "tracked.txt"), "utf8")).toBe("current dirty\n");
+        expect(paths).toEqual(expect.arrayContaining([
+          join(root, "tracked.txt"),
+          join(root, "current-only.txt"),
+          join(root, "historical-only.txt"),
+        ]));
+        expect(targetHeadRef).toBe("main");
+        prepared = true;
+      },
+    });
+
+    expect(prepared).toBe(true);
+    expect((await git(root, "rev-parse", "HEAD")).trim()).toBe(historicalCommit);
+    expect((await git(root, "symbolic-ref", "--short", "HEAD")).trim()).toBe("main");
+    expect(await git(root, "show", ":tracked.txt")).toBe("historical index\n");
+    expect(await readFile(join(root, "tracked.txt"), "utf8")).toBe("historical worktree\n");
+    expect(await readFile(join(root, "historical-only.txt"), "utf8")).toBe("portable untracked\n");
+    await expect(readFile(join(root, "current-only.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await git(root, "status", "--porcelain=v1", "-z")).toBe(historicalStatus);
+    expect(await workspaceMatchesCapsule(root, historical)).toBe(true);
+  });
+
+  it("preflights replacement before mutation and refuses initialized submodules (WS-018, WS-030)", async () => {
+    const root = await repository("replace-preflight");
+    await writeFile(join(root, "tracked.txt"), "historical\n");
+    const historical = await captureWorkspace(root);
+    await writeFile(join(root, "tracked.txt"), "must survive\n");
+    let prepared = false;
+    await expect(replaceWorkspaceCapsule(root, historical, {
+      materialize,
+      beforeMutation: async () => {
+        prepared = true;
+        throw new Error("recovery storage unavailable");
+      },
+    })).rejects.toThrow("recovery storage unavailable");
+    expect(prepared).toBe(true);
+    expect(await readFile(join(root, "tracked.txt"), "utf8")).toBe("must survive\n");
+
+    await git(root, "reset", "--hard", "-q", "HEAD");
+    const oid = (await git(root, "rev-parse", "HEAD")).trim();
+    await git(root, "update-index", "--add", "--cacheinfo", "160000", oid, "module");
+    await mkdir(join(root, "module"));
+    prepared = false;
+    await expect(replaceWorkspaceCapsule(root, historical, {
+      materialize,
+      beforeMutation: async () => { prepared = true; },
+    })).rejects.toThrow("initialized submodule worktrees are not supported");
+    expect(prepared).toBe(false);
+  });
+
+  it("replaces committed work with detached and unborn capsule identities (WS-014, WS-030)", async () => {
+    const detached = await repository("replace-detached");
+    await git(detached, "checkout", "--detach", "-q");
+    await writeFile(join(detached, "tracked.txt"), "detached overlay\n");
+    const detachedCapsule = await captureWorkspace(detached);
+    await git(detached, "checkout", "-q", "master");
+    await writeFile(join(detached, "tracked.txt"), "dirty branch\n");
+    await replaceWorkspaceCapsule(detached, detachedCapsule, { materialize, beforeMutation: async () => undefined });
+    await expect(git(detached, "symbolic-ref", "--short", "HEAD")).rejects.toBeInstanceOf(Error);
+    expect(await readFile(join(detached, "tracked.txt"), "utf8")).toBe("detached overlay\n");
+    expect(await workspaceMatchesCapsule(detached, detachedCapsule)).toBe(true);
+
+    const unbornSource = await unbornRepository("replace-unborn-source");
+    await git(unbornSource, "symbolic-ref", "HEAD", "refs/heads/portable-unborn");
+    await writeFile(join(unbornSource, "staged.txt"), "staged unborn\n");
+    await git(unbornSource, "add", "staged.txt");
+    await writeFile(join(unbornSource, "staged.txt"), "worktree unborn\n");
+    const unbornCapsule = await captureWorkspace(unbornSource);
+    const committed = await repository("replace-unborn-target");
+    await writeFile(join(committed, "current.txt"), "remove me\n");
+    await replaceWorkspaceCapsule(committed, unbornCapsule, { materialize, beforeMutation: async () => undefined });
+    await expect(git(committed, "rev-parse", "--verify", "HEAD")).rejects.toBeInstanceOf(Error);
+    expect((await git(committed, "symbolic-ref", "--short", "HEAD")).trim()).toBe("portable-unborn");
+    expect(await git(committed, "show", ":staged.txt")).toBe("staged unborn\n");
+    expect(await readFile(join(committed, "staged.txt"), "utf8")).toBe("worktree unborn\n");
+    await expect(readFile(join(committed, "current.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await workspaceMatchesCapsule(committed, unbornCapsule)).toBe(true);
+  });
+
+  it("applies replacement fetch policy without mutating the checkout before approval (WS-015, WS-030)", async () => {
+    const source = await repository("replace-fetch-source");
+    await writeFile(join(source, "source-only.txt"), "unique baseline\n");
+    await git(source, "add", "source-only.txt");
+    await git(source, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "unique source baseline");
+    await writeFile(join(source, "tracked.txt"), "fetched overlay\n");
+    const captured = await captureWorkspace(source);
+    const target = await repository("replace-fetch-target");
+    await writeFile(join(target, "tracked.txt"), "independent baseline\n");
+    await git(target, "add", "tracked.txt");
+    await git(target, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "independent");
+    const targetHead = (await git(target, "rev-parse", "HEAD")).trim();
+
+    await expect(assertWorkspaceReplacement(target, captured)).rejects.toMatchObject({ reason: "approval-required" });
+    await expect(assertWorkspaceReplacement(target, captured, { gitFetch: "never" })).rejects.toMatchObject({ reason: "policy-disabled" });
+    await expect(assertWorkspaceReplacement(target, captured, { gitFetch: "auto" })).rejects.toMatchObject({ reason: "no-origin" });
+    expect((await git(target, "rev-parse", "HEAD")).trim()).toBe(targetHead);
+
+    await git(target, "remote", "add", "origin", source);
+    let prepared = false;
+    await replaceWorkspaceCapsule(target, captured, {
+      gitFetch: "auto",
+      materialize,
+      beforeMutation: async () => { prepared = true; },
+    });
+    expect(prepared).toBe(true);
+    expect(await readFile(join(target, "tracked.txt"), "utf8")).toBe("fetched overlay\n");
+    expect(await workspaceMatchesCapsule(target, captured)).toBe(true);
+  });
+
+  it("rejects invalid branch identity and directory or special-file replacement targets before mutation (WS-001, WS-030)", async () => {
+    const source = await repository("replace-target-types-source");
+    await writeFile(join(source, "blocked"), "remote\n");
+    const captured = await captureWorkspace(source);
+    const invalidRef = structuredClone(captured);
+    invalidRef.capsule.headRef = "refs/heads/not-a-short-name";
+    await expect(assertWorkspaceReplacement(source, invalidRef)).rejects.toThrow("head reference");
+
+    const directoryTarget = await repository("replace-directory-target");
+    await mkdir(join(directoryTarget, "blocked"));
+    let prepared = false;
+    await expect(replaceWorkspaceCapsule(directoryTarget, captured, {
+      materialize,
+      beforeMutation: async () => { prepared = true; },
+    })).rejects.toThrow("directory target");
+    expect(prepared).toBe(false);
+
+    if (process.platform !== "win32") {
+      await rm(join(directoryTarget, "blocked"), { recursive: true });
+      await run("mkfifo", [join(directoryTarget, "blocked")]);
+      await expect(replaceWorkspaceCapsule(directoryTarget, captured, {
+        materialize,
+        beforeMutation: async () => { prepared = true; },
+      })).rejects.toThrow("unsupported workspace entry");
+      expect(prepared).toBe(false);
+    }
+  });
+
+  it("replaces worktree deletions, staged-only files, and safe symlinks through every overlay layer (WS-013, WS-030)", async () => {
+    const root = await repository("replace-overlay-layers");
+    await git(root, "rm", "-q", "deleted.txt");
+    await writeFile(join(root, "staged-only.txt"), "staged only\n");
+    await git(root, "add", "staged-only.txt");
+    await mkdir(join(root, "links"));
+    await writeFile(join(root, "links", "target.txt"), "target\n");
+    await symlink("target.txt", join(root, "links", "portable"));
+    const captured = await captureWorkspace(root);
+    await git(root, "reset", "--hard", "-q", "HEAD");
+    await writeFile(join(root, "staged-only.txt"), "local replacement\n");
+
+    await replaceWorkspaceCapsule(root, captured, { materialize, beforeMutation: async () => undefined });
+
+    await expect(readFile(join(root, "deleted.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await git(root, "show", ":staged-only.txt")).toBe("staged only\n");
+    expect(await readFile(join(root, "staged-only.txt"), "utf8")).toBe("staged only\n");
+    expect(await readlink(join(root, "links", "portable"))).toBe("target.txt");
+    expect(await workspaceMatchesCapsule(root, captured)).toBe(true);
+  });
+
+  it("hydrates a committed replacement into an unborn destination (WS-014, WS-015, WS-030)", async () => {
+    const source = await repository("replace-into-unborn-source");
+    await writeFile(join(source, "unique.txt"), "committed source\n");
+    await git(source, "add", "unique.txt");
+    await git(source, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "unique baseline");
+    await writeFile(join(source, "tracked.txt"), "portable overlay\n");
+    const captured = await captureWorkspace(source);
+    const target = await unbornRepository("replace-into-unborn-target");
+    await git(target, "remote", "add", "origin", source);
+
+    await replaceWorkspaceCapsule(target, captured, {
+      gitFetch: "auto",
+      materialize,
+      beforeMutation: async ({ paths }) => {
+        expect(paths).toContain(join(target, "unique.txt"));
+      },
+    });
+
+    expect(await readFile(join(target, "unique.txt"), "utf8")).toBe("committed source\n");
+    expect(await readFile(join(target, "tracked.txt"), "utf8")).toBe("portable overlay\n");
+    expect(await workspaceMatchesCapsule(target, captured)).toBe(true);
+  });
+
+  it("validates replacement-only capsule, repository, and gitlink boundaries (WS-001, WS-018, WS-030)", async () => {
+    const source = await repository("replace-validation-source");
+    await writeFile(join(source, "tracked.txt"), "overlay\n");
+    const captured = await captureWorkspace(source);
+    const ordinary = await mkdtemp(join(tmpdir(), "statecase-workspace-replace-ordinary-"));
+    temporary.push(ordinary);
+    await expect(assertWorkspaceReplacement(ordinary, captured)).rejects.toThrow("not a Git working tree");
+
+    const corrupt = structuredClone(captured);
+    corrupt.blobs[0]!.bytes[0] ^= 0xff;
+    await expect(assertWorkspaceReplacement(source, corrupt)).rejects.toThrow("blob digest does not match");
+
+    const unborn = await unbornRepository("replace-invalid-unborn");
+    await writeFile(join(unborn, "new.txt"), "new\n");
+    const invalidUnborn = await captureWorkspace(unborn);
+    invalidUnborn.capsule.headRef = null;
+    await expect(assertWorkspaceReplacement(unborn, invalidUnborn)).rejects.toThrow("unborn workspace requires");
+
+    const gitlinkSource = await repository("replace-gitlink-source");
+    const oid = (await git(gitlinkSource, "rev-parse", "HEAD")).trim();
+    await git(gitlinkSource, "update-index", "--add", "--cacheinfo", "160000", oid, "module");
+    const gitlinkCapsule = await captureWorkspace(gitlinkSource);
+    const gitlinkTarget = await repository("replace-gitlink-target");
+    await replaceWorkspaceCapsule(gitlinkTarget, gitlinkCapsule, { materialize, beforeMutation: async () => undefined });
+    expect(await git(gitlinkTarget, "ls-files", "--stage", "module")).toContain(`160000 ${oid}`);
+
+    await git(gitlinkSource, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "gitlink baseline");
+    const cleanGitlinkCapsule = await captureWorkspace(gitlinkSource);
+    await mkdir(join(gitlinkSource, "module"));
+    await expect(assertWorkspaceReplacement(gitlinkSource, cleanGitlinkCapsule)).rejects.toThrow("initialized submodule");
+
+    const worktreeSource = await repository("replace-linked-worktree-source");
+    await git(worktreeSource, "branch", "historical");
+    await git(worktreeSource, "checkout", "-q", "historical");
+    const historicalBranch = await captureWorkspace(worktreeSource);
+    await git(worktreeSource, "checkout", "-q", "master");
+    const linkedParent = await mkdtemp(join(tmpdir(), "statecase-linked-worktree-"));
+    temporary.push(linkedParent);
+    await git(worktreeSource, "worktree", "add", "-q", join(linkedParent, "checkout"), "historical");
+    await expect(assertWorkspaceReplacement(worktreeSource, historicalBranch)).rejects.toThrow("checked out in another worktree");
   });
 });
 

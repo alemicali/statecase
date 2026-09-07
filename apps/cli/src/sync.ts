@@ -21,9 +21,11 @@ import {
 import { appendOnlyViolations, mergeNamespace, namespaceStateEquals, type NamespaceState } from "@statecase/sync-core";
 import {
   applyWorkspaceTransaction,
+  assertWorkspaceReplacement,
   captureWorkspace,
   GitLfsContentUnavailable,
   inspectWorkspaceDestination,
+  replaceWorkspaceCapsule,
   type CapturedWorkspace,
   type GitFetchPolicy,
   type WorkspaceBlob,
@@ -100,12 +102,17 @@ export interface InPlaceRestoreResult extends SyncResult {
 
 export interface InPlaceRestoreOptions {
   dryRun?: boolean;
-  prepareRecovery?: (paths: readonly string[]) => Promise<{ rollback(): Promise<void> }>;
+  prepareRecovery?: (
+    paths: readonly string[],
+    context?: { kind: "workspace"; targetHeadRef: string | null },
+  ) => Promise<{ rollback(): Promise<void> }>;
 }
 
 interface MaterializationOptions {
   allowLocalOverwrite?: boolean;
   materialize?: (transaction: FileTransaction) => Promise<void>;
+  replaceWorkspaces?: boolean;
+  prepareWorkspaceRecovery?: (plan: { paths: string[]; targetHeadRef: string | null }) => Promise<void>;
 }
 
 export class SyncConflict extends Error {
@@ -874,14 +881,12 @@ export class SyncEngine {
     options: InPlaceRestoreOptions = {},
   ): Promise<InPlaceRestoreResult> {
     if (!this.vaultKey) throw new Error("in-place restore requires a full-key device");
-    if (mapping.id.startsWith("workspace_") || mapping.namespace.startsWith("workspace:")) {
-      throw new Error("workspace in-place restore is not implemented");
-    }
-    const configured = config.mappings.find((candidate) => candidate.id === mapping.id);
+    const workspaceId = workspaceMappingId(mapping);
+    const configured = workspaceId
+      ? workspaceMappings(config).find((candidate) => candidate.id === mapping.id)
+      : config.mappings.find((candidate) => candidate.id === mapping.id);
     if (!configured || configured.namespace !== mapping.namespace || configured.kind !== mapping.kind || configured.mode !== mapping.mode ||
-        resolve(configured.path) !== resolve(mapping.path)) {
-      throw new Error("in-place restore mapping does not match this device");
-    }
+        resolve(configured.path) !== resolve(mapping.path)) throw new Error("in-place restore mapping does not match this device");
     if (mapping.mode !== "two-way") throw new Error("in-place restore requires a two-way mapping");
     const targetRootInfo = await lstat(resolve(mapping.path));
     if (!targetRootInfo.isDirectory() || targetRootInfo.isSymbolicLink()) {
@@ -900,7 +905,7 @@ export class SyncEngine {
     if ((target.conflicts?.length ?? 0) > 0) throw new Error("in-place restore refuses a revision with unresolved conflicts");
 
     const workingConfig = structuredClone(config);
-    const local = await scanWritableMappings([mapping], workingConfig.workspaces, true);
+    const local = workspaceId ? [] : await scanWritableMappings([mapping], workingConfig.workspaces, true);
     let materialized = false;
     let recovery: { rollback(): Promise<void> } | undefined;
     try {
@@ -944,8 +949,16 @@ export class SyncEngine {
         () => historicalHead.revisionId,
         {
           allowLocalOverwrite: true,
+          ...(workspaceId ? {
+            replaceWorkspaces: true,
+            prepareWorkspaceRecovery: async (plan: { paths: string[]; targetHeadRef: string | null }) => {
+              await assertRestoreTransactionSafe(mapping.path, plan.paths);
+              recovery = await options.prepareRecovery!(plan.paths, { kind: "workspace", targetHeadRef: plan.targetHeadRef });
+              materialized = true;
+            },
+          } : {}),
           ...(!dryRun ? {
-            materialize: async (transaction) => {
+            materialize: workspaceId ? applyFileTransaction : async (transaction) => {
               const paths = transactionTargets(transaction);
               await assertRestoreTransactionSafe(mapping.path, paths);
               recovery = await options.prepareRecovery!(paths);
@@ -972,11 +985,21 @@ export class SyncEngine {
           throw new Error("restored namespace failed adapter validation");
         }
         const keys = await this.#scopeKeys(mapping.namespace);
-        for (const entry of target.entries) {
-          const expected = workingConfig.applied[mapping.namespace]?.digests[entry.logicalPath];
-          const actual = await optionalFileDigest(sessionDestination(mapping, entry.logicalPath, workingConfig), keys);
-          if (!expected || actual !== expected) {
-            throw new Error("restored namespace failed content validation");
+        if (workspaceId) {
+          const byPath = new Map(validated.map((entry) => [entry.logicalPath, entry]));
+          for (const entry of target.entries) {
+            const actual = byPath.get(entry.logicalPath);
+            if (!actual?.bytes || await computeObjectId(keys.dedupKey, actual.bytes) !== entry.contentDigest) {
+              throw new Error("restored workspace failed capsule validation");
+            }
+          }
+        } else {
+          for (const entry of target.entries) {
+            const expected = workingConfig.applied[mapping.namespace]?.digests[entry.logicalPath];
+            const actual = await optionalFileDigest(sessionDestination(mapping, entry.logicalPath, workingConfig), keys);
+            if (!expected || actual !== expected) {
+              throw new Error("restored namespace failed content validation");
+            }
           }
         }
       } finally {
@@ -1190,6 +1213,7 @@ export class SyncEngine {
       const mapping = byNamespace.get(tombstone.namespace);
       if (!mapping) continue;
       assertRemotePathAllowed(mapping, tombstone.logicalPath);
+      if (workspaceMappingId(mapping)) continue;
       const portable = portableSession(tombstone.logicalPath);
       if (portable && mapping.kind !== "drop" && !config.workspaces.some((candidate) => candidate.id === portable.workspaceId)) {
         incompleteNamespaces.add(tombstone.namespace);
@@ -1210,7 +1234,8 @@ export class SyncEngine {
       const workspaceId = payload.mapping.namespace.slice("workspace:".length);
       const gitFetch = config.workspaces.find((workspace) => workspace.id === workspaceId)?.gitFetch ?? "ask";
       try {
-        await inspectWorkspaceDestination(payload.mapping.path, captured, gitFetch);
+        if (options.replaceWorkspaces) await assertWorkspaceReplacement(payload.mapping.path, captured, { gitFetch });
+        else await inspectWorkspaceDestination(payload.mapping.path, captured, gitFetch);
       } catch (error) {
         if (error instanceof WorkspaceBaselineUnavailable || error instanceof GitLfsContentUnavailable) throw error;
         throw new SyncConflict([payload.mapping.path]);
@@ -1252,14 +1277,26 @@ export class SyncEngine {
     const workspaceFiles = readyWorkspaces.reduce((total, item) => total + item.captured.capsule.records.length, 0);
     if (dryRun) return { outcome: "pulled", revisionId: remoteRevisionId, files: materialized.length + deletions.length + workspaceFiles, objects: objectCount, bytes: byteCount };
 
-    await applyWorkspaceTransaction(
-      readyWorkspaces.map((workspace) => ({ root: workspace.mapping.path, captured: workspace.captured, gitFetch: workspace.gitFetch })),
-      {
-        writes: materialized.map(materializedWrite),
-        deletes: deletions.map((item) => item.path),
-      },
-      { materialize: options.materialize ?? applyFileTransaction },
-    );
+    if (options.replaceWorkspaces) {
+      if (!options.prepareWorkspaceRecovery) throw new Error("workspace replacement requires persistent recovery preparation");
+      const workspace = readyWorkspaces[0];
+      if (workspace) {
+        await replaceWorkspaceCapsule(workspace.mapping.path, workspace.captured, {
+          gitFetch: workspace.gitFetch,
+          materialize: options.materialize ?? applyFileTransaction,
+          beforeMutation: options.prepareWorkspaceRecovery,
+        });
+      }
+    } else {
+      await applyWorkspaceTransaction(
+        readyWorkspaces.map((workspace) => ({ root: workspace.mapping.path, captured: workspace.captured, gitFetch: workspace.gitFetch })),
+        {
+          writes: materialized.map(materializedWrite),
+          deletes: deletions.map((item) => item.path),
+        },
+        { materialize: options.materialize ?? applyFileTransaction },
+      );
+    }
     for (const mapping of selected) {
       if (incompleteNamespaces.has(mapping.namespace)) continue;
       const digests: Record<string, string> = {};
@@ -1848,6 +1885,12 @@ function workspaceMappings(config: LocalConfig): RootMapping[] {
     namespace: `workspace:${workspace.id}`,
     path: resolve(workspace.path),
   }));
+}
+
+function workspaceMappingId(mapping: RootMapping): string | undefined {
+  if (!mapping.id.startsWith("workspace_") || !mapping.namespace.startsWith("workspace:")) return undefined;
+  const id = mapping.namespace.slice("workspace:".length);
+  return mapping.id === `workspace_${id}` && id.length > 0 ? id : undefined;
 }
 
 function manifestNamespaceState(manifest: VaultManifestV1 | undefined, namespace: string): NamespaceState {

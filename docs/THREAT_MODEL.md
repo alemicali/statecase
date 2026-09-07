@@ -166,6 +166,26 @@ Controls:
 - atomic apply where supported and rollback otherwise;
 - case/normalization/reserved-name conflicts block apply.
 
+### Destructive Git workspace recovery
+
+Threats: partial baseline checkout; branch or detached-HEAD corruption; index
+loss; deletion of unsynchronized work; initialized-submodule traversal; a Git
+or editor race producing an internally inconsistent recovery point.
+
+Controls:
+
+- explicit `--in-place --yes`, full-key authorization, and daemon exclusion;
+- authenticated capsule/blob validation and device-local fetch policy before
+  worktree mutation;
+- exact affected-path planning across current changes, both baselines, and the
+  target overlay;
+- persistent backup of worktree bytes, HEAD, affected refs, and raw index;
+- private recovery refs keep rollback commits reachable from local Git GC;
+- final HEAD/ref/index/file stability recheck before replacement;
+- initialized submodules, directory collisions, and special files fail closed;
+- validation and optimistic-commit failures restore local Git state before the
+  error is returned, while the shared head only advances through a new revision.
+
 ### Workspace dependency incompleteness
 
 Threats: transcript restores without modified code; missed watcher event;

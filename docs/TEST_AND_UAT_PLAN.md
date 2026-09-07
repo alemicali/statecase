@@ -9,8 +9,12 @@ encrypted Drop round-trip, deletion, conflict, and snapshot subset of this
 plan. The
 [2026-09-07 Git-baseline Daytona UAT](uat/2026-09-07-git-baseline-daytona.md)
 also qualifies explicit ask/auto policy and shallow-clone acquisition against
-the live service. Native macOS/Linux service-manager, ARM64, WSL2, large-scale performance,
-live retention/GC, and destructive recovery drills remain open release gates.
+the live service. The
+[2026-09-07 Git workspace restore UAT](uat/2026-09-07-workspace-in-place-restore-daytona.md)
+qualifies forward-forking historical workspace replacement, independent-clone
+convergence, and offline Git rollback. Native macOS/Linux service-manager,
+ARM64, WSL2, large-scale performance, live retention/GC, and real-harness
+recovery drills remain open release gates.
 Last updated: 2026-09-07
 Related: [Implementation specification](./IMPLEMENTATION_SPEC.md)
 
@@ -202,9 +206,10 @@ policy; they are never uploaded merely because they are present.
   safe symlink, and submodule states round-trip.
 - `WS-014`: detached HEAD and unborn branch have deterministic behavior.
 - `WS-015`: shallow clone missing base commit fetches through configured Git
-  flow or returns `BASELINE_UNAVAILABLE` without partial apply; an unreachable
-  later workspace rolls back earlier automatic checkouts and leaks no remote
-  URL or credential-shaped diagnostic.
+  flow and restores the captured symbolic branch, or returns
+  `BASELINE_UNAVAILABLE` without partial apply; an unreachable later workspace
+  rolls back earlier automatic checkouts and target refs and leaks no remote URL
+  or credential-shaped diagnostic.
 - `WS-016`: dirty destination produces a conflict preview and remains unchanged.
 - `WS-017`: Git LFS pointer and absent LFS content are reported distinctly;
   `ask|never` make no network/mutation, while `auto` tries the local cache then
@@ -236,6 +241,10 @@ policy; they are never uploaded merely because they are present.
   to policy.
 - `WS-032`: strict, warn, and best-effort hydration handle unresolved external
   dependencies exactly as documented.
+- `WS-033`: explicit historical workspace restore replaces dirty, detached, or
+  unborn HEAD/index/worktree state only after durable Git-aware recovery,
+  rejects initialized submodules and special-file collisions, rolls back an
+  optimistic commit failure exactly, and forks the remote revision forward.
 - `WS-033`: local workspace capsule preview reports only bounded Git
   baseline/ref and overlay size/count metadata, performs no network or config
   mutation, emits no captured file bytes, and rejects identity-only mappings.
@@ -527,14 +536,16 @@ new forward revision, the old remote head is never rewound, unrelated/current
 data is untouched, and the persistent emergency snapshot can independently
 restore the exact pre-restore local bytes while offline.
 
-Automated status: Drop and harness namespace tests cover dry-run, create/
-replace/delete planning, SQLite refusal, Session Capsule preservation,
-third-client convergence, failed-commit automatic rollback, and explicit
-offline emergency rollback. The packaged Drop flow passed the real
+Automated status: Drop, harness, and Git workspace namespace tests cover
+dry-run, create/replace/delete planning, SQLite refusal, Session Capsule
+preservation, third-client convergence, Git branch/detached/unborn identity,
+raw-index recovery, failed-commit automatic rollback, race refusal, and
+explicit offline emergency rollback. The packaged Drop flow passed the real
 Cloudflare/Daytona drill; see
 [the executed report](uat/2026-09-07-in-place-restore-daytona.md). Real-version
-harness execution and workspace in-place restore remain required before the
-public recovery claim.
+harness execution remains required before the public recovery claim. The
+packaged live workspace portion passed separately; see
+[the workspace report](uat/2026-09-07-workspace-in-place-restore-daytona.md).
 
 ### UAT-09 Lost device and recovery
 

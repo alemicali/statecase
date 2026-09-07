@@ -48,9 +48,9 @@ and retains a safety reserve before copying plaintext. A real Daytona run has
 qualified 2-GiB transfer and concurrent append merge. Daily reachability GC now
 applies 24 hourly, 30 daily, and 12 monthly UTC checkpoints plus protected
 snapshots, Session Capsule pins, and a 30-day grace period. Remaining release
-gates include real-OS service UAT, initialized-submodule hydration, workspace
-in-place restore plus real-version harness restore UAT, post-revocation key
-rewrapping, key rotation, and real-version Codex/Claude fixture certification.
+gates include real-OS service UAT, initialized-submodule hydration, live
+real-version harness restore UAT, post-revocation key rewrapping, key rotation,
+and real-version Codex/Claude fixture certification.
 This is not yet a public-production release.
 
 The approved direction lives in:
@@ -65,6 +65,7 @@ The approved direction lives in:
 - [Daytona and Cloudflare product UAT](docs/uat/2026-09-06-daytona-cloud.md)
 - [Daytona Git-baseline acquisition UAT](docs/uat/2026-09-07-git-baseline-daytona.md)
 - [Daytona and Cloudflare in-place restore UAT](docs/uat/2026-09-07-in-place-restore-daytona.md)
+- [Daytona and Cloudflare Git workspace restore UAT](docs/uat/2026-09-07-workspace-in-place-restore-daytona.md)
 
 ## Repository shape
 
@@ -188,9 +189,9 @@ live head using `restore --revision <id> --mapping <id> --target <staging-dir>`.
 Statecase refuses a non-empty staging target unless `--yes` is explicit, and
 normal conflict checks still apply after confirmation.
 
-On a full-key device, a two-way Drop or stopped Codex/Claude mapping can instead
-be restored in place. Preview first, stop the daemon and harness, then approve
-the exact replacement:
+On a full-key device, a two-way Drop, stopped Codex/Claude mapping, or Git
+workspace can instead be restored in place. Preview first, stop the daemon and
+any affected harness, then approve the exact replacement:
 
 ```bash
 statecase --json restore --revision <id> --mapping <id> --in-place --dry-run
@@ -202,8 +203,11 @@ snapshot, applies and validates the historical state, and publishes it as a
 new revision; it never rewinds the shared remote head. The JSON result includes
 the protected snapshot ID and emergency snapshot path. To recover the
 pre-restore local bytes, keep the daemon and harness stopped and run
-`statecase --json emergency rollback <snapshot-path> --yes`. Workspace in-place
-restore is not implemented yet; workspace recovery remains staging-only.
+`statecase --json emergency rollback <snapshot-path> --yes`. For a workspace,
+the emergency snapshot also preserves symbolic or detached HEAD, every branch
+ref the restore can move, the raw Git index, and all affected worktree paths.
+Initialized submodule worktrees fail closed; Statecase never copies or rewrites
+their nested repositories.
 
 Offline edits to different files merge automatically against the last revision
 each device actually applied. Concurrent complete-record appends to the same

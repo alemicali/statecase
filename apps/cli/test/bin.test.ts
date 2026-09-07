@@ -10,6 +10,7 @@ import { runCli, type CliIO } from "../src/bin.js";
 
 const temporary: string[] = [];
 const originalEnvironment = { ...process.env };
+const run = promisify(execFile);
 
 afterEach(async () => {
   const { rm } = await import("node:fs/promises");
@@ -139,6 +140,7 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
     expect(JSON.parse(output.at(-1)!)).toMatchObject({ id: "ws_test", mode: "metadata-only", gitFetch: "auto" });
     expect(await command(io, "--json", "workspace", "list")).toBe(0);
     expect(JSON.parse(output.at(-1)!)).toMatchObject({ workspaces: [{ id: "ws_test", gitFetch: "auto" }] });
+    expect(await command(io, "--json", "restore", "--revision", initialRevisionId, "--mapping", "ws_test", "--in-place", "--dry-run")).toBe(2);
     expect(await command(io, "--json", "workspace", "attach", "--path", source, "--id", "ws_bad", "--mode", "metadata-only", "--git-fetch", "sometimes")).toBe(2);
 
     process.env.STATECASE_HOME = machineB;
@@ -151,6 +153,64 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
     expect(await command(io, "--json", "logout")).toBe(0);
     expect(errors.join("\n")).not.toContain("injected-token-value");
     expect(output.join("\n")).not.toContain("injected-token-value");
+  });
+
+  it("drives an approved Git workspace restore through the packaged CLI surface (BK-009, WS-030)", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-cli-workspace-restore-"));
+    temporary.push(base);
+    const home = join(base, "home");
+    const root = join(base, "workspace");
+    const recovery = join(base, "recovery", "workspace.statecase-recovery.json");
+    await mkdir(root);
+    await writeFile(join(root, "tracked.txt"), "base\n");
+    await run("git", ["-C", root, "init", "-q"]);
+    await run("git", ["-C", root, "add", "tracked.txt"]);
+    await run("git", ["-C", root, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "base"]);
+    await run("git", ["-C", root, "branch", "-M", "main"]);
+    await writeFile(join(root, "tracked.txt"), "historical index\n");
+    await run("git", ["-C", root, "add", "tracked.txt"]);
+    await writeFile(join(root, "tracked.txt"), "historical worktree\n");
+    await writeFile(join(root, "historical.txt"), "historical\n");
+
+    const remote = new CliRemote();
+    const output: string[] = [];
+    const errors: string[] = [];
+    const io: CliIO = { stdout: (value) => output.push(value), stderr: (value) => errors.push(value), fetch: remote.fetch };
+    process.env.STATECASE_HOME = home;
+    process.env.STATECASE_API_URL = "https://remote.test";
+    process.env.STATECASE_TOKEN = "workspace-token";
+    process.env.STATECASE_RECOVERY_PASSPHRASE = "correct horse battery staple";
+    expect(await command(io, "--json", "login", "--non-interactive", "--device-name", "workstation")).toBe(0);
+    expect(await command(io, "--json", "vault", "create", "workspace", "--recovery-file", recovery)).toBe(0);
+    expect(await command(io, "--json", "workspace", "attach", "--path", root, "--id", "ws_restore", "--git-fetch", "auto")).toBe(0);
+    expect(await command(io, "--json", "push")).toBe(0);
+    const historicalRevision = remote.scopedRevisionId!;
+
+    await run("git", ["-C", root, "reset", "--hard", "-q", "HEAD"]);
+    await writeFile(join(root, "tracked.txt"), "later committed\n");
+    await run("git", ["-C", root, "add", "tracked.txt"]);
+    await run("git", ["-C", root, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "later"]);
+    await writeFile(join(root, "current.txt"), "current only\n");
+    expect(await command(io, "--json", "push")).toBe(0);
+    expect(await command(io, "--json", "restore", "--revision", historicalRevision, "--mapping", "ws_restore", "--in-place")).toBe(2);
+    expect(await command(io, "--json", "restore", "--revision", historicalRevision, "--mapping", "ws_restore", "--in-place", "--dry-run")).toBe(0);
+    expect(await readFile(join(root, "tracked.txt"), "utf8")).toBe("later committed\n");
+
+    expect(await command(io, "--json", "restore", "--revision", historicalRevision, "--mapping", "ws_restore", "--in-place", "--yes")).toBe(0);
+    const restored = JSON.parse(output.at(-1)!) as { emergencySnapshotPath: string; protectedSnapshotId: string };
+    expect(restored).toMatchObject({
+      emergencySnapshotPath: expect.stringContaining("/recovery/restore_"),
+      protectedSnapshotId: expect.stringMatching(/^snp_/u),
+    });
+    expect(await readFile(join(root, "tracked.txt"), "utf8")).toBe("historical worktree\n");
+    expect((await run("git", ["-C", root, "show", ":tracked.txt"])).stdout).toBe("historical index\n");
+    expect(await readFile(join(root, "historical.txt"), "utf8")).toBe("historical\n");
+    await expect(readFile(join(root, "current.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(JSON.parse(await readFile(join(restored.emergencySnapshotPath, "manifest.json"), "utf8"))).toMatchObject({
+      targetRoot: root,
+      workspace: { headRef: "refs/heads/main", index: { kind: "file" } },
+    });
+    expect(errors.join("\n")).not.toContain("workspace-token");
   });
 
   it("returns stable exit codes for missing authentication and recovery input", async () => {

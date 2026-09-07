@@ -4,15 +4,21 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
-- Added forward-forking in-place historical restore for full-key, two-way Drop
-  and stopped Codex/Claude mappings. Restore now excludes daemon/harness
+- Added forward-forking in-place historical restore for full-key, two-way Drop,
+  stopped Codex/Claude mappings, and exact Git workspaces. Restore now excludes daemon/harness
   writers, refuses SQLite/WAL/SHM targets, protects the current cloud head,
   persists an exact owner-only local emergency snapshot, validates the applied
   adapter state, rolls back on optimistic-commit failure, and publishes a new
-  revision without rewinding shared history. An explicit offline `emergency
-  rollback` command restores the pre-restore local state; workspace in-place
-  restore remains deliberately unsupported. The packaged Drop path passed a
-  two-device Daytona drill against the live Cloudflare stack.
+  revision without rewinding shared history. Workspace recovery additionally
+  preserves HEAD/ref identity, the raw Git index, and affected worktree bytes;
+  dirty, detached, unborn, and missing-baseline paths are covered, while
+  initialized submodules fail closed. An explicit offline `emergency rollback`
+  command restores the pre-restore local state. The packaged Drop path passed
+  a two-device Daytona drill against the live Cloudflare stack. The packaged
+  workspace path subsequently passed exact branch/HEAD/index/worktree restore,
+  independent-clone convergence, and offline rollback in Daytona. That drill
+  also found and fixed ordinary pulls leaving a fetched baseline detached
+  instead of restoring the authenticated symbolic branch identity.
 - Qualified bounded multi-gigabyte session portability against the live
   Cloudflare service in Daytona: a 2,147,483,737-byte Codex JSONL round trip,
   two bounded tail uploads, deterministic concurrent append merge, and

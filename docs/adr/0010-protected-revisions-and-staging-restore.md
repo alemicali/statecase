@@ -28,8 +28,8 @@ normal mappings/applied state. Empty targets are accepted; non-empty targets
 require `--yes` and remain subject to ordinary dirty/conflict protection. A
 dry-run decrypts and validates the recovery plan without materializing files.
 
-The second restore mode replaces one configured two-way Drop or stopped
-Codex/Claude mapping in place on a full-key device. It is never implicit:
+The second restore mode replaces one configured two-way Drop, stopped
+Codex/Claude mapping, or `git-overlay` workspace in place on a full-key device. It is never implicit:
 `--in-place` selects it, dry-run previews it, and mutation requires `--yes`.
 The CLI excludes the profile daemon with its normal lock and excludes harness
 writers with a multi-reader activity registry, an exclusive restore barrier,
@@ -49,9 +49,10 @@ are preserved.
 
 Emergency snapshots remain available for explicit offline rollback with
 `statecase emergency rollback <path> --yes`. The same daemon/harness exclusion
-rules apply. Workspace in-place restore is deferred because Git index,
-worktree, submodule, and overlay rollback require the workspace transaction
-contract; workspace restore remains available to staging.
+rules apply. Workspace recovery extends the snapshot with HEAD, affected branch
+refs, the raw index, and exact replacement paths. It refuses initialized
+submodule worktrees and any concurrent source change before mutation, as
+specified in ADR-0018.
 
 ## Alternatives considered
 
@@ -67,10 +68,12 @@ contract; workspace restore remains available to staging.
 ## Consequences
 
 Users can protect a known-good head, inspect historical content in staging, and
-recover Drops or stopped harness state without trusting the current local
-bytes. Scheduled retention and reachability garbage collection are defined by
-ADR-0017. Workspace in-place restore and real-version harness UAT remain
-release gates; the live Drop path is qualified in the Daytona/Cloudflare UAT.
+recover Drops, stopped harness state, or an exact Git workspace without trusting
+the current local bytes. Scheduled retention and reachability garbage
+collection are defined by ADR-0017. Live packaged workspace restore and
+real-version harness UAT were separate release gates. Both the Drop and exact
+Git workspace paths are now qualified in Daytona against the live Cloudflare
+service; real-version harness UAT remains open.
 
 ## Security and privacy impact
 
@@ -87,6 +90,7 @@ idempotent snapshot creation, ID conflicts, deletion, and coordinator restart
 storage. API tests cover authorization and not-found behavior. CLI/integration
 tests cover dry-run, selective staging recovery, non-empty-target consent,
 daemon/harness exclusion, SQLite refusal, exact deletion and resurrection,
+Git HEAD/ref/index/worktree replacement, initialized-submodule and race refusal,
 tamper detection before mutation, failed-commit emergency rollback, explicit
 offline rollback, Session Capsule preservation, and the new forward revision
 observed by a third client.

@@ -960,14 +960,16 @@ local emergency snapshot of files it will replace. Restore completion requires
 adapter validation; a downloaded but unmaterialized revision is not success.
 
 The current implementation enables in-place mode only for full-key devices and
-configured two-way Drop, Codex, or Claude mappings. Actual execution MUST:
+configured two-way Drop, Codex, Claude, or `git-overlay` workspace mappings.
+Actual execution MUST:
 
 1. require explicit `--in-place --yes`; dry-run MUST remain non-mutating;
 2. acquire the daemon profile lock and, for a harness, an exclusive restore
    barrier plus a redacted OS process check;
 3. create a protected snapshot of the current remote head;
 4. create and fsync an owner-only emergency snapshot for the exact transaction
-   path set before changing any target;
+   path set before changing any target; workspace snapshots also preserve HEAD,
+   refs that can move, and the raw index while pinning recovery commits locally;
 5. transactionally materialize and adapter-validate the authenticated target;
 6. commit a new forward namespace/global revision preserving historical
    Session Capsule pins; and
@@ -978,8 +980,11 @@ The configured target path is inferred from the mapping and an explicit
 `--target`, if supplied, MUST match it. Staging mode MUST refuse that configured
 path so an operator cannot accidentally bypass in-place safeguards. Emergency
 rollback is local/offline, requires `--yes`, and applies the same daemon and
-harness exclusion. Workspace in-place mode MUST fail explicitly until its Git
-index/worktree transaction and initialized-submodule behavior are qualified.
+harness exclusion. Workspace replacement MUST preflight capsule integrity,
+baseline policy, special-file and initialized-submodule boundaries before its
+recovery callback. It then replaces the exact baseline/ref, index, tracked and
+untracked overlay as one recoverable operation. Any HEAD, ref, index, or
+worktree race while recording recovery state aborts before mutation.
 
 ## 15. Observability and privacy
 

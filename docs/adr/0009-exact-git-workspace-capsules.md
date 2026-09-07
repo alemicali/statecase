@@ -24,7 +24,9 @@ contents never enter the capsule.
 Pull requires an existing clean Git working tree. When its baseline differs,
 the device-local `ask|auto|never` policy from ADR-0007 governs acquisition.
 Auto mode uses system Git and the checkout's existing `origin`, without
-serializing a remote or credentials, then checks out the exact baseline. The
+serializing a remote or credentials, then checks out the exact baseline and
+recreates the authenticated symbolic or detached HEAD identity. The previous
+target branch ref is part of transactional rollback state. The
 entire capsule, every state transition, mode, path, object ID, blob reference,
 size bound, and symlink target is validated before mutation. The original Git
 baseline and index are restored if acquisition or filesystem materialization
@@ -36,6 +38,11 @@ Unborn and detached repositories have explicit deterministic representations.
 An uninitialized staged gitlink can be reproduced without copying nested
 repository bytes. Initialized submodule worktrees fail closed until a separate
 transactional submodule hydration design is implemented.
+
+An ordinary pull still requires a clean destination. Explicit in-place
+historical replacement is a separate destructive, Git-aware recovery flow: it
+preserves HEAD, affected refs, the raw index, and exact worktree paths before
+mutation and forks the remote revision forward. See ADR-0018.
 
 Baseline Git LFS pointer blobs are detected with bounded Git plumbing. A
 pointer or missing worktree file fails with `GIT_LFS_CONTENT_UNAVAILABLE`
@@ -76,6 +83,7 @@ Tests cover clean baselines; staged/unstaged divergence; additions, deletions,
 binary and empty files; executable bits; relative symlinks; detached and unborn
 repositories; gitlinks; dirty/baseline conflicts; canonical ordering; malformed
 metadata; corrupt bytes; inbound path/symlink attacks; shallow-clone acquisition;
-unreachable/redacted origins; LFS pointer rejection, local-cache and remote
+unreachable/redacted origins; symbolic-branch convergence after baseline
+acquisition; LFS pointer rejection, local-cache and remote
 acquisition, integrity failure, overlay replacement, and rollback; and injected
 single- and multi-workspace rollback.

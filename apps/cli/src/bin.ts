@@ -291,8 +291,18 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
       const workspace = config.workspaces.find((item) => item.id === options.mapping);
       if (!mapping && !workspace) throw new StatecaseUsageError("restore mapping is not configured on this device", 2);
       if (mapping && workspace) throw new StatecaseUsageError("restore mapping ID is ambiguous", 2);
-      if (options.inPlace && !mapping) throw new StatecaseUsageError("workspace in-place restore is not implemented", 2);
-      if (options.inPlace && mapping!.mode !== "two-way") throw new StatecaseUsageError("in-place restore requires a two-way mapping", 2);
+      if (options.inPlace && workspace?.sync === "identity-only") {
+        throw new StatecaseUsageError("metadata-only workspaces have no Git state to restore", 2);
+      }
+      const inPlaceMapping: RootMapping | undefined = mapping ?? (workspace ? {
+        id: `workspace_${workspace.id}`,
+        kind: "drop",
+        mode: "two-way",
+        name: workspace.name ?? workspace.id,
+        namespace: `workspace:${workspace.id}`,
+        path: resolve(workspace.path),
+      } : undefined);
+      if (options.inPlace && inPlaceMapping!.mode !== "two-way") throw new StatecaseUsageError("in-place restore requires a two-way mapping", 2);
       if (options.inPlace && !options.dryRun && !options.yes) throw new StatecaseUsageError("in-place restore requires --yes", 2);
       if (!options.inPlace && !options.target) throw new StatecaseUsageError("staging restore requires --target", 2);
       const configuredTarget = resolve(mapping?.path ?? workspace!.path);
@@ -337,37 +347,37 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
           } catch {
             throw new StatecaseUsageError("stop the Statecase daemon before in-place restore", 5);
           }
-          if (mapping!.kind !== "drop") {
+          if (mapping && mapping.kind !== "drop") {
             const activity = new HarnessActivityRegistry(join(store.home, "locks", "harnesses"));
             try {
-              harnessBarrier = await activity.beginRestore(mapping!.kind);
-              await assertNoHarnessProcess(mapping!.kind);
+              harnessBarrier = await activity.beginRestore(mapping.kind);
+              await assertNoHarnessProcess(mapping.kind);
             } catch {
               await harnessBarrier?.release();
               harnessBarrier = undefined;
-              throw new StatecaseUsageError(`stop ${mapping!.kind} before in-place restore`, 5);
+              throw new StatecaseUsageError(`stop ${mapping.kind} before in-place restore`, 5);
             }
           }
-          protectedSnapshot = await client.createSnapshot(vaultId, `Before in-place restore of ${mapping!.id}`);
+          protectedSnapshot = await client.createSnapshot(vaultId, `Before in-place restore of ${inPlaceMapping!.id}`);
         }
-        const result = await engine.restoreInPlace(restoreConfig, mapping!, options.revision, {
+        const result = await engine.restoreInPlace(restoreConfig, inPlaceMapping!, options.revision, {
           dryRun: options.dryRun,
           ...(!options.dryRun ? {
-            prepareRecovery: async (paths) => {
+            prepareRecovery: async (paths, context) => {
               emergency = await createEmergencySnapshot({
                 id: randomLocalId("restore"),
                 createdAt: new Date().toISOString(),
                 statecaseHome: store.home,
                 targetRoot: target,
                 paths,
-                ...(mapping!.kind === "drop" ? {} : { harness: mapping!.kind }),
+                ...(context ? { workspace: { targetHeadRef: context.targetHeadRef } } : mapping?.kind === "drop" || !mapping ? {} : { harness: mapping.kind }),
               });
               return { rollback: () => restoreEmergencySnapshot(emergency!.path) };
             },
           } : {}),
         });
         if (!options.dryRun) {
-          config.applied[mapping!.namespace] = restoreConfig.applied[mapping!.namespace]!;
+          config.applied[inPlaceMapping!.namespace] = restoreConfig.applied[inPlaceMapping!.namespace]!;
           config.sessionBindings = restoreConfig.sessionBindings;
           await store.saveConfig(config);
         }

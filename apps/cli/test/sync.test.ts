@@ -9,7 +9,7 @@ import { canonicalJson, namespaceManifestSchema, type NamespaceManifestV1 } from
 import { afterEach, describe, expect, it } from "vitest";
 
 import { StatecaseClient } from "../src/client.js";
-import { sessionBindingKey, type LocalConfig } from "../src/config.js";
+import { sessionBindingKey, type LocalConfig, type RootMapping } from "../src/config.js";
 import { createEmergencySnapshot, restoreEmergencySnapshot } from "../src/emergency.js";
 import { SyncConflict, SyncEngine } from "../src/sync.js";
 
@@ -986,6 +986,90 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     await expect(readFile(join(observerRoot, "newer.txt"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("restores a historical Git workspace in place and rolls HEAD, index, and files back on a failed fork (BK-009, WS-030)", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-workspace-in-place-"));
+    temporary.push(base);
+    const root = join(base, "workspace");
+    await initializeRepository(root);
+    await runFile("git", ["-C", root, "branch", "-M", "main"]);
+    const historicalCommit = (await runFile("git", ["-C", root, "rev-parse", "HEAD"])).stdout.trim();
+    await writeFile(join(root, "tracked.txt"), "historical index\n");
+    await runFile("git", ["-C", root, "add", "tracked.txt"]);
+    await writeFile(join(root, "tracked.txt"), "historical worktree\n");
+    await writeFile(join(root, "historical-only.txt"), "historical untracked\n");
+    const historicalStatus = (await runFile("git", ["-C", root, "status", "--porcelain=v1", "-z"])).stdout;
+
+    const remote = new MemoryRemote();
+    const key = await randomKey();
+    const engine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    const local = workspaceConfig(root);
+    local.workspaces[0]!.gitFetch = "auto";
+    const mapping = workspaceMapping(local);
+    const historical = await engine.push(local);
+
+    await runFile("git", ["-C", root, "reset", "--hard", "-q", "HEAD"]);
+    await writeFile(join(root, "tracked.txt"), "later committed\n");
+    await runFile("git", ["-C", root, "add", "tracked.txt"]);
+    await runFile("git", ["-C", root, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "later"]);
+    await writeFile(join(root, "tracked.txt"), "current index\n");
+    await runFile("git", ["-C", root, "add", "tracked.txt"]);
+    await writeFile(join(root, "tracked.txt"), "current worktree\n");
+    await writeFile(join(root, "current-only.txt"), "current untracked\n");
+    const current = await engine.push(local);
+    await writeFile(join(root, "local-only.txt"), "not uploaded\n");
+    const currentHead = (await runFile("git", ["-C", root, "rev-parse", "HEAD"])).stdout.trim();
+    const currentStatus = (await runFile("git", ["-C", root, "status", "--porcelain=v1", "-z"])).stdout;
+    const currentIndex = await readFile(join(root, ".git", "index"));
+
+    const dryRun = await engine.restoreInPlace(local, mapping, historical.revisionId!, { dryRun: true });
+    expect(dryRun).toMatchObject({ dryRun: true, namespace: "workspace:ws_test" });
+    expect((await runFile("git", ["-C", root, "rev-parse", "HEAD"])).stdout.trim()).toBe(currentHead);
+    expect(remote.scopedRevisionId).toBe(current.revisionId);
+
+    const statecaseHome = join(base, "statecase");
+    const prepareRecovery = async (paths: readonly string[], context?: { kind: "workspace"; targetHeadRef: string | null }) => {
+      expect(context).toEqual({ kind: "workspace", targetHeadRef: "main" });
+      const snapshot = await createEmergencySnapshot({
+        id: `restore_${crypto.randomUUID().replaceAll("-", "")}`,
+        createdAt: new Date().toISOString(),
+        statecaseHome,
+        targetRoot: root,
+        paths,
+        workspace: { targetHeadRef: context!.targetHeadRef },
+      });
+      return { rollback: () => restoreEmergencySnapshot(snapshot.path) };
+    };
+
+    remote.failNextNamespaceCommit = true;
+    await expect(engine.restoreInPlace(local, mapping, historical.revisionId!, { prepareRecovery }))
+      .rejects.toMatchObject({ status: 409 });
+    expect((await runFile("git", ["-C", root, "rev-parse", "HEAD"])).stdout.trim()).toBe(currentHead);
+    expect((await runFile("git", ["-C", root, "symbolic-ref", "--short", "HEAD"])).stdout.trim()).toBe("main");
+    expect(await readFile(join(root, ".git", "index"))).toEqual(currentIndex);
+    expect((await runFile("git", ["-C", root, "status", "--porcelain=v1", "-z"])).stdout).toBe(currentStatus);
+    expect(await readFile(join(root, "tracked.txt"), "utf8")).toBe("current worktree\n");
+    expect(await readFile(join(root, "local-only.txt"), "utf8")).toBe("not uploaded\n");
+
+    const restored = await engine.restoreInPlace(local, mapping, historical.revisionId!, { prepareRecovery });
+    expect(restored.revisionId).not.toBe(historical.revisionId);
+    expect(restored.revisionId).not.toBe(current.revisionId);
+    expect((await runFile("git", ["-C", root, "rev-parse", "HEAD"])).stdout.trim()).toBe(historicalCommit);
+    expect((await runFile("git", ["-C", root, "symbolic-ref", "--short", "HEAD"])).stdout.trim()).toBe("main");
+    expect(await readFile(join(root, "tracked.txt"), "utf8")).toBe("historical worktree\n");
+    expect((await runFile("git", ["-C", root, "show", ":tracked.txt"])).stdout).toBe("historical index\n");
+    expect(await readFile(join(root, "historical-only.txt"), "utf8")).toBe("historical untracked\n");
+    await expect(readFile(join(root, "current-only.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(join(root, "local-only.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await runFile("git", ["-C", root, "status", "--porcelain=v1", "-z"])).stdout).toBe(historicalStatus);
+
+    const observer = join(base, "observer");
+    await runFile("git", ["clone", "-q", root, observer]);
+    const observerConfig = workspaceConfig(observer);
+    await new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key).pull(observerConfig);
+    expect((await runFile("git", ["-C", observer, "status", "--porcelain=v1", "-z"])).stdout).toBe(historicalStatus);
+    expect(await readFile(join(observer, "tracked.txt"), "utf8")).toBe("historical worktree\n");
+  });
+
   it("refuses SQLite-family in-place targets before recovery preparation or mutation (BK-007)", async () => {
     const base = await mkdtemp(join(tmpdir(), "statecase-in-place-db-"));
     temporary.push(base);
@@ -1629,6 +1713,18 @@ function harnessConfig(path: string, workspacePath: string): LocalConfig {
 
 function workspaceConfig(path: string): LocalConfig {
   return { ...config(path), mappings: [], workspaces: [{ id: "ws_test", path }] };
+}
+
+function workspaceMapping(configValue: LocalConfig): RootMapping {
+  const workspace = configValue.workspaces[0]!;
+  return {
+    id: `workspace_${workspace.id}`,
+    kind: "drop",
+    mode: "two-way",
+    name: workspace.name ?? workspace.id,
+    namespace: `workspace:${workspace.id}`,
+    path: workspace.path,
+  };
 }
 
 async function scopedAccess(rootKey: Uint8Array, actions: Array<"read" | "append">) {

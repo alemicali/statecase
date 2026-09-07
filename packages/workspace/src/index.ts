@@ -108,6 +108,11 @@ export interface WorkspaceFileTransaction {
   deletes: string[];
 }
 
+export interface WorkspaceReplacementPlan {
+  paths: string[];
+  targetHeadRef: string | null;
+}
+
 interface GitEntry {
   mode: number;
   oid: string;
@@ -156,6 +161,76 @@ export async function applyWorkspaceCapsule(
   await applyWorkspaceTransaction([{ root: rootValue, captured, gitFetch: options.gitFetch }], { writes: [], deletes: [] }, options);
 }
 
+/**
+ * Explicitly replaces a dirty workspace with an authenticated capsule.
+ * The caller must durably capture every planned path plus Git HEAD/index state
+ * in beforeMutation; no worktree, index, or ref mutation occurs before it
+ * resolves successfully.
+ */
+export async function replaceWorkspaceCapsule(
+  rootValue: string,
+  captured: CapturedWorkspace,
+  options: {
+    materialize: WorkspaceMaterializer;
+    beforeMutation: (plan: WorkspaceReplacementPlan) => Promise<void>;
+    gitFetch?: GitFetchPolicy;
+  },
+): Promise<void> {
+  const root = resolve(rootValue);
+  const policy = options.gitFetch ?? "ask";
+  const inspection = await inspectWorkspaceReplacement(root, captured, policy);
+  if (inspection.fetch && inspection.baseCommit) {
+    await fetchWorkspaceBaseline(root, inspection.baseCommit);
+    if (!await gitObjectExists(root, inspection.baseCommit)) {
+      throw new WorkspaceBaselineUnavailable(inspection.baseCommit, "fetch-failed");
+    }
+  }
+  const logicalPaths = await workspaceReplacementPaths(root, captured, inspection.currentCommit);
+  await assertNoInitializedSubmodule(root, captured);
+  const paths = logicalPaths.map((path) => destinationPath(root, path));
+  for (const [index, path] of paths.entries()) {
+    const info = await lstat(path).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? undefined : Promise.reject(error));
+    if (info?.isDirectory()) throw new Error(`workspace replacement refuses a directory target: ${logicalPaths[index]}`);
+    if (info && !info.isFile() && !info.isSymbolicLink()) throw new Error(`unsupported workspace entry: ${logicalPaths[index]}`);
+  }
+  await options.beforeMutation({ paths, targetHeadRef: captured.capsule.headRef });
+
+  await options.materialize({ writes: [], symlinks: [], deletes: paths });
+  await removeEmptyWorkspaceParents(root, paths);
+  if (captured.capsule.baseCommit) {
+    try {
+      await gitCheckoutText(root, ["read-tree", "--reset", "-u", captured.capsule.baseCommit]);
+    } catch (error) {
+      if (gitLfsFilterFailure(error)) {
+        throw new GitLfsContentUnavailable(
+          (await findGitLfsPointers(root, captured.capsule.baseCommit)).map((pointer) => pointer.path),
+          "checkout-filter",
+        );
+      }
+      throw new WorkspaceBaselineUnavailable(captured.capsule.baseCommit, "checkout-failed");
+    }
+  } else {
+    await gitText(root, ["read-tree", "--empty"]);
+  }
+  await setWorkspaceHead(root, captured.capsule.baseCommit, captured.capsule.headRef);
+  await materializeGitLfs(root, captured.capsule.baseCommit, captured, policy);
+
+  const blobMap = new Map(captured.blobs.map((blob) => [blobKey(blob.layer, blob.path), blob]));
+  for (const record of captured.capsule.records) await applyIndexRecord(root, record, blobMap);
+  await options.materialize(workspaceOverlayTransaction(root, captured, blobMap));
+}
+
+/** Validates an explicit replacement without fetching or mutating the repository. */
+export async function assertWorkspaceReplacement(
+  rootValue: string,
+  captured: CapturedWorkspace,
+  options: { gitFetch?: GitFetchPolicy } = {},
+): Promise<void> {
+  const root = resolve(rootValue);
+  await inspectWorkspaceReplacement(root, captured, options.gitFetch ?? "ask");
+  await assertNoInitializedSubmodule(root, captured);
+}
+
 /** Applies ordinary files and one or more Git overlays as one filesystem revision. */
 export async function applyWorkspaceTransaction(
   applications: readonly WorkspaceApplication[],
@@ -192,6 +267,11 @@ export async function applyWorkspaceTransaction(
         originalIndex,
         blobMap: new Map(application.captured.blobs.map((blob) => [blobKey(blob.layer, blob.path), blob])),
       });
+    }
+    for (const [index, workspace] of prepared.entries()) {
+      const change = baselineChanges[index]!;
+      change.changed = true;
+      await setWorkspaceHead(workspace.root, workspace.captured.capsule.baseCommit, workspace.captured.capsule.headRef);
     }
     const transaction: WorkspaceFileTransaction = {
       writes: [...initial.writes],
@@ -252,6 +332,8 @@ interface BaselineChange {
   changed: boolean;
   originalCommit: string | null;
   originalRef: string | null;
+  targetRef: string | null;
+  originalTargetCommit: string | null;
   introducedPaths: string[];
   lfsOriginals: LfsOriginal[];
 }
@@ -290,6 +372,7 @@ export async function inspectWorkspaceDestination(
   if ((await gitText(root, ["rev-parse", "--is-inside-work-tree"]).catch(() => "false")).trim() !== "true") {
     throw new Error(`workspace is not a Git working tree: ${root}`);
   }
+  await assertWorkspaceHeadReference(root, captured);
   const currentBase = await gitText(root, ["rev-parse", "--verify", "HEAD"]).then((value) => value.trim(), () => null);
   const currentRef = await gitText(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]).then((value) => value.trim(), () => null);
   if ((await gitBuffer(root, ["status", "--porcelain=v1", "-z"])).byteLength > 0) {
@@ -312,6 +395,128 @@ export async function inspectWorkspaceDestination(
   const present = await gitObjectExists(root, captured.capsule.baseCommit);
   if (!present && !await hasOrigin(root)) throw new WorkspaceBaselineUnavailable(captured.capsule.baseCommit, "no-origin");
   return { root, captured, baseCommit: captured.capsule.baseCommit, currentCommit: currentBase, currentRef, fetch: !present, checkout: true };
+}
+
+async function inspectWorkspaceReplacement(
+  root: string,
+  captured: CapturedWorkspace,
+  gitFetch: GitFetchPolicy,
+): Promise<BaselineInspection> {
+  validateCaptured(captured);
+  if ((await gitText(root, ["rev-parse", "--is-inside-work-tree"]).catch(() => "false")).trim() !== "true") {
+    throw new Error(`workspace is not a Git working tree: ${root}`);
+  }
+  await assertWorkspaceHeadReference(root, captured);
+  for (const blob of captured.blobs) {
+    const oid = (await gitInput(root, ["hash-object", "--stdin"], blob.bytes)).toString("utf8").trim();
+    if (oid !== blob.oid) throw new Error(`workspace blob digest does not match: ${blob.path}`);
+    if (blob.mode === 0o120000) safeSymlinkTarget(root, destinationPath(root, blob.path), blob.bytes);
+  }
+  const currentCommit = await gitText(root, ["rev-parse", "--verify", "HEAD"]).then((value) => value.trim(), () => null);
+  const currentRef = await gitText(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]).then((value) => value.trim(), () => null);
+  const baseCommit = captured.capsule.baseCommit;
+  if (baseCommit === null) {
+    return { root, captured, baseCommit, currentCommit, currentRef, fetch: false, checkout: currentCommit !== null };
+  }
+  const present = await gitObjectExists(root, baseCommit);
+  if (!present && gitFetch !== "auto") {
+    throw new WorkspaceBaselineUnavailable(baseCommit, gitFetch === "ask" ? "approval-required" : "policy-disabled");
+  }
+  if (!present && !await hasOrigin(root)) throw new WorkspaceBaselineUnavailable(baseCommit, "no-origin");
+  if (present) {
+    const issues = await gitLfsIssues(root, baseCommit, captured);
+    if (issues.length > 0 && gitFetch !== "auto") throwGitLfsIssues(issues);
+  }
+  return { root, captured, baseCommit, currentCommit, currentRef, fetch: !present, checkout: currentCommit !== baseCommit };
+}
+
+async function assertTargetRefNotCheckedOutElsewhere(root: string, headRef: string): Promise<void> {
+  const targetRef = `refs/heads/${headRef}`;
+  const fields = nulPaths(await gitBuffer(root, ["worktree", "list", "--porcelain", "-z"]));
+  let worktree: string | undefined;
+  for (const field of fields) {
+    if (field.startsWith("worktree ")) worktree = field.slice("worktree ".length);
+    else if (field === `branch ${targetRef}` && worktree && resolve(worktree) !== root) {
+      throw new Error(`workspace target branch is checked out in another worktree: ${headRef}`);
+    }
+  }
+}
+
+async function assertWorkspaceHeadReference(root: string, captured: CapturedWorkspace): Promise<void> {
+  if (captured.capsule.headRef !== null) {
+    if (captured.capsule.headRef.startsWith("refs/")) throw new Error("invalid workspace head reference");
+    await gitText(root, ["check-ref-format", "--branch", captured.capsule.headRef]).catch(() => {
+      throw new Error("invalid workspace head reference");
+    });
+    await assertTargetRefNotCheckedOutElsewhere(root, captured.capsule.headRef);
+  } else if (captured.capsule.baseCommit === null) {
+    throw new Error("an unborn workspace requires a symbolic head reference");
+  }
+}
+
+async function workspaceReplacementPaths(
+  root: string,
+  captured: CapturedWorkspace,
+  currentCommit: string | null,
+): Promise<string[]> {
+  const changed = new Set<string>(captured.capsule.records.map((record) => record.path));
+  const localChanges = await Promise.all([
+    gitBuffer(root, ["diff", "--name-only", "-z"]),
+    gitBuffer(root, ["diff", "--cached", "--name-only", "-z"]),
+    gitBuffer(root, ["ls-files", "--others", "--exclude-standard", "-z"]),
+  ]);
+  for (const output of localChanges) for (const path of nulPaths(output)) changed.add(path);
+  const targetCommit = captured.capsule.baseCommit;
+  if (currentCommit && targetCommit) {
+    for (const path of nulPaths(await gitBuffer(root, ["diff", "--no-renames", "--name-only", "-z", currentCommit, targetCommit, "--"]))) changed.add(path);
+  } else if (currentCommit) {
+    for (const path of (await readHeadEntries(root, currentCommit)).keys()) changed.add(path);
+  } else if (targetCommit) {
+    for (const path of (await readHeadEntries(root, targetCommit)).keys()) changed.add(path);
+  }
+  for (const path of changed) requireLogicalPath(path);
+  return [...changed].sort((left, right) => left.localeCompare(right, "en"));
+}
+
+async function assertNoInitializedSubmodule(root: string, captured: CapturedWorkspace): Promise<void> {
+  const paths = new Set<string>();
+  for (const [path, entry] of await readIndexEntries(root)) if (entry.mode === 0o160000) paths.add(path);
+  if (captured.capsule.baseCommit) {
+    for (const [path, entry] of await readHeadEntries(root, captured.capsule.baseCommit)) if (entry.mode === 0o160000) paths.add(path);
+  }
+  for (const record of captured.capsule.records) if (record.index.state === "submodule") paths.add(record.path);
+  for (const path of paths) {
+    const info = await lstat(destinationPath(root, path)).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? undefined : Promise.reject(error));
+    if (info?.isDirectory()) throw new Error(`initialized submodule worktrees are not supported: ${path}`);
+  }
+}
+
+async function removeEmptyWorkspaceParents(root: string, paths: readonly string[]): Promise<void> {
+  const parents = new Set<string>();
+  for (const path of paths) {
+    let parent = dirname(path);
+    while (parent !== root) {
+      parents.add(parent);
+      parent = dirname(parent);
+    }
+  }
+  for (const parent of [...parents].sort((left, right) => right.length - left.length)) {
+    await rmdir(parent).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT" && error.code !== "ENOTEMPTY" && error.code !== "EEXIST") throw error;
+    });
+  }
+}
+
+async function setWorkspaceHead(root: string, baseCommit: string | null, headRef: string | null): Promise<void> {
+  if (headRef !== null) {
+    const fullRef = `refs/heads/${headRef}`;
+    if (baseCommit) await gitText(root, ["update-ref", fullRef, baseCommit]);
+    else await gitText(root, ["update-ref", "-d", fullRef]);
+    await gitText(root, ["symbolic-ref", "HEAD", fullRef]);
+    return;
+  }
+  if (!baseCommit) throw new Error("an unborn workspace requires a symbolic head reference");
+  await gitText(root, ["update-ref", "--no-deref", "HEAD", baseCommit]);
 }
 
 export async function workspaceMatchesCapsule(rootValue: string, expected: CapturedWorkspace): Promise<boolean> {
@@ -400,6 +605,29 @@ async function applyIndexRecord(root: string, record: WorkspaceRecord, blobs: Ma
     if (oid !== record.index.oid) throw new Error(`capsule index blob digest mismatch: ${record.path}`);
   }
   await gitText(root, ["update-index", "--add", "--cacheinfo", record.index.mode.toString(8), record.index.oid, record.path]);
+}
+
+function workspaceOverlayTransaction(
+  root: string,
+  captured: CapturedWorkspace,
+  blobs: Map<string, WorkspaceBlob>,
+): WorkspaceFileTransaction {
+  const transaction: WorkspaceFileTransaction = { writes: [], symlinks: [], deletes: [] };
+  for (const record of captured.capsule.records) {
+    const destination = destinationPath(root, record.path);
+    if (record.worktree.state === "absent") {
+      transaction.deletes.push(destination);
+    } else if (record.worktree.state === "content") {
+      const blob = requireBlob(blobs, "worktree", record.path, record.worktree.oid);
+      if (blob.mode === 0o120000) transaction.symlinks!.push({ path: destination, target: safeSymlinkTarget(root, destination, blob.bytes) });
+      else transaction.writes.push({ path: destination, bytes: blob.bytes, mode: filesystemMode(blob.mode) });
+    } else if (record.worktree.state === "index" && record.index.state === "content") {
+      const blob = requireBlob(blobs, "index", record.path, record.index.oid);
+      if (blob.mode === 0o120000) transaction.symlinks!.push({ path: destination, target: safeSymlinkTarget(root, destination, blob.bytes) });
+      else transaction.writes.push({ path: destination, bytes: blob.bytes, mode: filesystemMode(blob.mode) });
+    }
+  }
+  return transaction;
 }
 
 function validateCaptured(captured: CapturedWorkspace): void {
@@ -572,11 +800,16 @@ async function restoreIndex(path: string, bytes: Uint8Array | undefined): Promis
 }
 
 async function acquireWorkspaceBaseline(inspection: BaselineInspection): Promise<BaselineChange> {
+  const targetRef = inspection.captured.capsule.headRef;
   const change: BaselineChange = {
     root: inspection.root,
     changed: false,
     originalCommit: inspection.currentCommit,
     originalRef: inspection.currentRef,
+    targetRef,
+    originalTargetCommit: targetRef === null
+      ? null
+      : await gitText(inspection.root, ["rev-parse", "--verify", `refs/heads/${targetRef}`]).then((value) => value.trim(), () => null),
     introducedPaths: [],
     lfsOriginals: [],
   };
@@ -612,9 +845,14 @@ async function acquireWorkspaceBaseline(inspection: BaselineInspection): Promise
 
 async function rollbackWorkspaceBaseline(change: BaselineChange): Promise<void> {
   if (change.changed) {
+    if (change.targetRef) {
+      const fullTargetRef = `refs/heads/${change.targetRef}`;
+      if (change.originalTargetCommit) await gitText(change.root, ["update-ref", fullTargetRef, change.originalTargetCommit]);
+      else await gitText(change.root, ["update-ref", "-d", fullTargetRef]);
+    }
     if (change.originalCommit) {
-      if (change.originalRef) await gitCheckoutText(change.root, ["checkout", "--quiet", change.originalRef]);
-      else await gitCheckoutText(change.root, ["checkout", "--quiet", "--detach", change.originalCommit]);
+      if (change.originalRef) await gitCheckoutText(change.root, ["checkout", "--quiet", "--force", change.originalRef]);
+      else await gitCheckoutText(change.root, ["checkout", "--quiet", "--force", "--detach", change.originalCommit]);
     } else {
       if (!change.originalRef) throw new Error("cannot restore an unborn workspace without its original branch");
       await gitText(change.root, ["read-tree", "--empty"]);

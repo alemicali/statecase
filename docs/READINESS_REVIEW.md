@@ -212,20 +212,28 @@ safety reserve and retain fail-clean semantics if capacity later changes. A
 Daytona object-backed temporary mount exposed and now has regression coverage
 for an empty temporary root disappearing between sync commands.
 
-Full-key, two-way Drop and stopped Codex/Claude mappings now support explicit
-in-place historical restore. The flow creates both a protected cloud snapshot
-and a persistent local emergency snapshot, excludes daemon/harness writers,
-rejects SQLite-family targets, validates materialized adapter state, rolls back
-failed commits, and publishes a new forward revision rather than rewinding the
-shared head. Workspace in-place restore remains deliberately disabled until
-its Git transaction is qualified. The packaged Drop flow passed a two-device
+Full-key, two-way Drop, stopped Codex/Claude mappings, and Git workspaces now
+support explicit in-place historical restore. The flow creates both a protected
+cloud snapshot and a persistent local emergency snapshot, excludes
+daemon/harness writers, rejects unsafe targets, validates materialized state,
+rolls back failed commits, and publishes a new forward revision rather than
+rewinding the shared head. Workspace recovery preserves HEAD/ref identity, the
+raw index, and affected worktree paths; it handles dirty, detached, unborn, and
+missing-baseline repositories while refusing initialized submodules and source
+races before mutation. The packaged Drop flow passed a two-device
 Daytona run against the live Cloudflare stack, including offline emergency
 rollback and complete cleanup; see the
 [in-place restore UAT](uat/2026-09-07-in-place-restore-daytona.md).
+The packaged Git workspace flow also passed with exact symbolic branch, HEAD,
+index, worktree, untracked-file, and symlink recovery; a differently mapped
+independent clone converged and the source then rolled back offline to its raw
+pre-restore Git state. The drill exposed and fixed detached-HEAD convergence in
+ordinary baseline acquisition. See the
+[workspace restore UAT](uat/2026-09-07-workspace-in-place-restore-daytona.md).
 
 Automated background steady state is not yet claimed. Real-OS daemon/service
-UAT, real-version harness restore UAT, workspace in-place restore,
-post-revocation key rewrap, and real harness-version compatibility remain
+UAT, real-version harness restore UAT, post-revocation key rewrap, and real
+harness-version compatibility remain
 blocking work for a public or unattended release.
 
 The design is intentionally not called production-complete. Crypto selection,
