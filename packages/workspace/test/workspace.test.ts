@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, lstat, mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -14,6 +14,7 @@ import {
   captureWorkspace,
   WorkspaceBaselineUnavailable,
   workspaceMatchesCapsule,
+  type WorkspaceMaterializedWrite,
 } from "../src/index.js";
 
 const run = promisify(execFile);
@@ -64,6 +65,20 @@ describe("exact Git workspace capsules (WS-010..WS-018, WS-025..WS-026)", () => 
     expect(await readlink(join(target, "links", "portable"))).toBe("target.txt");
     expect(await readlink(join(target, "staged-link"))).toBe("links/target.txt");
     expect(await git(target, "status", "--porcelain=v1", "-z")).toBe(await git(source, "status", "--porcelain=v1", "-z"));
+  });
+
+  it("materializes a staged-only change when the worktree exactly matches the index", async () => {
+    const source = await repository("staged-only-source");
+    const target = await repository("staged-only-target");
+    await writeFile(join(source, "tracked.txt"), "staged and worktree\n");
+    await git(source, "add", "tracked.txt");
+    const captured = await captureWorkspace(source);
+    expect(captured.capsule.records[0]?.worktree.state).toBe("index");
+
+    await applyWorkspaceCapsule(target, captured, { materialize });
+
+    expect(await readFile(join(target, "tracked.txt"), "utf8")).toBe("staged and worktree\n");
+    expect(await git(target, "show", ":tracked.txt")).toBe("staged and worktree\n");
   });
 
   it("refuses a dirty destination or mismatched baseline without changing it", async () => {
@@ -866,14 +881,15 @@ async function git(root: string, ...args: string[]): Promise<string> {
 }
 
 async function materialize(transaction: {
-  writes: Array<{ path: string; bytes: Uint8Array; mode?: number }>;
+  writes: WorkspaceMaterializedWrite[];
   deletes: string[];
   symlinks?: Array<{ path: string; target: string }>;
 }): Promise<void> {
   for (const path of transaction.deletes) await rm(path, { force: true });
   for (const write of transaction.writes) {
     await mkdir(dirname(write.path), { recursive: true });
-    await writeFile(write.path, write.bytes);
+    if (write.sourcePath !== undefined) await copyFile(write.sourcePath, write.path);
+    else await writeFile(write.path, write.bytes);
     if (write.mode !== undefined) await chmod(write.path, write.mode);
   }
   for (const link of transaction.symlinks ?? []) {

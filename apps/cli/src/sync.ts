@@ -1,3 +1,4 @@
+import { createReadStream } from "node:fs";
 import { lstat, readdir, readFile, stat } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { basename, join, relative, resolve, sep } from "node:path";
@@ -7,7 +8,7 @@ import { classifyClaudePath, claudeProjectDirectory } from "@statecase/adapter-c
 import { classifyCodexPath } from "@statecase/adapter-codex";
 import { extractActivityReferences, scanCompleteJsonl, sessionWorkingDirectory, type ActivityReference } from "@statecase/adapter-common";
 import { chunkBytes, concatChunks } from "@statecase/chunking";
-import { computeObjectId, decryptEnvelope, deriveScopeKey, encryptEnvelope } from "@statecase/crypto";
+import { computeObjectId, computeObjectIdStream, decryptEnvelope, deriveScopeKey, encryptEnvelope } from "@statecase/crypto";
 import {
   canonicalJson,
   manifestSchema,
@@ -26,6 +27,7 @@ import {
   type CapturedWorkspace,
   type GitFetchPolicy,
   type WorkspaceBlob,
+  type WorkspaceMaterializedWrite,
   WorkspaceBaselineUnavailable,
   workspaceMatchesCapsule,
 } from "@statecase/workspace";
@@ -35,16 +37,23 @@ import type { ScopedVaultKeys } from "./capability.js";
 import type { StatecaseClient } from "./client.js";
 import { isCompleteJsonlRecordSupersequence, mergeJsonlAppends } from "./append-merge.js";
 import { applyFileTransaction } from "./materialize.js";
+import { localizePortableSession, localizeWorkspaceUri, stagePortableSession } from "./session-stream.js";
+import { describeStagedJsonl, downloadVerifiedEntry, uploadStagedJsonl } from "./stream-transfer.js";
 
 const encoder = new TextEncoder();
 const runFile = promisify(execFile);
 const MAX_FILE_BYTES = 256 * 1024 * 1024;
-const CHUNK_POLICY = { strategy: "fastcdc" as const, minSize: 1024 * 1024, targetSize: 4 * 1024 * 1024, maxSize: 8 * 1024 * 1024 };
+const MAX_STREAMED_SESSION_BYTES = 20 * 1024 * 1024 * 1024;
+const CHUNK_POLICY = { strategy: "fastcdc" as const, minSize: 256 * 1024, targetSize: 1024 * 1024, maxSize: 4 * 1024 * 1024 };
+const JSONL_CHUNK_POLICY = { targetSize: 4 * 1024 * 1024, maxSize: 4 * 1024 * 1024 };
 
 interface ScannedEntry {
   namespace: string;
   logicalPath: string;
-  bytes: Uint8Array;
+  bytes?: Uint8Array;
+  stagedPath?: string;
+  stagedSize?: number;
+  dispose?: () => Promise<void>;
   entryType?: "file" | "workspace-capsule" | "workspace-blob";
   workspacePath?: string;
   workspaceLayer?: "index" | "worktree";
@@ -56,6 +65,13 @@ interface ScannedEntry {
     activity: ActivityReference[];
   };
 }
+
+type MaterializedEntry = {
+  mapping: RootMapping;
+  logicalPath: string;
+  path: string;
+  digest: string;
+} & ({ bytes: Uint8Array; sourcePath?: never } | { bytes?: never; sourcePath: string });
 
 export interface DependencyReport extends SessionCapsuleV1 {
   dependencies: Array<DependencyReference & { status: "resolved" | "unresolved"; reason?: string }>;
@@ -109,6 +125,8 @@ export class SyncEngine {
     if (this.scopedAccess) return this.#pushScoped(config, dryRun, options);
     const scopedRemote = await this.client.namespaceHeads(this.vaultId);
     if (scopedRemote.namespaces.length > 0) return this.#pushScoped(config, dryRun, options);
+    const legacyRemote = await this.client.head(this.vaultId);
+    if (!legacyRemote.revisionId) return this.#pushScoped(config, dryRun, options);
     const operationId = randomId("op");
     const revisionId = randomId("rev");
     const createdAt = new Date().toISOString();
@@ -117,14 +135,13 @@ export class SyncEngine {
       ...config.mappings.filter((mapping) => mapping.mode !== "consume"),
       ...workspaceMappings(config),
     ];
-    const scanned = (await Promise.all(writable.map((mapping) =>
-      mapping.id.startsWith("workspace_") ? scanGitOverlay(mapping, config.workspaces) : scanMapping(mapping, config.workspaces)
-    ))).flat();
+    const scanned = await scanWritableMappings(writable, config.workspaces, false);
     const head = await this.client.head(this.vaultId);
     if (options.expectedHeadRevisionId !== undefined && head.revisionId !== options.expectedHeadRevisionId) {
       throw new SyncConflict([`${this.vaultId}:head-advanced-before-resolution`]);
     }
-    const previous = head.manifestObjectId ? await this.#downloadManifest(head.manifestObjectId) : undefined;
+    if (!head.revisionId || !head.manifestObjectId) throw new Error("legacy head changed while preparing synchronization");
+    const previous = await this.#downloadManifest(head.manifestObjectId);
     const writableNamespaces = new Set(writable.map((mapping) => mapping.namespace));
     if (writableNamespaces.size !== writable.length) throw new Error("duplicate writable namespace mapping");
     const plaintextChunks = new Map<string, { bytes: Uint8Array; namespace: string }>();
@@ -132,7 +149,8 @@ export class SyncEngine {
     for (const file of scanned) {
       const keys = await this.#scopeKeys(file.namespace);
       const objectIds: string[] = [];
-      for (const chunk of chunkBytes(file.bytes, CHUNK_POLICY)) {
+      const fileBytes = requiredMemoryBytes(file);
+      for (const chunk of chunkBytes(fileBytes, CHUNK_POLICY)) {
         const objectId = await computeObjectId(keys.dedupKey, chunk);
         objectIds.push(objectId);
         if (!plaintextChunks.has(objectId)) plaintextChunks.set(objectId, { bytes: chunk, namespace: file.namespace });
@@ -145,15 +163,15 @@ export class SyncEngine {
         ...(file.workspaceLayer ? { workspaceLayer: file.workspaceLayer } : {}),
         ...(file.fileMode !== undefined ? { fileMode: file.fileMode } : {}),
         objectIds,
-        totalSize: file.bytes.byteLength,
-        contentDigest: await computeObjectId(keys.dedupKey, file.bytes),
+        totalSize: fileBytes.byteLength,
+        contentDigest: await computeObjectId(keys.dedupKey, fileBytes),
       });
     }
-    const entries = previous?.entries.filter((entry) => !writableNamespaces.has(entry.namespace)) ?? [];
-    const tombstones = previous?.tombstones.filter((item) => !writableNamespaces.has(item.namespace)) ?? [];
+    const entries = previous.entries.filter((entry) => !writableNamespaces.has(entry.namespace));
+    const tombstones = previous.tombstones.filter((item) => !writableNamespaces.has(item.namespace));
     const completelyLocalNamespaces = new Set<string>();
     const manifests = new Map<string, VaultManifestV1>();
-    if (head.revisionId && previous) manifests.set(head.revisionId, previous);
+    manifests.set(head.revisionId, previous);
     const deletedAt = new Date().toISOString();
     const mergeConflicts: string[] = [];
     for (const mapping of writable) {
@@ -217,7 +235,7 @@ export class SyncEngine {
     if (mergeConflicts.length > 0) throw new SyncConflict(mergeConflicts.sort((left, right) => left.localeCompare(right, "en")));
     entries.sort(compareEntries);
     tombstones.sort((left, right) => left.namespace.localeCompare(right.namespace, "en") || left.logicalPath.localeCompare(right.logicalPath, "en"));
-    const conflicts = previous?.conflicts ?? [];
+    const conflicts = previous.conflicts;
     const sessionCapsules = await buildSessionCapsules({
       vaultId: this.vaultId,
       revisionId,
@@ -228,7 +246,7 @@ export class SyncEngine {
       entries,
       previous,
     });
-    if (previous && canonicalJson({ entries, tombstones, conflicts, sessionCapsules }) === canonicalJson({
+    if (canonicalJson({ entries, tombstones, conflicts, sessionCapsules }) === canonicalJson({
       entries: previous.entries,
       tombstones: previous.tombstones,
       conflicts: previous.conflicts,
@@ -237,7 +255,7 @@ export class SyncEngine {
       if (!dryRun) await this.#publishNamespaceMirrors(previous, writableNamespaces);
       const appliedMappings = writable.filter((mapping) => completelyLocalNamespaces.has(mapping.namespace));
       if (!dryRun) {
-        await this.#markApplied(config, appliedMappings, scanned, head.revisionId!);
+        await this.#markApplied(config, appliedMappings, scanned, head.revisionId);
         await this.#markNamespaceRevisions(config, appliedMappings);
         recordSessionBindings(config, writable, scanned);
       }
@@ -260,7 +278,7 @@ export class SyncEngine {
       schemaVersion: 1,
       vaultId: this.vaultId,
       revisionId,
-      parentRevisionIds: head.revisionId ? [head.revisionId] : [],
+      parentRevisionIds: [head.revisionId],
       createdAt,
       createdByDeviceId,
       operationId,
@@ -378,9 +396,8 @@ export class SyncEngine {
       throw new Error(`capability does not authorize configured namespaces: ${unauthorized.map((mapping) => mapping.namespace).sort().join(", ")}`);
     }
     if (new Set(writable.map((mapping) => mapping.namespace)).size !== writable.length) throw new Error("duplicate writable namespace mapping");
-    const scanned = (await Promise.all(writable.map((mapping) =>
-      mapping.id.startsWith("workspace_") ? scanGitOverlay(mapping, config.workspaces) : scanMapping(mapping, config.workspaces)
-    ))).flat();
+    const scanned = await scanWritableMappings(writable, config.workspaces, true);
+    try {
     const remote = await this.client.namespaceHeads(this.vaultId);
     if (options.expectedHeadRevisionId !== undefined && remote.revisionId !== options.expectedHeadRevisionId) {
       throw new SyncConflict([`${this.vaultId}:head-advanced-before-resolution`]);
@@ -399,23 +416,33 @@ export class SyncEngine {
     const encodedByNamespace = new Map<string, {
       entries: NamespaceManifestV1["entries"];
       plaintextChunks: Map<string, Uint8Array>;
+      streamedFiles: Map<string, ScannedEntry>;
       digests: Record<string, string>;
     }>();
     for (const mapping of writable) {
       const keys = await this.#scopeKeys(mapping.namespace);
       keysByNamespace.set(mapping.namespace, keys);
-      encodedByNamespace.set(mapping.namespace, { entries: [], plaintextChunks: new Map(), digests: {} });
+      encodedByNamespace.set(mapping.namespace, { entries: [], plaintextChunks: new Map(), streamedFiles: new Map(), digests: {} });
     }
     for (const file of scanned) {
       const encoded = encodedByNamespace.get(file.namespace)!;
       const keys = keysByNamespace.get(file.namespace)!;
       const objectIds: string[] = [];
-      for (const chunk of chunkBytes(file.bytes, CHUNK_POLICY)) {
-        const objectId = await computeObjectId(keys.dedupKey, chunk);
-        objectIds.push(objectId);
-        if (!encoded.plaintextChunks.has(objectId)) encoded.plaintextChunks.set(objectId, chunk);
+      let contentDigest: string;
+      if (file.stagedPath) {
+        const described = await describeStagedJsonl(file.stagedPath, keys.dedupKey, JSONL_CHUNK_POLICY);
+        objectIds.push(...described.objectIds);
+        contentDigest = described.contentDigest;
+        encoded.streamedFiles.set(file.logicalPath, file);
+      } else {
+        const fileBytes = requiredMemoryBytes(file);
+        for (const chunk of chunkBytes(fileBytes, CHUNK_POLICY)) {
+          const objectId = await computeObjectId(keys.dedupKey, chunk);
+          objectIds.push(objectId);
+          if (!encoded.plaintextChunks.has(objectId)) encoded.plaintextChunks.set(objectId, chunk);
+        }
+        contentDigest = await computeObjectId(keys.dedupKey, fileBytes);
       }
-      const contentDigest = await computeObjectId(keys.dedupKey, file.bytes);
       encoded.digests[file.logicalPath] = contentDigest;
       encoded.entries.push({
         namespace: file.namespace,
@@ -425,8 +452,11 @@ export class SyncEngine {
         ...(file.workspaceLayer ? { workspaceLayer: file.workspaceLayer } : {}),
         ...(file.fileMode !== undefined ? { fileMode: file.fileMode } : {}),
         objectIds,
-        totalSize: file.bytes.byteLength,
+        totalSize: file.stagedSize ?? requiredMemoryBytes(file).byteLength,
         contentDigest,
+        chunking: file.stagedPath
+          ? { strategy: "jsonl-records", ...JSONL_CHUNK_POLICY }
+          : CHUNK_POLICY,
       });
     }
     const remoteManifests = new Map<string, NamespaceManifestV1>();
@@ -474,9 +504,16 @@ export class SyncEngine {
           this.#downloadNamespaceEntry(baseEntry, keys),
           this.#downloadNamespaceEntry(remoteEntry, keys),
         ]);
-        const merged = mergeJsonlAppends(baseBytes, remoteBytes, file.bytes);
+        const localBytes = file.bytes ?? (file.stagedPath && file.stagedSize !== undefined && file.stagedSize <= MAX_FILE_BYTES
+          ? await readFile(file.stagedPath)
+          : undefined);
+        if (!localBytes) continue;
+        const merged = mergeJsonlAppends(baseBytes, remoteBytes, localBytes);
         if (merged.outcome !== "merged") continue;
         file.bytes = merged.bytes;
+        file.stagedPath = undefined;
+        file.stagedSize = undefined;
+        encoded.streamedFiles.delete(file.logicalPath);
         const workspace = file.session?.workspaceId
           ? config.workspaces.find((candidate) => candidate.id === file.session!.workspaceId)
           : undefined;
@@ -532,6 +569,7 @@ export class SyncEngine {
       const encoded = encodedByNamespace.get(namespace)!;
       const localEntries = encoded.entries;
       const plaintextChunks = encoded.plaintextChunks;
+      const streamedFiles = encoded.streamedFiles;
       const keys = keysByNamespace.get(namespace)!;
       const digests = encoded.digests;
       const localPaths = new Set(localEntries.map((entry) => entry.logicalPath));
@@ -540,6 +578,7 @@ export class SyncEngine {
         .map((entry) => ({ namespace, logicalPath: entry.logicalPath, deletedAt: createdAt }));
       const baseState: NamespaceState = { entries: baseManifest?.entries ?? [], tombstones: baseManifest?.tombstones ?? [] };
       const remoteState: NamespaceState = { entries: remoteManifest?.entries ?? [], tombstones: remoteManifest?.tombstones ?? [] };
+      const remoteObjectIds = new Set(remoteState.entries.flatMap((entry) => entry.objectIds));
       const localState = { entries: localEntries, tombstones: localTombstones };
       if (mapping.mode === "append") {
         const violations = appendOnlyViolations(baseState, localState);
@@ -590,17 +629,41 @@ export class SyncEngine {
         pathClaims,
       });
       const requiredObjectIds = [...new Set(manifest.entries.flatMap((entry) => entry.objectIds))];
-      const encrypted = new Map<string, Uint8Array>();
-      for (const objectId of requiredObjectIds) {
+      const pendingObjectIds = new Set(requiredObjectIds.filter((objectId) => !remoteObjectIds.has(objectId)));
+      for (const objectId of pendingObjectIds) {
         const plaintext = plaintextChunks.get(objectId);
         if (!plaintext) continue;
-        encrypted.set(objectId, await encryptEnvelope({
-        plaintext,
-        key: keys.encryptionKey,
-        dedupKey: keys.dedupKey,
-        context: { vaultId: this.vaultId, scopeId: namespace, compression: "none" },
-        }));
+        const envelope = await encryptEnvelope({
+          plaintext,
+          key: keys.encryptionKey,
+          dedupKey: keys.dedupKey,
+          context: { vaultId: this.vaultId, scopeId: namespace, compression: "none" },
+        });
+        objects += 1;
+        bytes += envelope.byteLength;
+        if (!dryRun) await this.client.putNamespaceObject(this.vaultId, namespace, objectId, envelope);
+        pendingObjectIds.delete(objectId);
       }
+      for (const entry of manifest.entries) {
+        const source = streamedFiles.get(entry.logicalPath);
+        if (!source?.stagedPath || pendingObjectIds.size === 0) continue;
+        const requiredForSource = new Set(entry.objectIds.filter((objectId) => pendingObjectIds.has(objectId)));
+        if (requiredForSource.size === 0) continue;
+        const transferred = await uploadStagedJsonl({
+          path: source.stagedPath,
+          policy: JSONL_CHUNK_POLICY,
+          requiredObjectIds: requiredForSource,
+          keys,
+          vaultId: this.vaultId,
+          namespace,
+          dryRun,
+          putObject: (objectId, envelope) => this.client.putNamespaceObject(this.vaultId, namespace, objectId, envelope),
+        });
+        objects += transferred.objects;
+        bytes += transferred.bytes;
+        for (const objectId of requiredForSource) pendingObjectIds.delete(objectId);
+      }
+      if (pendingObjectIds.size > 0) throw new Error("manifest references local objects that could not be materialized");
       const manifestBytes = encoder.encode(canonicalJson(manifest));
       const manifestObjectId = await computeObjectId(keys.dedupKey, manifestBytes);
       const manifestEnvelope = await encryptEnvelope({
@@ -609,10 +672,9 @@ export class SyncEngine {
         dedupKey: keys.dedupKey,
         context: { vaultId: this.vaultId, scopeId: namespace, compression: "none" },
       });
-      objects += encrypted.size + 1;
-      bytes += [...encrypted.values()].reduce((total, envelope) => total + envelope.byteLength, manifestEnvelope.byteLength);
+      objects += 1;
+      bytes += manifestEnvelope.byteLength;
       if (!dryRun) {
-        for (const [objectId, envelope] of encrypted) await this.client.putNamespaceObject(this.vaultId, namespace, objectId, envelope);
         await this.client.putNamespaceObject(this.vaultId, namespace, manifestObjectId, manifestEnvelope);
       }
       updates.push({
@@ -638,6 +700,9 @@ export class SyncEngine {
       recordSessionBindings(config, writable, scanned);
     }
     return { outcome: "pushed", revisionId: vaultRevisionId, files: scanned.length, objects, bytes };
+    } finally {
+      await Promise.all(scanned.flatMap((entry) => entry.dispose ? [entry.dispose()] : []));
+    }
   }
 
   async hydrate(
@@ -722,16 +787,55 @@ export class SyncEngine {
     appliedRevision: (namespace: string) => string,
   ): Promise<SyncResult> {
     const byNamespace = new Map(selected.map((mapping) => [mapping.namespace, mapping]));
-    const materialized: Array<{ mapping: RootMapping; logicalPath: string; path: string; bytes: Uint8Array; digest: string }> = [];
+    const materialized: MaterializedEntry[] = [];
     const deletions: Array<{ mapping: RootMapping; path: string; logicalPath: string }> = [];
     const workspacePayloads = new Map<string, { mapping: RootMapping; capsule?: CapturedWorkspace["capsule"]; blobs: WorkspaceBlob[] }>();
     let objectCount = manifestObjectCount;
     let byteCount = 0;
+    const stagedDisposers: Array<() => Promise<void>> = [];
+    try {
     for (const entry of manifest.entries) {
       const mapping = byNamespace.get(entry.namespace);
       if (!mapping) continue;
-      if (entry.totalSize > MAX_FILE_BYTES) throw new Error(`remote file exceeds the local safety limit: ${entry.logicalPath}`);
       const keys = await this.#scopeKeys(entry.namespace);
+      const portable = portableSession(entry.logicalPath);
+      const streamedSession = mapping.kind !== "drop" && (portable !== undefined || entry.chunking?.strategy === "jsonl-records");
+      if (streamedSession) {
+        if (entry.totalSize > MAX_STREAMED_SESSION_BYTES) throw new Error(`remote file exceeds the local safety limit: ${entry.logicalPath}`);
+        const workspace = portable
+          ? config.workspaces.find((candidate) => candidate.id === portable.workspaceId)
+          : undefined;
+        if (portable && !workspace) continue;
+        const staged = await downloadVerifiedEntry({
+          objectIds: entry.objectIds,
+          totalSize: entry.totalSize,
+          contentDigest: entry.contentDigest,
+          maximumSize: MAX_STREAMED_SESSION_BYTES,
+          keys,
+          vaultId: this.vaultId,
+          namespace: entry.namespace,
+          getObject: (objectId) => getObject(entry.namespace, objectId),
+          onEnvelope: (envelopeBytes) => {
+            byteCount += envelopeBytes;
+            objectCount += 1;
+          },
+        });
+        stagedDisposers.push(staged.dispose);
+        let nativePath = staged.path;
+        if (portable && workspace) {
+          nativePath = join(staged.root, "localized.jsonl");
+          await localizePortableSession(staged.path, nativePath, portable.workspaceId, resolve(workspace.path));
+        }
+        materialized.push({
+          mapping,
+          logicalPath: entry.logicalPath,
+          path: sessionDestination(mapping, entry.logicalPath, config),
+          sourcePath: nativePath,
+          digest: await computeObjectIdStream(keys.dedupKey, createReadStream(nativePath)),
+        });
+        continue;
+      }
+      if (entry.totalSize > MAX_FILE_BYTES) throw new Error(`remote file exceeds the local safety limit: ${entry.logicalPath}`);
       const chunks: Uint8Array[] = [];
       let plaintextBytes = 0;
       for (const objectId of entry.objectIds) {
@@ -771,7 +875,6 @@ export class SyncEngine {
         workspacePayloads.set(entry.namespace, payload);
         continue;
       }
-      const portable = portableSession(entry.logicalPath);
       if (portable && mapping.kind !== "drop") {
         const workspace = config.workspaces.find((candidate) => candidate.id === portable.workspaceId);
         if (!workspace) continue;
@@ -815,6 +918,17 @@ export class SyncEngine {
     assertDistinctMaterializationPaths(materialized, deletions);
     const conflicts: string[] = [];
     for (const item of materialized) {
+      if (item.sourcePath !== undefined) {
+        const remoteSourcePath = item.sourcePath;
+        const currentDigest = await optionalFileDigest(item.path, await this.#scopeKeys(item.mapping.namespace));
+        if (!currentDigest || currentDigest === item.digest) continue;
+        const prior = config.applied[item.mapping.namespace]?.digests[item.logicalPath];
+        const [currentInfo, remoteInfo] = await Promise.all([lstat(item.path), lstat(remoteSourcePath)]);
+        const safeSessionMerge = currentInfo.size <= MAX_FILE_BYTES && remoteInfo.size <= MAX_FILE_BYTES &&
+          isCompleteJsonlRecordSupersequence(await readFile(item.path), await readFile(remoteSourcePath));
+        if (currentDigest !== prior && !safeSessionMerge) conflicts.push(item.path);
+        continue;
+      }
       const current = await optionalFile(item.path);
       if (!current || bytesEqual(current, item.bytes)) continue;
       const keys = await this.#scopeKeys(item.mapping.namespace);
@@ -840,7 +954,7 @@ export class SyncEngine {
     await applyWorkspaceTransaction(
       readyWorkspaces.map((workspace) => ({ root: workspace.mapping.path, captured: workspace.captured, gitFetch: workspace.gitFetch })),
       {
-        writes: materialized.map((item) => ({ path: item.path, bytes: item.bytes })),
+        writes: materialized.map(materializedWrite),
         deletes: deletions.map((item) => item.path),
       },
       { materialize: applyFileTransaction },
@@ -854,6 +968,9 @@ export class SyncEngine {
     }
     recordMaterializedSessionBindings(config, materialized, deletions);
     return { outcome: "pulled", revisionId: remoteRevisionId, files: materialized.length + deletions.length + workspaceFiles, objects: objectCount, bytes: byteCount };
+    } finally {
+      await Promise.all(stagedDisposers.map((dispose) => dispose()));
+    }
   }
 
   async #pullScoped(config: LocalConfig, dryRun: boolean, historicalRevisionId?: string): Promise<SyncResult> {
@@ -1147,7 +1264,7 @@ export class SyncEngine {
       const keys = await this.#scopeKeys(mapping.namespace);
       const digests: Record<string, string> = {};
       for (const file of scanned.filter((candidate) => candidate.namespace === mapping.namespace)) {
-        digests[file.logicalPath] = await computeObjectId(keys.dedupKey, file.bytes);
+        digests[file.logicalPath] = await computeScannedDigest(keys.dedupKey, file);
       }
       config.applied[mapping.namespace] = { revisionId, digests };
     }
@@ -1444,13 +1561,41 @@ async function cleanGitDestination(root: string, path: string): Promise<boolean>
   }
 }
 
-async function scanMapping(mapping: RootMapping, workspaces: LocalConfig["workspaces"]): Promise<ScannedEntry[]> {
+async function scanWritableMappings(
+  mappings: readonly RootMapping[],
+  workspaces: LocalConfig["workspaces"],
+  streamSessions: boolean,
+): Promise<ScannedEntry[]> {
+  const output: ScannedEntry[] = [];
+  try {
+    for (const mapping of mappings) {
+      output.push(...(mapping.id.startsWith("workspace_")
+        ? await scanGitOverlay(mapping, workspaces)
+        : await scanMapping(mapping, workspaces, streamSessions)));
+    }
+    return output;
+  } catch (error) {
+    await Promise.all(output.flatMap((entry) => entry.dispose ? [entry.dispose()] : []));
+    throw error;
+  }
+}
+
+async function scanMapping(
+  mapping: RootMapping,
+  workspaces: LocalConfig["workspaces"],
+  streamSessions = false,
+): Promise<ScannedEntry[]> {
   const root = resolve(mapping.path);
   const info = await stat(root);
   if (!info.isDirectory()) throw new Error(`sync root is not a directory: ${root}`);
   const output: ScannedEntry[] = [];
-  await walk(root, "", mapping, workspaces, output);
-  return output;
+  try {
+    await walk(root, "", mapping, workspaces, output, streamSessions);
+    return output;
+  } catch (error) {
+    await Promise.all(output.flatMap((entry) => entry.dispose ? [entry.dispose()] : []));
+    throw error;
+  }
 }
 
 async function walk(
@@ -1459,6 +1604,7 @@ async function walk(
   mapping: RootMapping,
   workspaces: LocalConfig["workspaces"],
   output: ScannedEntry[],
+  streamSessions: boolean,
 ): Promise<void> {
   const directory = join(root, relativeDirectory);
   const entries = await readdir(directory, { withFileTypes: true });
@@ -1468,12 +1614,34 @@ async function walk(
     if (excludedBuiltIn(logicalPath)) continue;
     if (entry.isSymbolicLink() || (!entry.isFile() && !entry.isDirectory())) continue;
     if (entry.isDirectory()) {
-      await walk(root, logicalPath, mapping, workspaces, output);
+      await walk(root, logicalPath, mapping, workspaces, output, streamSessions);
       continue;
     }
     const classification = harnessClassification(mapping.kind, logicalPath);
     if (classification === "excluded") continue;
     const path = join(root, ...logicalPath.split("/"));
+    if (classification === "session" && streamSessions) {
+      const staged = await stagePortableSession(path, workspaces);
+      if (!staged) continue;
+      output.push({
+        namespace: mapping.namespace,
+        logicalPath: staged.workspaceId
+          ? `portable-sessions/${staged.workspaceId}/${basename(logicalPath)}`
+          : logicalPath,
+        nativeRelativePath: logicalPath,
+        stagedPath: staged.path,
+        stagedSize: staged.size,
+        dispose: staged.dispose,
+        ...(staged.workspaceId ? {
+          session: {
+            nativeSessionId: basename(logicalPath).replace(/\.jsonl$/u, ""),
+            workspaceId: staged.workspaceId,
+            activity: staged.activity,
+          },
+        } : {}),
+      });
+      continue;
+    }
     const before = await lstat(path);
     if (before.size > MAX_FILE_BYTES) throw new Error(`file exceeds the local safety limit: ${logicalPath}`);
     let bytes: Uint8Array = await readFile(path);
@@ -1511,6 +1679,17 @@ async function walk(
   }
 }
 
+function requiredMemoryBytes(entry: ScannedEntry): Uint8Array {
+  if (!entry.bytes) throw new Error(`scanned entry is not memory-backed: ${entry.logicalPath}`);
+  return entry.bytes;
+}
+
+async function computeScannedDigest(dedupKey: Uint8Array, entry: ScannedEntry): Promise<string> {
+  return entry.stagedPath
+    ? computeObjectIdStream(dedupKey, createReadStream(entry.stagedPath))
+    : computeObjectId(dedupKey, requiredMemoryBytes(entry));
+}
+
 function portabilizeSession(
   bytes: Uint8Array,
   workspaces: LocalConfig["workspaces"],
@@ -1538,11 +1717,8 @@ function portabilizeSession(
 
 function localizeSession(bytes: Uint8Array, workspaceId: string, path: string): Uint8Array {
   const decoder = new TextDecoder("utf8", { fatal: true, ignoreBOM: false });
-  const prefix = `statecase://workspace/${workspaceId}`;
   const records = decoder.decode(bytes).trimEnd().split("\n").map((line) => transformStrings(JSON.parse(line) as unknown, (value) => {
-    if (value === prefix) return path;
-    if (!value.startsWith(`${prefix}/`)) return value;
-    return join(path, ...value.slice(prefix.length + 1).split("/"));
+    return localizeWorkspaceUri(value, workspaceId, path);
   }));
   return encoder.encode(`${records.map((record) => JSON.stringify(record)).join("\n")}\n`);
 }
@@ -1664,6 +1840,26 @@ function safeDestination(root: string, logicalPath: string): string {
 async function optionalFile(path: string): Promise<Uint8Array | undefined> {
   try {
     return await readFile(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+function materializedWrite(item: MaterializedEntry): WorkspaceMaterializedWrite {
+  return item.sourcePath !== undefined
+    ? { path: item.path, sourcePath: item.sourcePath }
+    : { path: item.path, bytes: item.bytes! };
+}
+
+async function optionalFileDigest(
+  path: string,
+  keys: { dedupKey: Uint8Array },
+): Promise<string | undefined> {
+  try {
+    const info = await lstat(path);
+    if (!info.isFile()) throw new Error(`local path is not a regular file: ${path}`);
+    return await computeObjectIdStream(keys.dedupKey, createReadStream(path));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;

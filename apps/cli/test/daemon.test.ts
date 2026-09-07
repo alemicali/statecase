@@ -97,4 +97,43 @@ describe("persistent daemon runtime (RT-007..RT-010)", () => {
     await expect(readRuntimeStatus(slowPath, 5)).rejects.toThrow("timed out");
     await new Promise<void>((resolve) => slow.close(() => resolve()));
   });
+
+  it("reports stopped state before start and replaces only a stale socket inode", async () => {
+    const home = await mkdtemp(join(tmpdir(), "statecase-daemon-stale-socket-"));
+    temporary.push(home);
+    const socketPath = join(home, "daemon.sock");
+    const stale = createServer();
+    await new Promise<void>((resolve) => stale.listen(socketPath, resolve));
+    const daemon = new PersistentRuntime({
+      lockPath: join(home, "daemon.lock"),
+      socketPath,
+      roots: [],
+      reconcile: async () => undefined,
+    });
+    expect(daemon.status()).toMatchObject({ running: false, startedAt: "1970-01-01T00:00:00.000Z" });
+    await daemon.start();
+    expect((await readRuntimeStatus(socketPath)).running).toBe(true);
+    await daemon.stop();
+    await new Promise<void>((resolve) => stale.close(() => resolve()));
+  });
+
+  it("uses the redacted default warning sink when startup reconciliation is offline", async () => {
+    const home = await mkdtemp(join(tmpdir(), "statecase-daemon-default-warning-"));
+    temporary.push(home);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const daemon = new PersistentRuntime({
+      lockPath: join(home, "daemon.lock"),
+      socketPath: join(home, "daemon.sock"),
+      roots: [],
+      reconcile: async () => { throw new Error("secret upstream detail"); },
+    });
+    try {
+      await daemon.start();
+      expect(stderr).toHaveBeenCalledWith("Statecase startup reconciliation is queued.\n");
+      expect(stderr.mock.calls.flat().join(" ")).not.toContain("secret upstream detail");
+    } finally {
+      await daemon.stop();
+      stderr.mockRestore();
+    }
+  });
 });

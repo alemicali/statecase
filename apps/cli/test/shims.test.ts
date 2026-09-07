@@ -1,4 +1,4 @@
-import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkdtemp } from "node:fs/promises";
@@ -59,5 +59,13 @@ describe("transparent harness shims (RT-001, RT-012, IS-005)", () => {
     expect(await removeHarnessShim(shimPath)).toBe(true);
     expect(await verifyHarnessShim(shimPath)).toBe(false);
     expect(await removeHarnessShim(shimPath)).toBe(false);
+  });
+
+  it("refuses to inspect a shim through a symbolic link", async () => {
+    const root = await mkdtemp(join(tmpdir(), "statecase-shim-link-"));
+    temporary.push(root);
+    await writeFile(join(root, "target"), "# statecase-shim-v1 harness=codex\n");
+    await symlink("target", join(root, "codex"));
+    await expect(verifyHarnessShim(join(root, "codex"))).rejects.toThrow("unsafe shim path");
   });
 });

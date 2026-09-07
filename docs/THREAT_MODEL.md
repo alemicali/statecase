@@ -188,6 +188,7 @@ Controls:
 - byte-identical accepted-prefix verification and complete-record JSONL parsing;
 - deterministic canonical-occurrence merge only on full-key clients;
 - record-supersequence verification before replacing a locally changed session;
+- strict portable workspace URI component validation before localization;
 - local-only namespace/logical-session bindings with relative-path containment,
   adapter classification, basename validation, and pre-apply collision checks;
 - binding and applied-state persistence only after successful non-dry-run

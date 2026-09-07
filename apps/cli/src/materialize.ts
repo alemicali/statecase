@@ -1,11 +1,15 @@
-import { chmod, lstat, mkdir, open, rename, rm, symlink } from "node:fs/promises";
+import { chmod, constants, copyFile, lstat, mkdir, open, rename, rm, symlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
-export interface MaterializedWrite {
+interface MaterializedWriteBase {
   path: string;
-  bytes: Uint8Array;
   mode?: number;
 }
+
+export type MaterializedWrite = MaterializedWriteBase & (
+  | { bytes: Uint8Array; sourcePath?: never }
+  | { bytes?: never; sourcePath: string }
+);
 
 export interface FileTransaction {
   writes: readonly MaterializedWrite[];
@@ -41,12 +45,20 @@ export async function applyFileTransaction(transaction: FileTransaction): Promis
       const target = targets[index];
       await mkdir(dirname(target.path), { recursive: true, mode: 0o700 });
       target.staging = `${target.path}.statecase-transaction-${transactionId}.staged`;
-      const handle = await open(target.staging, "wx", 0o600);
-      try {
-        await handle.writeFile(write.bytes);
-        await handle.sync();
-      } finally {
-        await handle.close();
+      if (write.sourcePath === undefined) {
+        const handle = await open(target.staging, "wx", 0o600);
+        try {
+          await handle.writeFile(write.bytes);
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
+      } else {
+        const source = await lstat(write.sourcePath);
+        if (!source.isFile()) throw new Error("file-backed transaction source is not a regular file");
+        await copyFile(write.sourcePath, target.staging, constants.COPYFILE_EXCL);
+        const copied = await open(target.staging, "r");
+        try { await copied.sync(); } finally { await copied.close(); }
       }
     }
     for (let index = 0; index < (transaction.symlinks?.length ?? 0); index += 1) {

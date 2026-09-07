@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   chunkBytes,
   chunkJsonl,
+  chunkJsonlStream,
   concatChunks,
   type ChunkPolicy,
 } from "../src/index.js";
@@ -32,6 +33,35 @@ describe("hybrid chunking (SY-003, AD-CX-003..005)", () => {
     const result = chunkJsonl(input, 8);
     expect(result.chunks).toHaveLength(1);
     expect(result.chunks[0]).toEqual(input);
+  });
+
+  it("streams deterministic bounded JSONL chunks across arbitrary source boundaries", async () => {
+    const input = new TextEncoder().encode(`${"a".repeat(17)}\nshort\n${"b".repeat(33)}\ntail`);
+    const policy = { targetSize: 12, maxSize: 20 };
+    const whole = await collect(chunkJsonlStream([input], policy));
+    const fragmented = await collect(chunkJsonlStream(fragment(input, [1, 2, 7, 3, 19, 4]), policy));
+
+    expect(fragmented).toEqual(whole);
+    expect(concatChunks(fragmented)).toEqual(input);
+    expect(fragmented.every((chunk) => chunk.byteLength <= policy.maxSize)).toBe(true);
+    expect(fragmented.map((chunk) => chunk.byteLength)).toEqual([18, 6, 20, 14, 4]);
+  });
+
+  it("streams a large unterminated record with constant-sized output", async () => {
+    const source = repeatChunks(new Uint8Array(997).fill(0x61), 10_001);
+    const chunks = await collect(chunkJsonlStream(source, { targetSize: 1024, maxSize: 4096 }));
+
+    expect(chunks.slice(0, -1).every((chunk) => chunk.byteLength === 4096)).toBe(true);
+    expect(chunks.at(-1)?.byteLength).toBeLessThanOrEqual(4096);
+    expect(chunks.reduce((total, chunk) => total + chunk.byteLength, 0)).toBe(997 * 10_001);
+  });
+
+  it.each([
+    { targetSize: 0, maxSize: 4 },
+    { targetSize: 5, maxSize: 4 },
+    { targetSize: 1.5, maxSize: 4 },
+  ])("rejects invalid streaming JSONL policy %#", async (policy) => {
+    await expect(collect(chunkJsonlStream([], policy))).rejects.toThrow();
   });
 
   it("fixed chunks reconstruct exact bytes", () => {
@@ -68,3 +98,24 @@ describe("hybrid chunking (SY-003, AD-CX-003..005)", () => {
     expect(() => chunkBytes(Uint8Array.of(1), policy)).toThrow();
   });
 });
+
+async function collect(source: AsyncIterable<Uint8Array>): Promise<Uint8Array[]> {
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of source) chunks.push(chunk);
+  return chunks;
+}
+
+async function* fragment(input: Uint8Array, sizes: readonly number[]): AsyncGenerator<Uint8Array> {
+  let offset = 0;
+  let index = 0;
+  while (offset < input.byteLength) {
+    const size = sizes[index % sizes.length] ?? 1;
+    yield input.subarray(offset, Math.min(input.byteLength, offset + size));
+    offset += size;
+    index += 1;
+  }
+}
+
+async function* repeatChunks(chunk: Uint8Array, count: number): AsyncGenerator<Uint8Array> {
+  for (let index = 0; index < count; index += 1) yield chunk;
+}

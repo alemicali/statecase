@@ -101,6 +101,22 @@ export async function computeObjectId(dedupKey: Uint8Array, plaintext: Uint8Arra
   return `obj_${sodium.to_base64(digest, sodium.base64_variants.URLSAFE_NO_PADDING)}`;
 }
 
+export async function computeObjectIdStream(
+  dedupKey: Uint8Array,
+  plaintext: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+): Promise<string> {
+  await sodium.ready;
+  requireKey(dedupKey, "dedup key");
+  const state = sodium.crypto_generichash_init(dedupKey, 32);
+  sodium.crypto_generichash_update(state, encoder.encode("statecase:object:v1\0"));
+  for await (const chunk of plaintext) {
+    if (!(chunk instanceof Uint8Array)) throw new TypeError("plaintext stream must yield Uint8Array chunks");
+    if (chunk.byteLength > 0) sodium.crypto_generichash_update(state, chunk);
+  }
+  const digest = sodium.crypto_generichash_final(state, 32);
+  return `obj_${sodium.to_base64(digest, sodium.base64_variants.URLSAFE_NO_PADDING)}`;
+}
+
 export async function encryptEnvelope(input: {
   plaintext: Uint8Array;
   key: Uint8Array;

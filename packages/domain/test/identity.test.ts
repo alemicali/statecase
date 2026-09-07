@@ -23,6 +23,7 @@ describe("Git workspace identity (ID-001..ID-003, ID-008)", () => {
     ["https://example.com:443/team/repo.git", "example.com/team/repo"],
     ["ssh://git@example.com:22/team/repo", "example.com/team/repo"],
     ["ssh://git@example.com:2222/team/repo", "example.com:2222/team/repo"],
+    ["git://example.com:9418/team/repo", "example.com/team/repo"],
     ["ssh://git@[2001:db8::1]/team/repo", "[2001:db8::1]/team/repo"],
     ["https://example.com/t%C3%A9am/r%C3%A9po.git", "example.com/t%C3%A9am/r%C3%A9po"],
   ])("normalizes edge remote %s", (remote, expected) => {

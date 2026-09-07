@@ -4,6 +4,13 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Added bounded-memory session transfer for Codex and Claude JSONL: secure
+  record-by-record staging, incremental keyed digests, deterministic 4 MiB
+  record-aware chunks, manifest chunking descriptors, one-envelope-at-a-time
+  encryption/decryption, atomic file-backed installation, and direct protocol
+  1.1 bootstrap for new vaults. Appends no longer upload content-addressed
+  chunks already present in the authenticated remote manifest. Legacy 1.0
+  heads remain readable and migratable.
 - Added deterministic full-key client merge for concurrent complete-record
   appends to the same portable Codex or Claude JSONL session. The merge requires
   a byte-identical accepted prefix, preserves both branch orders, deduplicates

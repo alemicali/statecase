@@ -85,11 +85,16 @@ export interface CapturedWorkspace {
 
 export interface WorkspaceMaterializer {
   (transaction: {
-    writes: Array<{ path: string; bytes: Uint8Array; mode?: number }>;
+    writes: WorkspaceMaterializedWrite[];
     symlinks?: Array<{ path: string; target: string }>;
     deletes: string[];
   }): Promise<void>;
 }
+
+export type WorkspaceMaterializedWrite = { path: string; mode?: number } & (
+  | { bytes: Uint8Array; sourcePath?: never }
+  | { bytes?: never; sourcePath: string }
+);
 
 export interface WorkspaceApplication {
   root: string;
@@ -98,7 +103,7 @@ export interface WorkspaceApplication {
 }
 
 export interface WorkspaceFileTransaction {
-  writes: Array<{ path: string; bytes: Uint8Array; mode?: number }>;
+  writes: WorkspaceMaterializedWrite[];
   symlinks?: Array<{ path: string; target: string }>;
   deletes: string[];
 }

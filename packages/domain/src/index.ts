@@ -45,8 +45,8 @@ function canonicalRemote(hostname: string, port: string, rawPath: string): strin
 }
 
 function isDefaultPort(protocol: string, port: string): boolean {
-  return port.length === 0 || (protocol === "ssh:" && port === "22") || (protocol === "http:" && port === "80") ||
-    (protocol === "https:" && port === "443") || (protocol === "git:" && port === "9418");
+  // WHATWG URL normalizes default HTTP(S) ports to the empty string.
+  return port.length === 0 || (protocol === "ssh:" && port === "22") || (protocol === "git:" && port === "9418");
 }
 
 function invalidRemote(): never {

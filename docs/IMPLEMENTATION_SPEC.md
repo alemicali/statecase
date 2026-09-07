@@ -950,6 +950,23 @@ its file list before writing it.
   pagination and streaming.
 - Rate limiting is per account/device with retry headers and jittered clients.
 
+Recognized harness JSONL is staged record by record in an owner-only temporary
+directory. A single record is bounded to 64 MiB; the overall staged session is
+bounded to 20 GiB. Keyed content digests use the incremental libsodium generic
+hash API and must remain byte-compatible with v1 object identities. JSONL
+objects use deterministic complete-record boundaries with a 4 MiB target and
+hard 4 MiB ceiling; oversized records are split without changing reconstructed
+bytes. Upload encrypts and sends one object at a time and skips object IDs
+already named by the authenticated remote namespace manifest. Pull decrypts
+one object at a time, verifies total size and the incremental content digest,
+localizes portable paths record by record, then atomically installs the
+verified file-backed staging artifact. New empty vaults start directly on
+protocol 1.1; existing protocol 1.0 heads retain the fail-closed migration path.
+
+This completes the bounded transfer path, not the concurrent merge path:
+automatic three-way JSONL append merge remains limited to 256 MiB per input
+until suffix-only merge is implemented and separately accepted at 2 GiB.
+
 ## 17. Failure behavior
 
 | Failure | Required behavior |

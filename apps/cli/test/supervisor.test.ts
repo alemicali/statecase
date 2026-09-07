@@ -68,6 +68,26 @@ describe("foreground harness supervisor (RT-002..RT-005, RT-011)", () => {
     ]);
   });
 
+  it("uses the default redacted warning sink when no custom reporter is provided", async () => {
+    const child = new FakeChild();
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const supervisor = new HarnessSupervisor({
+      spawn: () => {
+        queueMicrotask(() => child.emit("exit", 0, null));
+        return child;
+      },
+      reconcile: async () => { throw new Error("secret network detail"); },
+      intervalMs: 0,
+    });
+    try {
+      await supervisor.run({ harness: "codex", executable: "/opt/codex", args: [], cwd: "/work", env: {} });
+      expect(stderr).toHaveBeenCalledTimes(2);
+      expect(stderr.mock.calls.flat().join(" ")).not.toContain("secret network detail");
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
   it("serializes periodic reconciliation and leaves no timer after child exit", async () => {
     vi.useFakeTimers();
     try {

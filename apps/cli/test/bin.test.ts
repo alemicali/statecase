@@ -49,6 +49,7 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
     expect(await command(io, "--json", "drop", "add", source, "--name", "working-context")).toBe(0);
     const drop = JSON.parse(output.at(-1)!) as { id: string };
     expect(await command(io, "--json", "push")).toBe(0);
+    const initialRevisionId = remote.scopedRevisionId!;
     const bootstrapFile = join(base, "bootstrap", "sandbox.token");
     expect(await command(io, "--json", "token", "create", "--namespace", `drop:${drop.id}`, "--actions", "read,append", "--ttl", "15", "--output", bootstrapFile)).toBe(0);
     const capability = (JSON.parse(output.at(-1)!) as { capability: { id: string }; bootstrapFile: string }).capability;
@@ -94,12 +95,12 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
     expect(await command(io, "--json", "snapshot", "delete", snapshot.id)).toBe(2);
     expect(await command(io, "--json", "snapshot", "delete", snapshot.id, "--yes")).toBe(0);
     const restoreTarget = join(base, "historical-restore");
-    expect(await command(io, "--json", "restore", "--revision", remote.revisionId!, "--mapping", drop.id, "--target", restoreTarget, "--dry-run")).toBe(0);
+    expect(await command(io, "--json", "restore", "--revision", initialRevisionId, "--mapping", drop.id, "--target", restoreTarget, "--dry-run")).toBe(0);
     await expect(readFile(join(restoreTarget, "context.txt"))).rejects.toMatchObject({ code: "ENOENT" });
-    expect(await command(io, "--json", "restore", "--revision", remote.revisionId!, "--mapping", drop.id, "--target", restoreTarget)).toBe(0);
+    expect(await command(io, "--json", "restore", "--revision", initialRevisionId, "--mapping", drop.id, "--target", restoreTarget)).toBe(0);
     expect(await readFile(join(restoreTarget, "context.txt"), "utf8")).toBe("context from machine A\n");
-    expect(await command(io, "--json", "restore", "--revision", remote.revisionId!, "--mapping", drop.id, "--target", restoreTarget)).toBe(2);
-    expect(await command(io, "--json", "restore", "--revision", remote.revisionId!, "--mapping", "missing", "--target", join(base, "missing"))).toBe(2);
+    expect(await command(io, "--json", "restore", "--revision", initialRevisionId, "--mapping", drop.id, "--target", restoreTarget)).toBe(2);
+    expect(await command(io, "--json", "restore", "--revision", initialRevisionId, "--mapping", "missing", "--target", join(base, "missing"))).toBe(2);
     expect(await command(io, "--json", "conflicts", "resolve", "--mapping", drop.id, "--strategy", "local")).toBe(2);
     expect(await command(io, "--json", "conflicts", "resolve", "--mapping", drop.id, "--strategy", "remote", "--yes")).toBe(2);
     expect(await command(io, "--json", "conflicts", "resolve", "--mapping", drop.id, "--strategy", "local", "--yes")).toBe(0);

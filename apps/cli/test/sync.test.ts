@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-import { computeObjectId, deriveScopeKey, encryptEnvelope, randomKey } from "@statecase/crypto";
-import { canonicalJson, type NamespaceManifestV1 } from "@statecase/protocol";
+import { computeObjectId, decryptEnvelope, deriveScopeKey, encryptEnvelope, randomKey } from "@statecase/crypto";
+import { canonicalJson, namespaceManifestSchema, type NamespaceManifestV1 } from "@statecase/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { StatecaseClient } from "../src/client.js";
@@ -30,6 +30,7 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     delete local.deviceName;
     const engine = new SyncEngine(new StatecaseClient("https://remote.test", "device", remote.fetch), "vlt_test", key);
     expect(await engine.pull(local)).toMatchObject({ outcome: "unchanged", revisionId: null });
+    expect(await engine.push(local)).toMatchObject({ outcome: "unchanged", revisionId: null, objects: 0 });
     await writeFile(join(root, "anonymous.txt"), "anonymous\n");
     expect(await engine.push(local)).toMatchObject({ outcome: "pushed" });
   });
@@ -225,6 +226,220 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
       type: "legacy_record",
       payload: { file: join(targetWorkspace, "legacy.md") },
     });
+  });
+
+  it("streams harness JSONL without an identifiable workspace using its native logical path", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-unbound-session-"));
+    temporary.push(base);
+    const source = join(base, "source");
+    const target = join(base, "target");
+    const sessionPath = join(source, "sessions", "2026", "unbound.jsonl");
+    await Promise.all([mkdir(join(source, "sessions", "2026"), { recursive: true }), mkdir(target)]);
+    await writeFile(sessionPath, `${JSON.stringify({ type: "event", payload: "no paths here" })}\n`);
+    const remote = new MemoryRemote();
+    const key = await randomKey();
+    const sourceConfig = harnessConfig(source, join(base, "unused-source-workspace"));
+    const targetConfig = harnessConfig(target, join(base, "unused-target-workspace"));
+
+    await new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key).push(sourceConfig);
+    await new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key).pull(targetConfig);
+
+    expect(await readFile(join(target, "sessions", "2026", "unbound.jsonl"), "utf8"))
+      .toBe(`${JSON.stringify({ type: "event", payload: "no paths here" })}\n`);
+  });
+
+  it("does not upload content-addressed session chunks already present remotely (PERF-003)", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-session-tail-"));
+    temporary.push(base);
+    const harness = join(base, "codex");
+    const workspace = join(base, "project");
+    const restoredHarness = join(base, "restored-codex");
+    const restoredWorkspace = join(base, "restored-project");
+    const sessionPath = join(harness, "sessions", "2026", "large.jsonl");
+    await Promise.all([
+      mkdir(join(harness, "sessions", "2026"), { recursive: true }),
+      mkdir(workspace, { recursive: true }),
+      mkdir(restoredHarness, { recursive: true }),
+      mkdir(restoredWorkspace, { recursive: true }),
+    ]);
+    const metadata = `${JSON.stringify({ type: "session_meta", payload: { cwd: workspace } })}\n`;
+    const record = `${JSON.stringify({ type: "event", payload: "x".repeat(64 * 1024) })}\n`;
+    await writeFile(sessionPath, metadata + record.repeat(80));
+    const remote = new MemoryRemote();
+    const key = await randomKey();
+    const engine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    const local = harnessConfig(harness, workspace);
+
+    await engine.push(local);
+    const objectsBeforeAppend = new Set(remote.namespaceObjects.keys());
+    remote.namespaceObjectWrites.length = 0;
+    await writeFile(sessionPath, metadata + record.repeat(80) + `${JSON.stringify({ type: "event", payload: "tail" })}\n`);
+    expect(await engine.push(local, true)).toMatchObject({ outcome: "pushed", objects: 2 });
+    expect(remote.namespaceObjectWrites).toEqual([]);
+    await engine.push(local);
+
+    expect(remote.namespaceObjectWrites.length).toBeGreaterThan(0);
+    expect(remote.namespaceObjectWrites.filter((key) => objectsBeforeAppend.has(key))).toEqual([]);
+    const restored = harnessConfig(restoredHarness, restoredWorkspace);
+    await new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key).pull(restored);
+    const restoredText = await readFile(join(restoredHarness, "sessions", "statecase", "ws_test", "large.jsonl"), "utf8");
+    expect(restoredText.endsWith(`${JSON.stringify({ type: "event", payload: "tail" })}\n`)).toBe(true);
+    expect(restoredText).not.toContain(workspace);
+
+    const namespace = "harness:codex:default";
+    const head = remote.namespaceHeads.get(namespace)!;
+    const keys = await deriveScopeKey(key, namespace);
+    const manifestEnvelope = remote.namespaceObjects.get(`${namespace}\0${head.manifestObjectId}`)!;
+    const manifest = namespaceManifestSchema.parse(JSON.parse(new TextDecoder().decode(await decryptEnvelope({
+      envelope: manifestEnvelope,
+      key: keys.encryptionKey,
+      dedupKey: keys.dedupKey,
+      expected: { vaultId: "vlt_test", scopeId: namespace, compression: "none" },
+    }))));
+    const dataObjectKey = `${namespace}\0${manifest.entries[0]!.objectIds[0]!}`;
+    const originalObject = remote.namespaceObjects.get(dataObjectKey)!;
+    const corruptedObject = originalObject.slice();
+    corruptedObject[corruptedObject.length - 1] ^= 1;
+    remote.namespaceObjects.set(dataObjectKey, corruptedObject);
+    await expect(new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key)
+      .pull(harnessConfig(join(base, "corrupt-target"), restoredWorkspace))).rejects.toThrow("authentication failed");
+    remote.namespaceObjects.set(dataObjectKey, originalObject);
+  }, 30_000);
+
+  it("fails closed on streamed-session bounds and integrity while preserving append-safe local state", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-stream-guards-"));
+    temporary.push(base);
+    const rootKey = await randomKey();
+    const namespace = "harness:codex:default";
+    const workspace = join(base, "workspace");
+    await mkdir(workspace);
+    const local = (name: string, workspaceId = "ws_test") => harnessConfig(join(base, name), workspaceId === "ws_test" ? workspace : join(base, workspaceId));
+    const engineFor = (remote: MemoryRemote) => new SyncEngine(
+      new StatecaseClient("https://remote.test", "token", remote.fetch),
+      "vlt_test",
+      rootKey,
+    );
+
+    const oversized = new MemoryRemote();
+    await publishStreamFixture(oversized, rootKey, {
+      namespace,
+      logicalPath: "portable-sessions/ws_test/oversized.jsonl",
+      bytes: new Uint8Array(),
+      totalSize: 20 * 1024 * 1024 * 1024 + 1,
+    });
+    await expect(engineFor(oversized).pull(local("oversized"))).rejects.toThrow("safety limit");
+
+    const wrongSize = new MemoryRemote();
+    const portableBytes = new TextEncoder().encode(`${JSON.stringify({ type: "session_meta", payload: { cwd: "statecase://workspace/ws_test" } })}\n`);
+    await publishStreamFixture(wrongSize, rootKey, {
+      namespace,
+      logicalPath: "portable-sessions/ws_test/wrong-size.jsonl",
+      bytes: portableBytes,
+      totalSize: portableBytes.byteLength - 1,
+    });
+    await expect(engineFor(wrongSize).pull(local("wrong-size"))).rejects.toThrow("declared size");
+
+    const wrongDigest = new MemoryRemote();
+    await publishStreamFixture(wrongDigest, rootKey, {
+      namespace,
+      logicalPath: "portable-sessions/ws_test/wrong-digest.jsonl",
+      bytes: portableBytes,
+      contentDigest: "obj_intentionally_wrong",
+    });
+    await expect(engineFor(wrongDigest).pull(local("wrong-digest"))).rejects.toThrow("content verification");
+
+    const missingWorkspace = new MemoryRemote();
+    await publishStreamFixture(missingWorkspace, rootKey, {
+      namespace,
+      logicalPath: "portable-sessions/ws_missing/unmapped.jsonl",
+      bytes: portableBytes,
+    });
+    expect(await engineFor(missingWorkspace).pull(local("unmapped"))).toMatchObject({ outcome: "pulled", files: 0 });
+
+    const normal = new MemoryRemote();
+    await publishStreamFixture(normal, rootKey, {
+      namespace,
+      logicalPath: "portable-sessions/ws_test/session.jsonl",
+      bytes: portableBytes,
+    });
+    const conflictConfig = local("conflict");
+    const conflictPath = join(conflictConfig.mappings[0]!.path, "sessions", "statecase", "ws_test", "session.jsonl");
+    await mkdir(join(conflictConfig.mappings[0]!.path, "sessions", "statecase", "ws_test"), { recursive: true });
+    await writeFile(conflictPath, `${JSON.stringify({ type: "locally_rewritten" })}\n`);
+    await expect(engineFor(normal).pull(conflictConfig)).rejects.toBeInstanceOf(SyncConflict);
+
+    const appendSafeConfig = local("append-safe");
+    const appendSafePath = join(appendSafeConfig.mappings[0]!.path, "sessions", "statecase", "ws_test", "session.jsonl");
+    await mkdir(join(appendSafeConfig.mappings[0]!.path, "sessions", "statecase", "ws_test"), { recursive: true });
+    await writeFile(appendSafePath, "");
+    await expect(engineFor(normal).pull(appendSafeConfig)).resolves.toMatchObject({ outcome: "pulled", files: 1 });
+  });
+
+  it("rejects malformed streamed and workspace payload metadata before filesystem mutation", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-materialize-guards-"));
+    temporary.push(base);
+    const rootKey = await randomKey();
+    const engineFor = (remote: MemoryRemote) => new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", rootKey);
+    const bytes = new TextEncoder().encode("verified bytes");
+
+    const short = new MemoryRemote();
+    await publishStreamFixture(short, rootKey, {
+      namespace: "drop:drop_shared",
+      logicalPath: "short.txt",
+      bytes,
+      totalSize: bytes.byteLength - 1,
+    });
+    await expect(engineFor(short).pull(config(join(base, "short")))).rejects.toThrow("declared size");
+
+    const badDigest = new MemoryRemote();
+    await publishStreamFixture(badDigest, rootKey, {
+      namespace: "drop:drop_shared",
+      logicalPath: "digest.txt",
+      bytes,
+      contentDigest: "obj_wrong_digest",
+    });
+    await expect(engineFor(badDigest).pull(config(join(base, "digest")))).rejects.toThrow("content verification");
+
+    const portableDrop = new MemoryRemote();
+    await publishStreamFixture(portableDrop, rootKey, {
+      namespace: "drop:drop_shared",
+      logicalPath: "portable-sessions/ws_test/not-a-harness.jsonl",
+      bytes,
+    });
+    const dropTarget = join(base, "portable-drop");
+    await engineFor(portableDrop).pull(config(dropTarget));
+    expect(await readFile(join(dropTarget, "portable-sessions", "ws_test", "not-a-harness.jsonl"))).toEqual(Buffer.from(bytes));
+
+    const workspaceCases = [
+      { workspaceLayer: "worktree" as const, fileMode: 0o100644 },
+      { workspacePath: "file.txt", fileMode: 0o100644 },
+      { workspacePath: "file.txt", workspaceLayer: "worktree" as const },
+    ];
+    for (const [index, metadata] of workspaceCases.entries()) {
+      const remote = new MemoryRemote();
+      await publishStreamFixture(remote, rootKey, {
+        namespace: "workspace:ws_test",
+        logicalPath: `$statecase/workspace/blob/worktree/${"a".repeat(40)}/ZmlsZS50eHQ`,
+        bytes,
+        entryType: "workspace-blob",
+        ...metadata,
+      });
+      await expect(engineFor(remote).pull(workspaceConfig(join(base, `workspace-${index}`))))
+        .rejects.toThrow("metadata is incomplete");
+    }
+
+    const missingCapsule = new MemoryRemote();
+    await publishStreamFixture(missingCapsule, rootKey, {
+      namespace: "workspace:ws_test",
+      logicalPath: `$statecase/workspace/blob/worktree/${"a".repeat(40)}/ZmlsZS50eHQ`,
+      bytes,
+      entryType: "workspace-blob",
+      workspacePath: "file.txt",
+      workspaceLayer: "worktree",
+      fileMode: 0o100644,
+    });
+    await expect(engineFor(missingCapsule).pull(workspaceConfig(join(base, "missing-capsule"))))
+      .rejects.toThrow("capsule metadata is missing");
   });
 
   it("pins structured session dependencies to the exact harness, workspace, and Drop revision (WS-019..WS-032)", async () => {
@@ -957,8 +1172,18 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     const rootKey = await randomKey();
     const engine = new SyncEngine(new StatecaseClient("https://remote.test", "device", remote.fetch), "vlt_test", rootKey);
     const local = config(source);
-    await engine.push(local);
-    const legacyRevision = remote.revisionId!;
+    const legacyRevision = await seedLegacyFile(remote, rootKey, "legacy.txt", new TextEncoder().encode("legacy\n"));
+    const legacyKeys = await deriveScopeKey(rootKey, "drop:drop_shared");
+    local.applied["drop:drop_shared"] = {
+      revisionId: legacyRevision,
+      digests: { "legacy.txt": await computeObjectId(legacyKeys.dedupKey, new TextEncoder().encode("legacy\n")) },
+    };
+
+    const noMappings = structuredClone(local);
+    noMappings.mappings = [];
+    noMappings.applied = {};
+    delete noMappings.deviceName;
+    expect(await engine.push(noMappings)).toMatchObject({ outcome: "unchanged", revisionId: legacyRevision });
 
     remote.namespaceHeads.clear();
     remote.namespaceRevisions.clear();
@@ -1011,6 +1236,25 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
       resolveLocalNamespaces: new Set(["drop:drop_shared"]),
       expectedHeadRevisionId: resolutionLegacyRevision,
     })).resolves.toMatchObject({ outcome: "pushed" });
+  });
+
+  it("keeps the legacy migration writer deterministic without duplicating identical plaintext objects", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-legacy-dedup-"));
+    temporary.push(base);
+    const source = join(base, "source");
+    await mkdir(source);
+    const bytes = new TextEncoder().encode("same bytes\n");
+    await Promise.all([writeFile(join(source, "first.txt"), bytes), writeFile(join(source, "second.txt"), bytes)]);
+    const remote = new MemoryRemote();
+    const rootKey = await randomKey();
+    const legacyRevision = await seedLegacyFile(remote, rootKey, "old.txt", new TextEncoder().encode("old\n"));
+    const local = config(source);
+    delete local.deviceName;
+    local.applied["drop:drop_shared"] = { revisionId: legacyRevision, digests: {} };
+
+    const result = await new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", rootKey).push(local);
+
+    expect(result).toMatchObject({ outcome: "pushed", files: 2, objects: 2 });
   });
 });
 
@@ -1085,6 +1329,106 @@ async function storeNamespaceManifest(remote: MemoryRemote, rootKey: Uint8Array,
   return objectId;
 }
 
+async function seedLegacyFile(
+  remote: MemoryRemote,
+  rootKey: Uint8Array,
+  logicalPath: string,
+  bytes: Uint8Array,
+): Promise<string> {
+  const revisionId = "rev_legacy_fixture";
+  const namespace = "drop:drop_shared";
+  const keys = await deriveScopeKey(rootKey, namespace);
+  const objectId = await computeObjectId(keys.dedupKey, bytes);
+  remote.objects.set(objectId, await encryptEnvelope({
+    plaintext: bytes,
+    key: keys.encryptionKey,
+    dedupKey: keys.dedupKey,
+    context: { vaultId: "vlt_test", scopeId: namespace, compression: "none" },
+  }));
+  const manifest = {
+    schemaVersion: 1 as const,
+    vaultId: "vlt_test",
+    revisionId,
+    parentRevisionIds: [],
+    createdAt: "2026-09-06T10:00:00.000Z",
+    createdByDeviceId: "dev_legacy",
+    operationId: "op_legacy_fixture",
+    entries: [{ namespace, logicalPath, entryType: "file" as const, objectIds: [objectId], totalSize: bytes.byteLength, contentDigest: objectId }],
+    tombstones: [],
+    conflicts: [],
+    sessionCapsules: [],
+  };
+  const manifestBytes = new TextEncoder().encode(canonicalJson(manifest));
+  const manifestKeys = await deriveScopeKey(rootKey, "manifest");
+  const manifestObjectId = await computeObjectId(manifestKeys.dedupKey, manifestBytes);
+  remote.objects.set(manifestObjectId, await encryptEnvelope({
+    plaintext: manifestBytes,
+    key: manifestKeys.encryptionKey,
+    dedupKey: manifestKeys.dedupKey,
+    context: { vaultId: "vlt_test", scopeId: "manifest", compression: "none" },
+  }));
+  remote.revisionId = revisionId;
+  remote.manifestObjectId = manifestObjectId;
+  remote.revisions.set(revisionId, { revisionId, manifestObjectId, previousRevisionId: null });
+  return revisionId;
+}
+
+async function publishStreamFixture(
+  remote: MemoryRemote,
+  rootKey: Uint8Array,
+  input: {
+    namespace: string;
+    logicalPath: string;
+    bytes: Uint8Array;
+    totalSize?: number;
+    contentDigest?: string;
+    entryType?: "file" | "workspace-blob";
+    workspacePath?: string;
+    workspaceLayer?: "index" | "worktree";
+    fileMode?: number;
+  },
+): Promise<void> {
+  const keys = await deriveScopeKey(rootKey, input.namespace);
+  const objectId = input.bytes.byteLength > 0 ? await computeObjectId(keys.dedupKey, input.bytes) : undefined;
+  if (objectId) {
+    remote.namespaceObjects.set(`${input.namespace}\0${objectId}`, await encryptEnvelope({
+      plaintext: input.bytes,
+      key: keys.encryptionKey,
+      dedupKey: keys.dedupKey,
+      context: { vaultId: "vlt_test", scopeId: input.namespace, compression: "none" },
+    }));
+  }
+  const manifest: NamespaceManifestV1 = {
+    schemaVersion: 1,
+    vaultId: "vlt_test",
+    namespace: input.namespace,
+    namespaceRevisionId: `nrev_${Buffer.from(input.logicalPath).toString("base64url").slice(0, 32)}`,
+    parentNamespaceRevisionIds: [],
+    createdAt: "2026-09-07T10:00:00.000Z",
+    createdByDeviceId: "dev_stream_fixture",
+    operationId: "op_stream_fixture",
+    mode: "snapshot",
+    entries: [{
+      namespace: input.namespace,
+      logicalPath: input.logicalPath,
+      entryType: input.entryType ?? "file",
+      ...(input.workspacePath ? { workspacePath: input.workspacePath } : {}),
+      ...(input.workspaceLayer ? { workspaceLayer: input.workspaceLayer } : {}),
+      ...(input.fileMode !== undefined ? { fileMode: input.fileMode } : {}),
+      objectIds: objectId ? [objectId] : [],
+      totalSize: input.totalSize ?? input.bytes.byteLength,
+      contentDigest: input.contentDigest ?? await computeObjectId(keys.dedupKey, input.bytes),
+      chunking: { strategy: "jsonl-records", targetSize: 4 * 1024 * 1024, maxSize: 4 * 1024 * 1024 },
+    }],
+    tombstones: [],
+    conflicts: [],
+    pathClaims: [{ pathId: await testPathId(keys.dedupKey, input.logicalPath), mutation: "add" }],
+  };
+  const manifestObjectId = await storeNamespaceManifest(remote, rootKey, manifest);
+  remote.namespaceHeads.set(input.namespace, { namespace: input.namespace, revisionId: manifest.namespaceRevisionId, manifestObjectId });
+  remote.scopedRevisionId = `srev_${manifest.namespaceRevisionId}`;
+}
+
 async function testPathId(dedupKey: Uint8Array, logicalPath: string): Promise<string> {
   return computeObjectId(dedupKey, new TextEncoder().encode(`statecase:path:v1\0${logicalPath}`));
 }
@@ -1108,6 +1452,7 @@ class MemoryRemote {
   scopedRevisionId: string | null = null;
   manifestObjectId: string | null = null;
   plaintext = "";
+  readonly namespaceObjectWrites: string[] = [];
   allowLegacyReads = true;
 
   fetch: typeof fetch = async (input, init) => {
@@ -1129,6 +1474,7 @@ class MemoryRemote {
       const key = `${namespace}\0${namespaceObject[2]}`;
       if (method === "PUT") {
         const bytes = new Uint8Array(await new Response(init?.body).arrayBuffer());
+        this.namespaceObjectWrites.push(key);
         this.namespaceObjects.set(key, bytes);
         this.plaintext += new TextDecoder().decode(bytes);
         return Response.json({ created: true, size: bytes.byteLength }, { status: 201 });

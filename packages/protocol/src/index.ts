@@ -41,6 +41,15 @@ function toCanonical(value: unknown, ancestors: Set<object>): CanonicalValue {
 }
 
 const identifier = z.string().min(1).max(256).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u);
+const chunkSize = z.number().int().positive().max(8 * 1024 * 1024);
+
+export const chunkingDescriptorSchema = z.discriminatedUnion("strategy", [
+  z.object({ strategy: z.literal("jsonl-records"), targetSize: chunkSize, maxSize: chunkSize }).strict()
+    .refine((value) => value.targetSize <= value.maxSize, "targetSize must not exceed maxSize"),
+  z.object({ strategy: z.literal("fixed"), size: chunkSize }).strict(),
+  z.object({ strategy: z.literal("fastcdc"), minSize: chunkSize, targetSize: chunkSize, maxSize: chunkSize }).strict()
+    .refine((value) => value.minSize <= value.targetSize && value.targetSize <= value.maxSize, "invalid FastCDC sizes"),
+]);
 
 export const manifestEntrySchema = z.object({
   namespace: z.string().min(1).max(1024),
@@ -52,6 +61,7 @@ export const manifestEntrySchema = z.object({
   objectIds: z.array(identifier).max(10_000),
   totalSize: z.number().int().nonnegative().safe(),
   contentDigest: identifier,
+  chunking: chunkingDescriptorSchema.optional(),
 }).strict();
 
 export const tombstoneSchema = z.object({

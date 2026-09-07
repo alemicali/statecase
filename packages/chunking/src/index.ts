@@ -7,6 +7,11 @@ export interface JsonlChunkResult {
   deferredTail: Uint8Array;
 }
 
+export interface JsonlStreamPolicy {
+  targetSize: number;
+  maxSize: number;
+}
+
 export function chunkBytes(input: Uint8Array, policy: ChunkPolicy): Uint8Array[] {
   validatePolicy(policy);
   if (input.byteLength === 0) return [];
@@ -33,6 +38,60 @@ export function chunkJsonl(input: Uint8Array, targetSize: number): JsonlChunkRes
   }
   if (chunkStart < accepted.byteLength) chunks.push(accepted.slice(chunkStart));
   return { chunks, deferredTail: input.slice(lastNewline + 1) };
+}
+
+/**
+ * Streams JSONL with stable record-aware boundaries. Records are kept whole
+ * where possible; records larger than maxSize are split into bounded chunks.
+ * An unterminated final record is emitted so concatenating the output always
+ * reconstructs the exact input.
+ */
+export async function* chunkJsonlStream(
+  source: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+  policy: JsonlStreamPolicy,
+): AsyncGenerator<Uint8Array> {
+  validateJsonlStreamPolicy(policy);
+  const record = new ByteAccumulator(policy.maxSize);
+  let completeRecords: Uint8Array[] = [];
+  let completeSize = 0;
+
+  const flushComplete = (): Uint8Array | undefined => {
+    if (completeSize === 0) return undefined;
+    const output = concatChunks(completeRecords);
+    completeRecords = [];
+    completeSize = 0;
+    return output;
+  };
+
+  for await (const input of source) {
+    if (!(input instanceof Uint8Array)) throw new TypeError("JSONL stream must yield Uint8Array chunks");
+    for (const byte of input) {
+      record.push(byte);
+      if (record.full && byte !== 0x0a) {
+        const complete = flushComplete();
+        if (complete) yield complete;
+        yield record.take();
+        continue;
+      }
+      if (byte !== 0x0a) continue;
+
+      const completedRecord = record.take();
+      if (completeSize > 0 && completeSize + completedRecord.byteLength > policy.targetSize) {
+        const complete = flushComplete();
+        if (complete) yield complete;
+      }
+      if (completedRecord.byteLength >= policy.targetSize) {
+        yield completedRecord;
+      } else {
+        completeRecords.push(completedRecord);
+        completeSize += completedRecord.byteLength;
+      }
+    }
+  }
+
+  const complete = flushComplete();
+  if (complete) yield complete;
+  if (record.size > 0) yield record.take();
 }
 
 export function concatChunks(chunks: readonly Uint8Array[]): Uint8Array {
@@ -88,6 +147,45 @@ function validatePolicy(policy: ChunkPolicy): void {
     targetSize > maxSize
   ) {
     throw new RangeError("FastCDC sizes must satisfy 0 < min <= target <= max");
+  }
+}
+
+function validateJsonlStreamPolicy(policy: JsonlStreamPolicy): void {
+  if (
+    !Number.isSafeInteger(policy.targetSize) ||
+    !Number.isSafeInteger(policy.maxSize) ||
+    policy.targetSize <= 0 ||
+    policy.maxSize < policy.targetSize
+  ) {
+    throw new RangeError("JSONL stream sizes must satisfy 0 < target <= max");
+  }
+}
+
+class ByteAccumulator {
+  readonly #bytes: Uint8Array;
+  #size = 0;
+
+  constructor(capacity: number) {
+    this.#bytes = new Uint8Array(capacity);
+  }
+
+  get full(): boolean {
+    return this.#size === this.#bytes.byteLength;
+  }
+
+  get size(): number {
+    return this.#size;
+  }
+
+  push(byte: number): void {
+    this.#bytes[this.#size] = byte;
+    this.#size += 1;
+  }
+
+  take(): Uint8Array {
+    const output = this.#bytes.slice(0, this.#size);
+    this.#size = 0;
+    return output;
   }
 }
 

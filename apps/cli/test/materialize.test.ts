@@ -38,6 +38,33 @@ describe("transactional native materialization (BK-008, BK-009, WS-025)", () => 
     expect((await readdir(root)).every((name) => !name.includes(".statecase-transaction-"))).toBe(true);
   });
 
+  it("atomically installs a file-backed write without loading it into the transaction API", async () => {
+    const root = await mkdtemp(join(tmpdir(), "statecase-apply-file-backed-"));
+    temporary.push(root);
+    const sourcePath = join(root, "verified-download.staged");
+    const destination = join(root, "restored", "session.jsonl");
+    await writeFile(sourcePath, "large streamed payload\n");
+
+    await applyFileTransaction({ writes: [{ path: destination, sourcePath }], deletes: [] });
+
+    expect(await readFile(destination, "utf8")).toBe("large streamed payload\n");
+    expect(await readFile(sourcePath, "utf8")).toBe("large streamed payload\n");
+  });
+
+  it("rejects missing and non-regular file-backed sources without changing the destination", async () => {
+    const root = await mkdtemp(join(tmpdir(), "statecase-apply-source-guard-"));
+    temporary.push(root);
+    const destination = join(root, "destination.txt");
+    await writeFile(destination, "preserved");
+    await mkdir(join(root, "directory-source"));
+
+    await expect(applyFileTransaction({ writes: [{ path: destination, sourcePath: join(root, "missing") }], deletes: [] }))
+      .rejects.toMatchObject({ code: "ENOENT" });
+    await expect(applyFileTransaction({ writes: [{ path: destination, sourcePath: join(root, "directory-source") }], deletes: [] }))
+      .rejects.toThrow("not a regular file");
+    expect(await readFile(destination, "utf8")).toBe("preserved");
+  });
+
   it("rolls back every prior replacement and deletion after a mid-commit failure", async () => {
     const root = await mkdtemp(join(tmpdir(), "statecase-rollback-"));
     temporary.push(root);

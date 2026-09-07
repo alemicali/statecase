@@ -7,6 +7,7 @@ import {
   CryptoFailure,
   NonceRegistry,
   computeObjectId,
+  computeObjectIdStream,
   decryptEnvelope,
   deriveScopeKey,
   deriveRecoveryKey,
@@ -40,7 +41,27 @@ describe("object identity (CR-005)", () => {
     await expect(deriveScopeKey(new Uint8Array(32), "")).rejects.toThrow("scope");
     await expect(computeObjectId(new Uint8Array(31), new Uint8Array())).rejects.toThrow("32 bytes");
   });
+
+  it("computes the existing object identity incrementally across arbitrary stream boundaries", async () => {
+    const dedupKey = new Uint8Array(32).fill(19);
+    const plaintext = Uint8Array.from({ length: 16_419 }, (_, index) => (index * 37) % 251);
+    const chunks = [
+      plaintext.subarray(0, 1),
+      plaintext.subarray(1, 4_097),
+      new Uint8Array(),
+      plaintext.subarray(4_097, 12_000),
+      plaintext.subarray(12_000),
+    ];
+
+    expect(await computeObjectIdStream(dedupKey, chunks)).toBe(await computeObjectId(dedupKey, plaintext));
+    expect(await computeObjectIdStream(dedupKey, asAsync(chunks))).toBe(await computeObjectId(dedupKey, plaintext));
+    await expect(computeObjectIdStream(new Uint8Array(31), chunks)).rejects.toThrow("32 bytes");
+  });
 });
+
+async function* asAsync(chunks: readonly Uint8Array[]): AsyncGenerator<Uint8Array> {
+  for (const chunk of chunks) yield chunk;
+}
 
 describe("recovery derivation (CR-009)", () => {
   it("derives deterministic Argon2id keys with explicit test limits", async () => {

@@ -76,6 +76,17 @@ describe("wire schemas (PR-001, PR-014)", () => {
     })).toMatchObject({ entryType: "workspace-blob", workspaceLayer: "index", fileMode: 0o100755 });
   });
 
+  it("records bounded chunking parameters while accepting manifests written before the descriptor existed", () => {
+    const entry = { namespace: "harness:codex:default", logicalPath: "portable-sessions/ws/a.jsonl", objectIds: ["obj_a"], totalSize: 1, contentDigest: "obj_digest" };
+    expect(manifestEntrySchema.parse(entry).chunking).toBeUndefined();
+    expect(manifestEntrySchema.parse({
+      ...entry,
+      chunking: { strategy: "jsonl-records", targetSize: 4 * 1024 * 1024, maxSize: 4 * 1024 * 1024 },
+    }).chunking).toMatchObject({ strategy: "jsonl-records" });
+    expect(() => manifestEntrySchema.parse({ ...entry, chunking: { strategy: "jsonl-records", targetSize: 5, maxSize: 4 } })).toThrow();
+    expect(() => manifestEntrySchema.parse({ ...entry, chunking: { strategy: "unknown", size: 4 } })).toThrow();
+  });
+
   it("validates a commit request and idempotency key", () => {
     const request = {
       protocolVersion: "1.0",

@@ -39,8 +39,10 @@ accepted prefix. The merge preserves both branch orders and dependency
 activity; rewrites, invalid tails, and incompatible order remain conflicts.
 
 The persistent daemon can run with `statecase daemon foreground` or be installed
-as a systemd user service / macOS LaunchAgent. Real-OS service UAT,
-multi-gigabyte session streaming, initialized-submodule
+as a systemd user service / macOS LaunchAgent. Session push and pull now stream
+through bounded secure staging, use record-aware 4 MiB chunks, and transfer only
+changed tail chunks. The scaled 2-GiB acceptance run and bounded-memory
+concurrent-append merge remain release gates, alongside real-OS service UAT and initialized-submodule
 hydration, automatic retention/in-place
 restore, post-revocation key rewrapping,
 key rotation, and real-version Codex/Claude fixture certification remain
