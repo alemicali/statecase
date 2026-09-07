@@ -34,10 +34,11 @@ A scoped client has no vault root key. Treat an authorization error for an unlis
 3. If a vault key is missing, request enrollment through a trusted recovery kit. Never ask the operator to paste recovery material into chat.
 4. Configure harness-owned state with `statecase setup --harness codex`, `claude`, or `codex,claude`.
 5. If an attached checkout changes local path, use `statecase workspace move <id> <path>` and pull before resume. Use `workspace detach <id>` to remove only the device-local mapping; it must not be described as deleting files or cloud state.
-6. Configure arbitrary context with `statecase drop add` on its origin or `statecase drop map` on another machine. Use `statecase --json drop status [id]` to compare root availability and applied/remote revisions; `applied` is not a local dirty-file scan.
-7. Use `statecase drop remove <id>` only to forget that device's mapping. Never describe it as deleting local files or the encrypted remote namespace.
-8. Preview a risky transfer with `--dry-run`, then run `statecase --json sync`.
-9. Inspect exit codes and JSON. Do not scrape decorative human output.
+6. Use `statecase --json workspace capsule <id>` to preview aggregate local Git overlay metadata without syncing. Do not claim it prints content or inspects remote Session Capsules; use `workspace dependencies` for the latter.
+7. Configure arbitrary context with `statecase drop add` on its origin or `statecase drop map` on another machine. Use `statecase --json drop status [id]` to compare root availability and applied/remote revisions; `applied` is not a local dirty-file scan.
+8. Use `statecase drop remove <id>` only to forget that device's mapping. Never describe it as deleting local files or the encrypted remote namespace.
+9. Preview a risky transfer with `--dry-run`, then run `statecase --json sync`.
+10. Inspect exit codes and JSON. Do not scrape decorative human output.
 
 ## Resume a session
 

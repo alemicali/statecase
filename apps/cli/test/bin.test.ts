@@ -344,6 +344,51 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
     expect(await command(io, "--json", "drop", "remove", added.id)).toBe(2);
   });
 
+  it("previews a local Git workspace capsule without persisting or exposing file bytes (WS-033)", async () => {
+    const home = await mkdtemp(join(tmpdir(), "statecase-cli-workspace-capsule-"));
+    const checkout = join(home, "checkout");
+    const metadataOnly = join(home, "metadata-only");
+    temporary.push(home);
+    await Promise.all([mkdir(checkout), mkdir(metadataOnly)]);
+    await promisify(execFile)("git", ["-C", checkout, "init", "--quiet"]);
+    await writeFile(join(checkout, "tracked.txt"), "baseline\n");
+    await promisify(execFile)("git", ["-C", checkout, "add", "tracked.txt"]);
+    await promisify(execFile)("git", ["-C", checkout, "-c", "user.name=Statecase Test", "-c", "user.email=statecase@example.invalid", "commit", "--quiet", "-m", "baseline"]);
+    const baseCommit = (await promisify(execFile)("git", ["-C", checkout, "rev-parse", "HEAD"])).stdout.trim();
+    await writeFile(join(checkout, "tracked.txt"), "modified-private-marker\n");
+    await writeFile(join(checkout, "untracked.txt"), "untracked-private-marker\n");
+    process.env.STATECASE_HOME = join(home, "statecase-home");
+    const output: string[] = [];
+    const errors: string[] = [];
+    const io: CliIO = {
+      stdout: (value) => output.push(value),
+      stderr: (value) => errors.push(value),
+      fetch: async () => { throw new Error("workspace capsule preview must stay offline"); },
+    };
+
+    expect(await command(io, "--json", "workspace", "attach", "--id", "ws_git", "--path", checkout)).toBe(0);
+    const configPath = join(process.env.STATECASE_HOME, "config.json");
+    const beforePreview = await readFile(configPath, "utf8");
+    expect(await command(io, "--json", "workspace", "capsule", "ws_git")).toBe(0);
+    expect(JSON.parse(output.at(-1)!)).toMatchObject({
+      workspaceId: "ws_git",
+      path: checkout,
+      mode: "git-overlay",
+      baseCommit,
+      recordCount: 2,
+      blobCount: 2,
+      blobBytes: Buffer.byteLength("modified-private-marker\n") + Buffer.byteLength("untracked-private-marker\n"),
+    });
+    expect(output.at(-1)).not.toContain("modified-private-marker");
+    expect(output.at(-1)).not.toContain("untracked-private-marker");
+    expect(await readFile(configPath, "utf8")).toBe(beforePreview);
+
+    expect(await command(io, "--json", "workspace", "attach", "--id", "ws_metadata", "--path", metadataOnly, "--mode", "metadata-only")).toBe(0);
+    expect(await command(io, "--json", "workspace", "capsule", "ws_metadata")).toBe(2);
+    expect(JSON.parse(errors.at(-1)!)).toMatchObject({ error: { code: 2, message: expect.stringContaining("metadata-only") } });
+    expect(await command(io, "--json", "workspace", "capsule", "ws_missing")).toBe(2);
+  });
+
   it("runs an unmodified harness offline and preserves its exit code (RT-002, RT-004, RT-011)", async () => {
     const home = await mkdtemp(join(tmpdir(), "statecase-cli-run-"));
     temporary.push(home);

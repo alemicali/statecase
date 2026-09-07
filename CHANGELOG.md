@@ -40,6 +40,9 @@ All notable changes to Statecase will be documented here.
   status`. Removal is local-only, remapping invalidates stale applied state,
   invalid modes fail before configuration mutation, and scoped clients report
   unauthorized namespaces without presenting them as absent.
+- Added `workspace capsule <id>` as an offline, non-mutating Git overlay
+  preview. Its stable output contains baseline/ref and aggregate counts/sizes,
+  never captured file bytes; metadata-only workspaces fail explicitly.
 - Added per-device `ask|auto|never` Git baseline acquisition. Auto mode obtains
   missing commits from the checkout's existing `origin` with bounded,
   non-interactive system Git; shallow clones are supported, raw remote errors

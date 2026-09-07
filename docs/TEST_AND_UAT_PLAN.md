@@ -227,6 +227,9 @@ policy; they are never uploaded merely because they are present.
   to policy.
 - `WS-032`: strict, warn, and best-effort hydration handle unresolved external
   dependencies exactly as documented.
+- `WS-033`: local workspace capsule preview reports only bounded Git
+  baseline/ref and overlay size/count metadata, performs no network or config
+  mutation, emits no captured file bytes, and rejects identity-only mappings.
 
 ## 7. Protocol and cloud contract tests
 

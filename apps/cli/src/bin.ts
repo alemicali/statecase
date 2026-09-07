@@ -11,6 +11,7 @@ import { resolveCodexRoots } from "@statecase/adapter-codex";
 import { randomKey } from "@statecase/crypto";
 import { workspaceIdForRemote } from "@statecase/domain";
 import { LocalStateStore } from "@statecase/storage-local";
+import { captureWorkspace } from "@statecase/workspace";
 import { Command } from "commander";
 
 import { StatecaseClient } from "./client.js";
@@ -494,6 +495,28 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
       delete config.applied[`workspace:${workspaceId}`];
       await store.saveConfig(config);
       emit(io, program, { id: workspaceId, path: resolve(removed!.path), detached: true }, `Detached workspace ${workspaceId}; local files and cloud state were not changed`);
+    });
+  workspace.command("capsule <workspaceId>")
+    .description("preview local Git workspace capsule metadata without syncing")
+    .action(async (workspaceId: string) => {
+      const config = normalizeConfig(await store.loadConfig());
+      const mapping = config.workspaces.find((item) => item.id === workspaceId);
+      if (!mapping) throw new StatecaseUsageError(`workspace is not attached on this device: ${workspaceId}`, 2);
+      if (mapping.sync === "identity-only") throw new StatecaseUsageError(`workspace ${workspaceId} is metadata-only and has no Git capsule`, 2);
+      const path = resolve(mapping.path);
+      const captured = await captureWorkspace(path, { gitFetch: "ask" });
+      const blobBytes = captured.blobs.reduce((total, blob) => total + blob.bytes.byteLength, 0);
+      const preview = {
+        workspaceId,
+        path,
+        mode: "git-overlay" as const,
+        baseCommit: captured.capsule.baseCommit,
+        headRef: captured.capsule.headRef,
+        recordCount: captured.capsule.records.length,
+        blobCount: captured.blobs.length,
+        blobBytes,
+      };
+      emit(io, program, preview, `${workspaceId}: ${preview.recordCount} overlay records, ${preview.blobCount} blobs, ${preview.blobBytes} bytes; baseline ${preview.baseCommit ?? "unborn"}`);
     });
   workspace.command("dependencies")
     .description("inspect the immutable dependency closure recorded for resumable sessions")

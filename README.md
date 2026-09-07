@@ -184,10 +184,16 @@ Before resuming an older session on another machine, inspect and hydrate its
 recorded closure rather than pulling whichever workspace happens to be latest:
 
 ```bash
+./apps/cli/dist/bin.js --json workspace capsule <workspace-id>
 ./apps/cli/dist/bin.js --json workspace dependencies
 ./apps/cli/dist/bin.js --json workspace hydrate --session <capsule-id> --mode strict --dry-run
 ./apps/cli/dist/bin.js --json workspace hydrate --session <capsule-id> --mode strict
 ```
+
+`workspace capsule` is a local, offline preview of the next Git overlay. It
+reports baseline/ref and aggregate record/blob sizes without printing captured
+file bytes or changing Statecase configuration. `workspace dependencies`
+inspects the distinct immutable Session Capsules already stored remotely.
 
 `warn` reports a partial resume with exit code `8`; `best-effort` is available
 only as an explicit acceptance of missing context. Map a reported external

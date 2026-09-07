@@ -589,6 +589,14 @@ Modes:
 - `git-overlay`: recommended baseline plus non-reproducible changes;
 - `mirror`: explicit non-Git/full-tree synchronization with Drop-like rules.
 
+`workspace capsule <workspaceId>` performs a local preview of a configured
+`git-overlay` workspace. It forces non-fetching `ask` acquisition policy,
+performs no cloud request or configuration mutation, and exposes only the
+baseline commit, head ref, and aggregate record/blob counts and byte size. It
+MUST NOT emit captured file bytes. `metadata-only` mappings have no Git capsule
+and are rejected. This local Workspace Capsule preview is distinct from the
+immutable remote Session Capsules inspected by `workspace dependencies`.
+
 ### 9.2 Harness activity and read/write completeness
 
 Statecase maintains a workspace-relative activity index:
@@ -803,7 +811,9 @@ statecase setup [--harness ...] [--transparent] [--dry-run]
 statecase bootstrap [--token-file ...] [--non-interactive]
 statecase workspace attach [--id ...] [--path ...] [--auto] [--mode git-overlay|metadata-only] [--git-fetch ask|auto|never]
 statecase workspace list|move|detach
-statecase workspace capsule|dependencies|hydrate
+statecase workspace capsule <workspaceId>
+statecase workspace dependencies [--workspace ...] [--revision ...]
+statecase workspace hydrate --session ... [--mode strict|warn|best-effort] [--dry-run]
 statecase drop add|map|list|remove|status
 statecase pull [--category ...] [--revision ...] [--dry-run]
 statecase push [--category ...] [--dry-run]
