@@ -158,8 +158,9 @@ or deletes it. With explicit `auto` policy it now attempts the local LFS cache,
 then performs a bounded non-interactive exact-baseline fetch from the existing
 origin, and verifies the pointer's declared size and SHA-256. Partial or corrupt
 materialization rolls back and raw Git LFS diagnostics remain hidden. Statecase
-does not acquire or synchronize LFS credentials. Real Git LFS interoperability
-and remote UAT remain a release gate until executed.
+does not acquire or synchronize LFS credentials. The packaged candidate passed
+the [Daytona Git LFS acquisition UAT](uat/2026-09-07-git-lfs-daytona.md) with
+system Git LFS 3.6.1 against the live Cloudflare service.
 
 Persistent installations now keep a stable device ID independent of absolute
 paths and Better Auth session rotation. D1 binds each service session to that

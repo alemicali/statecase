@@ -37,7 +37,7 @@ as an immutable delta that persistent devices can reconcile.
 The persistent daemon can run with `statecase daemon foreground` or be installed
 as a systemd user service / macOS LaunchAgent. Real-OS service UAT, append-aware
 same-session merge, initialized-submodule
-hydration, real Git LFS interoperability UAT, automatic retention/in-place
+hydration, automatic retention/in-place
 restore, post-revocation key rewrapping,
 key rotation, and real-version Codex/Claude fixture certification remain
 release gates. This is not yet a

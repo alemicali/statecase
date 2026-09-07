@@ -22,6 +22,7 @@ const password = `Uat-${randomBytes(32).toString("base64url")}`;
 const recoveryPassphrase = `Recovery-${randomBytes(32).toString("base64url")}`;
 const machineA = join(root, "machine-a");
 const machineB = join(root, "machine-b");
+const machineC = join(root, "machine-c");
 const source = join(root, "source");
 const target = join(root, "target");
 const gitSource = join(root, "git-source");
@@ -35,6 +36,7 @@ const recoveryFile = join(root, "recovery", "uat.statecase-recovery.json");
 await Promise.all([
   mkdir(machineA, { recursive: true }),
   mkdir(machineB, { recursive: true }),
+  mkdir(machineC, { recursive: true }),
   mkdir(join(source, "nested"), { recursive: true }),
   mkdir(target, { recursive: true }),
 ]);
@@ -49,9 +51,13 @@ assert.ok(sessionCookie, "signup did not establish a browser session");
 
 const tokenA = await authorizeDevice(sessionCookie, true);
 const tokenB = await authorizeDevice(sessionCookie, false);
+const tokenC = await authorizeDevice(sessionCookie, false);
 assert.notEqual(tokenA, tokenB, "separate devices received the same session token");
+assert.notEqual(tokenB, tokenC, "separate devices received the same session token");
+assert.notEqual(tokenA, tokenC, "separate devices received the same session token");
 run(machineA, ["login", "--non-interactive", "--device-name", "Daytona machine A"], { token: tokenA });
 run(machineB, ["login", "--non-interactive", "--device-name", "Daytona machine B"], { token: tokenB });
+run(machineC, ["login", "--non-interactive", "--device-name", "Daytona machine C"], { token: tokenC });
 
 const vault = run(machineA, ["vault", "create", "Daytona product UAT", "--recovery-file", recoveryFile], {
   recoveryPassphrase,
@@ -59,6 +65,7 @@ const vault = run(machineA, ["vault", "create", "Daytona product UAT", "--recove
 assert.match(vault.id, /^vlt_[a-f0-9]{32}$/u);
 
 run(machineB, ["vault", "join", vault.id, "--recovery-file", recoveryFile], { recoveryPassphrase });
+run(machineC, ["vault", "join", vault.id, "--recovery-file", recoveryFile], { recoveryPassphrase });
 
 await Promise.all([
   writeFile(join(source, "context.txt"), "context from machine A\n"),
@@ -171,20 +178,20 @@ gitWithEnvironment(["clone", "-q", `file://${lfsRemote}`, lfsTarget], { GIT_LFS_
 git(["-C", lfsTarget, "lfs", "install", "--local", "--skip-smudge"]);
 const lfsPointerBytes = await readFile(join(lfsTarget, "portable.bin"));
 assert.match(lfsPointerBytes.toString("utf8"), /^version https:\/\/git-lfs\.github\.com\/spec\/v1$/mu);
-run(machineB, ["workspace", "attach", "--id", "ws_lfs", "--path", lfsTarget, "--mode", "git-overlay", "--git-fetch", "ask"]);
-const lfsApprovalRequired = runRaw(machineB, ["pull"]);
+run(machineC, ["workspace", "attach", "--id", "ws_lfs", "--path", lfsTarget, "--mode", "git-overlay", "--git-fetch", "ask"]);
+const lfsApprovalRequired = runRaw(machineC, ["pull"]);
 assert.equal(lfsApprovalRequired.status, 5, `LFS ask policy returned ${lfsApprovalRequired.status}: ${lfsApprovalRequired.stderr}`);
 assert.match(lfsApprovalRequired.stderr, /GIT_LFS_CONTENT_UNAVAILABLE/u);
 assert.deepEqual(await readFile(join(lfsTarget, "portable.bin")), lfsPointerBytes, "ask policy changed the LFS pointer");
-run(machineB, ["workspace", "attach", "--id", "ws_lfs", "--path", lfsTarget, "--mode", "git-overlay", "--git-fetch", "auto"]);
-run(machineB, ["pull"]);
+run(machineC, ["workspace", "attach", "--id", "ws_lfs", "--path", lfsTarget, "--mode", "git-overlay", "--git-fetch", "auto"]);
+run(machineC, ["pull"]);
 assert.deepEqual(await readFile(join(lfsTarget, "portable.bin")), lfsBytes, "auto policy did not materialize exact LFS bytes");
 
 console.log(JSON.stringify({
   result: "pass",
   apiUrl,
   deviceAuthorization: "single-use verified",
-  devices: 2,
+  devices: 3,
   vaultCreated: true,
   encryptedRoundTrips: 2,
   deletionPropagation: true,
