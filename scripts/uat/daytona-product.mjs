@@ -23,6 +23,7 @@ const recoveryPassphrase = `Recovery-${randomBytes(32).toString("base64url")}`;
 const machineA = join(root, "machine-a");
 const machineB = join(root, "machine-b");
 const machineC = join(root, "machine-c");
+const machineD = join(root, "machine-d");
 const source = join(root, "source");
 const target = join(root, "target");
 const gitSource = join(root, "git-source");
@@ -31,12 +32,17 @@ const gitTarget = join(root, "git-target");
 const lfsSource = join(root, "lfs-source");
 const lfsRemote = join(root, "lfs-remote.git");
 const lfsTarget = join(root, "lfs-target");
+const codexHomeA = join(machineA, "codex-home");
+const codexHomeD = join(machineD, "codex-home");
+const sessionWorkspaceA = join(root, "session-workspace-a");
+const sessionWorkspaceD = join(root, "session-workspace-d");
 const recoveryFile = join(root, "recovery", "uat.statecase-recovery.json");
 
 await Promise.all([
   mkdir(machineA, { recursive: true }),
   mkdir(machineB, { recursive: true }),
   mkdir(machineC, { recursive: true }),
+  mkdir(machineD, { recursive: true }),
   mkdir(join(source, "nested"), { recursive: true }),
   mkdir(target, { recursive: true }),
 ]);
@@ -52,12 +58,15 @@ assert.ok(sessionCookie, "signup did not establish a browser session");
 const tokenA = await authorizeDevice(sessionCookie, true);
 const tokenB = await authorizeDevice(sessionCookie, false);
 const tokenC = await authorizeDevice(sessionCookie, false);
+const tokenD = await authorizeDevice(sessionCookie, false);
 assert.notEqual(tokenA, tokenB, "separate devices received the same session token");
 assert.notEqual(tokenB, tokenC, "separate devices received the same session token");
 assert.notEqual(tokenA, tokenC, "separate devices received the same session token");
+assert.equal(new Set([tokenA, tokenB, tokenC, tokenD]).size, 4, "separate devices did not receive unique session tokens");
 run(machineA, ["login", "--non-interactive", "--device-name", "Daytona machine A"], { token: tokenA });
 run(machineB, ["login", "--non-interactive", "--device-name", "Daytona machine B"], { token: tokenB });
 run(machineC, ["login", "--non-interactive", "--device-name", "Daytona machine C"], { token: tokenC });
+run(machineD, ["login", "--non-interactive", "--device-name", "Daytona machine D"], { token: tokenD });
 
 const vault = run(machineA, ["vault", "create", "Daytona product UAT", "--recovery-file", recoveryFile], {
   recoveryPassphrase,
@@ -66,6 +75,7 @@ assert.match(vault.id, /^vlt_[a-f0-9]{32}$/u);
 
 run(machineB, ["vault", "join", vault.id, "--recovery-file", recoveryFile], { recoveryPassphrase });
 run(machineC, ["vault", "join", vault.id, "--recovery-file", recoveryFile], { recoveryPassphrase });
+run(machineD, ["vault", "join", vault.id, "--recovery-file", recoveryFile], { recoveryPassphrase });
 
 await Promise.all([
   writeFile(join(source, "context.txt"), "context from machine A\n"),
@@ -187,11 +197,71 @@ run(machineC, ["workspace", "attach", "--id", "ws_lfs", "--path", lfsTarget, "--
 run(machineC, ["pull"]);
 assert.deepEqual(await readFile(join(lfsTarget, "portable.bin")), lfsBytes, "auto policy did not materialize exact LFS bytes");
 
+await Promise.all([
+  mkdir(join(codexHomeA, "sessions", "2026", "09", "07"), { recursive: true }),
+  mkdir(codexHomeD, { recursive: true }),
+  mkdir(sessionWorkspaceA, { recursive: true }),
+  mkdir(sessionWorkspaceD, { recursive: true }),
+]);
+run(machineA, ["setup", "--harness", "codex"]);
+run(machineD, ["setup", "--harness", "codex"]);
+run(machineA, ["workspace", "attach", "--id", "ws_session_uat", "--path", sessionWorkspaceA, "--mode", "metadata-only"]);
+run(machineD, ["workspace", "attach", "--id", "ws_session_uat", "--path", sessionWorkspaceD, "--mode", "metadata-only"]);
+const sourceSession = join(codexHomeA, "sessions", "2026", "09", "07", "uat-session.jsonl");
+const baseA = { type: "session_meta", payload: { cwd: sessionWorkspaceA } };
+const baseD = { type: "session_meta", payload: { cwd: sessionWorkspaceD } };
+const remoteAppend = [
+  { type: "tool_call", id: "remote-1", name: "read_file", arguments: { path: join(sessionWorkspaceA, "remote-only.md") } },
+  { type: "assistant", id: "remote-2", message: "remote branch" },
+];
+const localAppend = [
+  { type: "tool_call", id: "local-1", name: "read_file", arguments: { path: join(sessionWorkspaceD, "local-only.md") } },
+  { type: "assistant", id: "local-2", message: "local branch" },
+];
+await writeJsonl(sourceSession, [baseA]);
+run(machineA, ["push"]);
+run(machineD, ["pull"]);
+const targetSession = join(codexHomeD, "sessions", "statecase", "ws_session_uat", "uat-session.jsonl");
+
+await writeJsonl(sourceSession, [baseA, ...remoteAppend]);
+run(machineA, ["push"]);
+await writeJsonl(targetSession, [{ ...baseD, rewritten: true }, ...localAppend]);
+const rewritten = runRaw(machineD, ["push"]);
+assert.equal(rewritten.status, 5, `rewritten session push returned ${rewritten.status}: ${rewritten.stderr}`);
+assert.equal(run(machineA, ["pull"]).results?.[0]?.outcome, "unchanged", "rejected rewrite advanced the remote head");
+
+await writeJsonl(targetSession, [baseD, ...localAppend]);
+run(machineD, ["push"]);
+const dependencies = run(machineD, ["workspace", "dependencies", "--workspace", "ws_session_uat"]);
+const sessionReport = dependencies.reports.find((report) => report.sessionKey.endsWith(":uat-session"));
+assert.ok(sessionReport, "merged session capsule was not published");
+assert.deepEqual(
+  new Set(sessionReport.dependencies.map((dependency) => dependency.logicalPath)),
+  new Set(["local-only.md", "remote-only.md"]),
+  "merged session capsule did not retain activity from both branches",
+);
+
+run(machineD, ["pull"]);
+run(machineA, ["pull"]);
+await assert.rejects(
+  readFile(join(codexHomeA, "sessions", "statecase", "ws_session_uat", "uat-session.jsonl")),
+  (error) => error?.code === "ENOENT",
+  "origin pull created a divergent canonical session copy",
+);
+for (const path of [sourceSession, targetSession]) {
+  const records = (await readFile(path, "utf8")).trimEnd().split("\n").map((line) => JSON.parse(line));
+  const ids = records.flatMap((record) => typeof record.id === "string" ? [record.id] : []);
+  assert.equal(ids.length, 4, `${path} did not contain each append record exactly once`);
+  assert.deepEqual(new Set(ids), new Set(["remote-1", "remote-2", "local-1", "local-2"]));
+  assert.ok(ids.indexOf("remote-1") < ids.indexOf("remote-2"), `${path} changed remote branch order`);
+  assert.ok(ids.indexOf("local-1") < ids.indexOf("local-2"), `${path} changed local branch order`);
+}
+
 console.log(JSON.stringify({
   result: "pass",
   apiUrl,
   deviceAuthorization: "single-use verified",
-  devices: 3,
+  devices: 4,
   vaultCreated: true,
   encryptedRoundTrips: 2,
   deletionPropagation: true,
@@ -200,6 +270,7 @@ console.log(JSON.stringify({
   namedSnapshotCreated: true,
   shallowGitBaselineAcquisition: "ask-preserved-auto-restored",
   gitLfsAcquisition: "ask-preserved-auto-verified",
+  sameSessionAppendMerge: "rewrite-preserved-branches-converged-dependencies-retained",
   codexAndClaudeHomesRemainIsolated: true,
 }, null, 2));
 
@@ -214,6 +285,10 @@ function run(statecaseHome, args, secrets = {}) {
 function runRaw(statecaseHome, args, secrets = {}) {
   const env = {
     ...process.env,
+    HOME: join(statecaseHome, "user-home"),
+    CODEX_HOME: join(statecaseHome, "codex-home"),
+    CODEX_SQLITE_HOME: join(statecaseHome, "codex-sqlite"),
+    CLAUDE_CONFIG_DIR: join(statecaseHome, "claude-home"),
     STATECASE_HOME: statecaseHome,
     STATECASE_API_URL: apiUrl,
   };
@@ -300,4 +375,8 @@ async function assertSameFile(relativePath) {
     readFile(join(target, relativePath)),
   ]);
   assert.deepEqual(left, right, `${relativePath} differs after pull`);
+}
+
+async function writeJsonl(path, values) {
+  await writeFile(path, `${values.map((value) => JSON.stringify(value)).join("\n")}\n`);
 }

@@ -412,6 +412,44 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
     expect(errors).toContain("Statecase preflight sync is queued; starting Codex offline.");
     expect(errors).toContain("Statecase final sync is queued and will be retried.");
   });
+
+  it("persists a native session binding created by the supervised final flush (ID-012, RT-004)", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-cli-session-binding-"));
+    temporary.push(base);
+    const home = join(base, "statecase-home");
+    const harness = join(base, "codex-home");
+    const workspace = join(base, "workspace");
+    const session = join(harness, "sessions", "2026", "09", "07", "supervised.jsonl");
+    await Promise.all([mkdir(home), mkdir(join(harness, "sessions", "2026", "09", "07"), { recursive: true }), mkdir(workspace)]);
+    await writeFile(join(home, "config.json"), `${JSON.stringify({
+      version: 1,
+      apiUrl: "https://remote.test",
+      deviceId: "dev_supervised",
+      selectedVaultId: "vlt_test",
+      mappings: [{ id: "harness_codex_default", kind: "codex", mode: "two-way", name: "Codex", namespace: "harness:codex:default", path: harness }],
+      workspaces: [{ id: "ws_supervised", path: workspace, sync: "identity-only" }],
+      applied: {},
+    }, null, 2)}\n`);
+    await writeFile(join(home, "credentials.json"), `${JSON.stringify({
+      version: 1,
+      token: "test-device-token",
+      vaultKeys: { vlt_test: Buffer.alloc(32, 7).toString("base64url") },
+    }, null, 2)}\n`);
+    process.env.STATECASE_HOME = home;
+    process.env.HARNESS_SESSION_PATH = session;
+    process.env.HARNESS_WORKSPACE_PATH = workspace;
+    const remote = new CliRemote();
+    const output: string[] = [];
+    const errors: string[] = [];
+    const io: CliIO = { stdout: (value) => output.push(value), stderr: (value) => errors.push(value), fetch: remote.fetch };
+    const script = "require('node:fs').writeFileSync(process.env.HARNESS_SESSION_PATH, JSON.stringify({type:'session_meta',payload:{cwd:process.env.HARNESS_WORKSPACE_PATH}})+'\\n')";
+
+    expect(await command(io, "run", "codex", "--executable", process.execPath, "--sync-interval", "0", "--", "-e", script)).toBe(0);
+    const saved = JSON.parse(await readFile(join(home, "config.json"), "utf8")) as { sessionBindings?: Record<string, string> };
+    expect(saved.sessionBindings?.["harness:codex:default\0portable-sessions/ws_supervised/supervised.jsonl"])
+      .toBe("sessions/2026/09/07/supervised.jsonl");
+    expect(errors).toEqual([]);
+  });
 });
 
 function command(io: CliIO, ...arguments_: string[]): Promise<number> {

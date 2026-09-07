@@ -178,8 +178,11 @@ remote head. The merged Session Capsule re-extracts activity from both branches.
 The publisher keeps its old applied marker until a verified record-supersequence
 pull materializes the result. Scoped capability clients are excluded from this
 trusted same-path merge. Unit and in-memory two-device integration evidence is
-green; packaged cross-machine UAT and constant-memory multi-gigabyte handling
-remain outstanding.
+green. Device-local native session bindings now route the merged result back to
+the file each harness already owns, persist through supervised final flush and
+hydration, use a canonical fallback on fresh devices, and fail closed on unsafe
+or colliding destinations. Packaged cross-machine UAT and constant-memory
+multi-gigabyte handling remain outstanding.
 
 Automated background steady state is not yet claimed. Real-OS daemon/service
 UAT, multi-gigabyte incremental session streaming, automatic retention/in-place restore,

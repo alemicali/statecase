@@ -179,7 +179,8 @@ Controls:
 Threats: partial JSONL line, invalid UTF-8, rewritten accepted history,
 duplicate/shared records, incompatible concurrent event order, maliciously
 oversized manifest entries, active SQLite/WAL copy, harness upgrade, restore
-while process writes, machine-specific configuration transported elsewhere.
+while process writes, machine-specific configuration transported elsewhere,
+or a stale/corrupt native-session binding overwriting another local file.
 
 Controls:
 
@@ -187,6 +188,10 @@ Controls:
 - byte-identical accepted-prefix verification and complete-record JSONL parsing;
 - deterministic canonical-occurrence merge only on full-key clients;
 - record-supersequence verification before replacing a locally changed session;
+- local-only namespace/logical-session bindings with relative-path containment,
+  adapter classification, basename validation, and pre-apply collision checks;
+- binding and applied-state persistence only after successful non-dry-run
+  materialization/publication; deletion removes the binding;
 - bounded merge inputs and pre-download declared-size rejection;
 - scoped append clients cannot invoke trusted same-path merge semantics;
 - exclude live DB/WAL/locks unless a consistent export exists;

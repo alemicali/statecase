@@ -30,7 +30,7 @@ import {
   workspaceMatchesCapsule,
 } from "@statecase/workspace";
 
-import type { LocalConfig, RootMapping } from "./config.js";
+import { sessionBindingKey, type LocalConfig, type RootMapping } from "./config.js";
 import type { ScopedVaultKeys } from "./capability.js";
 import type { StatecaseClient } from "./client.js";
 import { isCompleteJsonlRecordSupersequence, mergeJsonlAppends } from "./append-merge.js";
@@ -49,6 +49,7 @@ interface ScannedEntry {
   workspacePath?: string;
   workspaceLayer?: "index" | "worktree";
   fileMode?: number;
+  nativeRelativePath?: string;
   session?: {
     nativeSessionId: string;
     workspaceId?: string;
@@ -235,8 +236,11 @@ export class SyncEngine {
     })) {
       if (!dryRun) await this.#publishNamespaceMirrors(previous, writableNamespaces);
       const appliedMappings = writable.filter((mapping) => completelyLocalNamespaces.has(mapping.namespace));
-      await this.#markApplied(config, appliedMappings, scanned, head.revisionId!);
-      await this.#markNamespaceRevisions(config, appliedMappings);
+      if (!dryRun) {
+        await this.#markApplied(config, appliedMappings, scanned, head.revisionId!);
+        await this.#markNamespaceRevisions(config, appliedMappings);
+        recordSessionBindings(config, writable, scanned);
+      }
       return { outcome: "unchanged", revisionId: head.revisionId, files: 0, objects: 0, bytes: 0 };
     }
     const envelopes = new Map<string, Uint8Array>();
@@ -290,6 +294,7 @@ export class SyncEngine {
     const appliedMappings = writable.filter((mapping) => completelyLocalNamespaces.has(mapping.namespace));
     await this.#markApplied(config, appliedMappings, scanned, revisionId);
     await this.#markNamespaceRevisions(config, appliedMappings);
+    recordSessionBindings(config, writable, scanned);
     return { outcome: "pushed", revisionId, files: scanned.length, objects: envelopes.size + 1, bytes: transferredBytes + manifestEnvelope.byteLength };
   }
 
@@ -623,10 +628,14 @@ export class SyncEngine {
         nextApplied.set(namespace, { revisionId: namespaceRevisionId, digests });
       }
     }
-    if (updates.length === 0) return { outcome: "unchanged", revisionId: remote.revisionId, files: 0, objects: 0, bytes: 0 };
+    if (updates.length === 0) {
+      if (!dryRun) recordSessionBindings(config, writable, scanned);
+      return { outcome: "unchanged", revisionId: remote.revisionId, files: 0, objects: 0, bytes: 0 };
+    }
     if (!dryRun) {
       await this.client.commitNamespaces(this.vaultId, { protocolVersion: "1.1", operationId, vaultRevisionId, updates });
       for (const [namespace, applied] of nextApplied) config.applied[namespace] = applied;
+      recordSessionBindings(config, writable, scanned);
     }
     return { outcome: "pushed", revisionId: vaultRevisionId, files: scanned.length, objects, bytes };
   }
@@ -670,6 +679,7 @@ export class SyncEngine {
     const result = await this.pull(scoped, options.dryRun ?? false, revisionId);
     if (!options.dryRun) {
       for (const [namespace, applied] of Object.entries(scoped.applied)) config.applied[namespace] = applied;
+      config.sessionBindings = scoped.sessionBindings;
     }
     return { result, report, warnings };
   }
@@ -771,7 +781,7 @@ export class SyncEngine {
       materialized.push({
         mapping,
         logicalPath: entry.logicalPath,
-        path: sessionDestination(mapping, entry.logicalPath, config.workspaces),
+        path: sessionDestination(mapping, entry.logicalPath, config),
         bytes,
         digest: localDigest,
       });
@@ -781,7 +791,7 @@ export class SyncEngine {
       if (!mapping) continue;
       deletions.push({
         mapping,
-        path: sessionDestination(mapping, tombstone.logicalPath, config.workspaces),
+        path: sessionDestination(mapping, tombstone.logicalPath, config),
         logicalPath: tombstone.logicalPath,
       });
     }
@@ -802,13 +812,14 @@ export class SyncEngine {
       readyWorkspaces.push({ mapping: payload.mapping, captured, gitFetch });
     }
 
+    assertDistinctMaterializationPaths(materialized, deletions);
     const conflicts: string[] = [];
     for (const item of materialized) {
       const current = await optionalFile(item.path);
       if (!current || bytesEqual(current, item.bytes)) continue;
       const keys = await this.#scopeKeys(item.mapping.namespace);
       const currentDigest = await computeObjectId(keys.dedupKey, current);
-      const prior = config.applied[item.mapping.namespace]?.digests[item.path.slice(resolve(item.mapping.path).length + 1).split(sep).join("/")];
+      const prior = config.applied[item.mapping.namespace]?.digests[item.logicalPath];
       const safeSessionMerge = item.mapping.kind !== "drop" && portableSession(item.logicalPath) !== undefined && isCompleteJsonlRecordSupersequence(current, item.bytes);
       if (currentDigest !== prior && !safeSessionMerge && !(item.mapping.id.startsWith("workspace_") && !prior && await cleanGitDestination(item.mapping.path, item.path))) {
         conflicts.push(item.path);
@@ -819,8 +830,7 @@ export class SyncEngine {
       if (!current) continue;
       const keys = await this.#scopeKeys(item.mapping.namespace);
       const currentDigest = await computeObjectId(keys.dedupKey, current);
-      const relativePath = relative(resolve(item.mapping.path), item.path).split(sep).join("/");
-      const prior = config.applied[item.mapping.namespace]?.digests[relativePath];
+      const prior = config.applied[item.mapping.namespace]?.digests[item.logicalPath];
       if (!prior || currentDigest !== prior) conflicts.push(item.path);
     }
     if (conflicts.length > 0) throw new SyncConflict(conflicts);
@@ -838,10 +848,11 @@ export class SyncEngine {
     for (const mapping of selected) {
       const digests: Record<string, string> = {};
       for (const item of materialized.filter((candidate) => candidate.mapping.namespace === mapping.namespace)) {
-        digests[relative(resolve(mapping.path), item.path).split(sep).join("/")] = item.digest;
+        digests[item.logicalPath] = item.digest;
       }
       config.applied[mapping.namespace] = { revisionId: appliedRevision(mapping.namespace), digests };
     }
+    recordMaterializedSessionBindings(config, materialized, deletions);
     return { outcome: "pulled", revisionId: remoteRevisionId, files: materialized.length + deletions.length + workspaceFiles, objects: objectCount, bytes: byteCount };
   }
 
@@ -1485,6 +1496,7 @@ async function walk(
         output.push({
           namespace: mapping.namespace,
           logicalPath: `portable-sessions/${portable.workspaceId}/${basename(logicalPath)}`,
+          nativeRelativePath: logicalPath,
           bytes,
           session: {
             nativeSessionId: basename(logicalPath).replace(/\.jsonl$/u, ""),
@@ -1549,15 +1561,79 @@ function portableSession(logicalPath: string): { workspaceId: string; filename: 
   return match ? { workspaceId: match[1], filename: match[2] } : undefined;
 }
 
-function sessionDestination(mapping: RootMapping, logicalPath: string, workspaces: LocalConfig["workspaces"]): string {
+function sessionDestination(mapping: RootMapping, logicalPath: string, config: LocalConfig): string {
   const portable = portableSession(logicalPath);
   if (!portable || mapping.kind === "drop") return safeDestination(mapping.path, logicalPath);
-  const workspace = workspaces.find((candidate) => candidate.id === portable.workspaceId);
+  const boundPath = config.sessionBindings?.[sessionBindingKey(mapping.namespace, logicalPath)];
+  if (boundPath !== undefined) return validatedSessionDestination(mapping, portable.filename, boundPath);
+  const workspace = config.workspaces.find((candidate) => candidate.id === portable.workspaceId);
   if (!workspace) throw new Error(`workspace ${portable.workspaceId} is not mapped on this device`);
   if (mapping.kind === "claude") {
     return safeDestination(claudeProjectDirectory(mapping.path, workspace.path), portable.filename);
   }
   return safeDestination(join(mapping.path, "sessions", "statecase", portable.workspaceId), portable.filename);
+}
+
+function recordSessionBindings(config: LocalConfig, mappings: readonly RootMapping[], scanned: readonly ScannedEntry[]): void {
+  const byNamespace = new Map(mappings.map((mapping) => [mapping.namespace, mapping]));
+  const bindings = config.sessionBindings ??= {};
+  const scannedKeys = new Set(scanned
+    .filter((entry) => entry.session && entry.nativeRelativePath && portableSession(entry.logicalPath))
+    .map((entry) => sessionBindingKey(entry.namespace, entry.logicalPath)));
+  for (const mapping of mappings) {
+    if (mapping.kind === "drop") continue;
+    const prefix = `${mapping.namespace}\0portable-sessions/`;
+    for (const key of Object.keys(bindings)) {
+      if (key.startsWith(prefix) && !scannedKeys.has(key)) delete bindings[key];
+    }
+  }
+  for (const entry of scanned) {
+    if (!entry.session || !entry.nativeRelativePath || !portableSession(entry.logicalPath)) continue;
+    const mapping = byNamespace.get(entry.namespace);
+    if (!mapping || mapping.kind === "drop") continue;
+    validatedSessionDestination(mapping, basename(entry.logicalPath), entry.nativeRelativePath);
+    bindings[sessionBindingKey(entry.namespace, entry.logicalPath)] = entry.nativeRelativePath;
+  }
+}
+
+function recordMaterializedSessionBindings(
+  config: LocalConfig,
+  materialized: ReadonlyArray<{ mapping: RootMapping; logicalPath: string; path: string }>,
+  deletions: ReadonlyArray<{ mapping: RootMapping; logicalPath: string }>,
+): void {
+  const bindings = config.sessionBindings ??= {};
+  for (const item of materialized) {
+    if (item.mapping.kind === "drop" || !portableSession(item.logicalPath)) continue;
+    const nativeRelativePath = relative(resolve(item.mapping.path), item.path).split(sep).join("/");
+    validatedSessionDestination(item.mapping, basename(item.logicalPath), nativeRelativePath);
+    bindings[sessionBindingKey(item.mapping.namespace, item.logicalPath)] = nativeRelativePath;
+  }
+  for (const item of deletions) {
+    if (item.mapping.kind !== "drop" && portableSession(item.logicalPath)) {
+      delete bindings[sessionBindingKey(item.mapping.namespace, item.logicalPath)];
+    }
+  }
+}
+
+function validatedSessionDestination(mapping: RootMapping, filename: string, nativeRelativePath: string): string {
+  const destination = safeDestination(mapping.path, nativeRelativePath);
+  if (basename(nativeRelativePath) !== filename || harnessClassification(mapping.kind, nativeRelativePath) !== "session") {
+    throw new Error("local session binding is invalid");
+  }
+  return destination;
+}
+
+function assertDistinctMaterializationPaths(
+  materialized: ReadonlyArray<{ mapping: RootMapping; logicalPath: string; path: string }>,
+  deletions: ReadonlyArray<{ mapping: RootMapping; logicalPath: string; path: string }>,
+): void {
+  const claimed = new Map<string, string>();
+  for (const item of [...materialized, ...deletions]) {
+    const identity = `${item.mapping.namespace}\0${item.logicalPath}`;
+    const existing = claimed.get(item.path);
+    if (existing && existing !== identity) throw new Error("local materialization paths collide");
+    claimed.set(item.path, identity);
+  }
 }
 
 function harnessClassification(kind: RootMapping["kind"], path: string): "file" | "session" | "excluded" {

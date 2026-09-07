@@ -3,7 +3,7 @@
 Status: accepted and implemented for bounded session files
 Date: 2026-09-07
 Owners: Statecase maintainers
-Test IDs: SY-004, SY-005, PR-006
+Test IDs: ID-012, SY-004, SY-005, PR-006
 Amends: [ADR-0011](0011-three-way-namespace-merge.md)
 
 ## Context
@@ -46,6 +46,16 @@ the remote JSONL is a complete record supersequence containing every local
 record occurrence in order. The marker advances only after that verified
 materialization.
 
+Portable session identity is independent of a device's native filesystem
+layout. Each client keeps a local-only binding from namespace plus portable
+logical path to the validated native relative path it scanned or materialized.
+The merge result is written back through that binding. A new device uses the
+adapter's canonical fallback and then binds it; the originating device retains
+its dated/project-native path. Bindings are committed to local configuration
+only after successful non-dry-run push, pull, or hydration and are removed with
+the corresponding session deletion. They never enter encrypted remote
+manifests or API payloads.
+
 Scoped capability clients do not perform this merge. Their updates remain
 immutable namespace deltas governed by ADR-0013 and ADR-0014; conflicting
 same-path content requires reconciliation by a trusted full-key client.
@@ -81,6 +91,10 @@ device.
 The bounded implementation temporarily downloads and decrypts base and remote
 session versions. It cannot yet qualify real multi-gigabyte Codex histories.
 
+The local binding prevents a merge from creating a second native file while
+leaving the harness-owned original stale. Unsafe, adapter-incompatible, or
+colliding binding destinations fail before the materialization transaction.
+
 ## Verification
 
 Pure tests cover symmetric convergence, branch partial orders, canonical
@@ -90,4 +104,7 @@ and randomized disjoint branches. Two-device integration proves rejected
 rewrites do not advance the remote head, merged pushes retain the old applied
 marker, dependency activity from both branches enters the Session Capsule, and
 verified pull materializes every record exactly once. Malicious oversized
-namespace entries are rejected before object download.
+namespace entries are rejected before object download. Device-local tests prove
+origin-path writeback, canonical first-pull binding, supervised-final-flush
+persistence, deletion cleanup, non-mutating dry-run, traversal rejection, and
+pre-apply destination-collision rejection.

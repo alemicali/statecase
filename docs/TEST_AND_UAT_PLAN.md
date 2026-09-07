@@ -99,6 +99,12 @@ regression ID.
   or deletes files or cloud state; path changes clear stale applied state,
   collisions and invalid Git destinations fail without configuration mutation,
   and same-path operations are idempotent.
+- `ID-012`: a portable session is rebound to the device-local native relative
+  path that published or materialized it. A later merge updates that exact
+  path without creating a canonical duplicate; a fresh device uses and records
+  the canonical fallback. Dry-runs and failed operations do not mutate the
+  binding, deletions clear it, and traversal or destination collisions fail
+  before materialization.
 
 ### 4.2 Manifest and merge
 
@@ -451,12 +457,15 @@ Acceptance: no silent external copy; explicit Drop resolves the dependency.
 
 ### UAT-05 Concurrent work
 
-Take two devices offline at the same revision. Append different sessions,
-change disjoint config, and modify/delete the same workspace file. Reconnect in
-both orders.
+Take two devices offline at the same revision. Append different sessions and
+different complete records to the same session, change disjoint config, and
+modify/delete the same workspace file. Use different native session and
+workspace paths on each device, then reconnect in both orders.
 
 Acceptance: compatible changes converge; modify/delete remains an explicit
-preserved conflict; no bytes are silently lost.
+preserved conflict; the same-session merge updates each device's existing
+native file without creating a second divergent copy; no bytes are silently
+lost.
 
 ### UAT-06 Ephemeral sandbox
 

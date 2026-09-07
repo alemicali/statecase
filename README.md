@@ -182,7 +182,10 @@ Offline edits to different files merge automatically against the last revision
 each device actually applied. Concurrent complete-record appends to the same
 portable session also merge on full-key clients; the publisher must pull the
 merged result before resume because its applied marker intentionally stays
-behind. Other same-path divergence fails with explicit paths. After inspecting
+behind. Each installation remembers the session's native relative path locally,
+so that pull updates the original dated/project file; a new device uses a
+canonical adapter path without forcing matching home directories. Other
+same-path divergence fails with explicit paths. After inspecting
 the remote side through staging restore, an
 intentional local winner can be published with `conflicts resolve --mapping
 <id> --strategy local --yes`; Statecase first protects the exact remote head.

@@ -10,6 +10,11 @@ All notable changes to Statecase will be documented here.
   canonical record occurrences, rebuilds Session Capsule activity, and keeps
   the publisher unapplied until a verified pull. Rewrites, malformed/incomplete
   records, incompatible order, scoped clients, and oversized inputs fail closed.
+- Added local-only native session bindings so merged or hydrated portable
+  sessions return to each device's existing harness path instead of creating a
+  divergent canonical copy. Fresh devices bind the canonical fallback;
+  supervised flush, hydration, deletion, dry-run, traversal, and destination
+  collision behavior are covered by regression tests.
 - Package the CLI as a self-contained npm tarball with its canonical
   agent skill and runtime SQLite dependency.
 

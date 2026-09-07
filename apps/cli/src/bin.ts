@@ -632,7 +632,7 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
         liveKey ??= syncAccess(secrets, vaultId);
         const engine = new SyncEngine(client, vaultId, liveKey);
         const result = reason === "preflight" ? await engine.pull(config) : await engine.push(config);
-        if (reason === "preflight") await store.saveConfig(config);
+        await store.saveConfig(config);
         return result.revisionId;
       };
       const reconciler = new DurableReconciler(journal, sync, harness);
@@ -843,6 +843,7 @@ function normalizeConfig(config: LocalConfig): LocalConfig {
   config.mappings ??= [];
   config.workspaces ??= [];
   config.applied ??= {};
+  config.sessionBindings ??= {};
   config.runtime ??= { harnesses: {} };
   config.runtime.harnesses ??= {};
   return config;

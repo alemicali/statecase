@@ -9,7 +9,7 @@ import { canonicalJson, type NamespaceManifestV1 } from "@statecase/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { StatecaseClient } from "../src/client.js";
-import type { LocalConfig } from "../src/config.js";
+import { sessionBindingKey, type LocalConfig } from "../src/config.js";
 import { SyncConflict, SyncEngine } from "../src/sync.js";
 
 const temporary: string[] = [];
@@ -322,12 +322,15 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
       })),
       workspaces: [{ id: "ws_project", path: targetWorkspace }],
       applied: {},
+      sessionBindings: {},
     };
     const hydrated = await engine.hydrate(targetConfig, retained.sessionCapsuleId, { mode: "warn" });
     expect(hydrated.result.revisionId).toBe(pushed.revisionId);
     expect(hydrated.warnings).toEqual(["/outside/not-mapped.txt", "drop_reference/.env", "ignored.txt"]);
     expect(await readFile(join(targetDrop, "brief.md"), "utf8")).toBe("portable brief\n");
     expect(await readFile(join(targetWorkspace, "changed.txt"), "utf8")).toBe("uncommitted context\n");
+    expect(targetConfig.sessionBindings?.[sessionBindingKey("harness:codex:default", "portable-sessions/ws_project/native-01.jsonl")])
+      .toBe("sessions/statecase/ws_project/native-01.jsonl");
 
     await writeFile(join(harness, "sessions", "2026", "native-01.jsonl"), `${session.concat([
       { type: "tool_call", name: "read_file", arguments: { path: "changed.txt" } },
@@ -567,7 +570,7 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     expect(await readFile(join(observerRoot, "from-second.txt"), "utf8")).toBe("second\n");
   });
 
-  it("merges concurrent complete-record appends to the same portable session and preserves dependency activity (SY-004, SY-005)", async () => {
+  it("merges concurrent complete-record appends, preserves dependency activity, and restores each native session path (ID-012, SY-004, SY-005)", async () => {
     const base = await mkdtemp(join(tmpdir(), "statecase-session-append-merge-"));
     temporary.push(base);
     const firstHarness = join(base, "first-codex");
@@ -598,9 +601,12 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     const firstConfig = harnessConfig(firstHarness, firstWorkspace);
     const secondConfig = harnessConfig(secondHarness, secondWorkspace);
     await firstEngine.push(firstConfig);
+    const bindingKey = sessionBindingKey("harness:codex:default", "portable-sessions/ws_test/session.jsonl");
+    expect(firstConfig.sessionBindings?.[bindingKey]).toBe("sessions/2026/session.jsonl");
     await secondEngine.pull(secondConfig);
     const commonRevision = secondConfig.applied["harness:codex:default"]!.revisionId;
     const secondSession = join(secondHarness, "sessions", "statecase", "ws_test", "session.jsonl");
+    expect(secondConfig.sessionBindings?.[bindingKey]).toBe("sessions/statecase/ws_test/session.jsonl");
 
     await writeFile(sourceSession, `${[baseRecord, ...firstAppend].map((record) => JSON.stringify(record)).join("\n")}\n`);
     const localizedBase = { type: "session_meta", payload: { cwd: secondWorkspace } };
@@ -630,6 +636,89 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     expect(ids.indexOf("remote-1")).toBeLessThan(ids.indexOf("remote-2"));
     expect(ids.indexOf("local-1")).toBeLessThan(ids.indexOf("local-2"));
     expect(secondConfig.applied["harness:codex:default"]!.revisionId).toBe(remote.namespaceHeads.get("harness:codex:default")!.revisionId);
+
+    await expect(firstEngine.pull(firstConfig)).resolves.toMatchObject({ outcome: "pulled" });
+    const originRecords = (await readFile(sourceSession, "utf8")).trimEnd().split("\n").map((line) => JSON.parse(line) as { id?: string });
+    const originIds = originRecords.flatMap((record) => record.id ? [record.id] : []);
+    expect(originIds).toHaveLength(4);
+    expect(new Set(originIds)).toEqual(new Set(["remote-1", "remote-2", "local-1", "local-2"]));
+    await expect(readFile(join(firstHarness, "sessions", "statecase", "ws_test", "session.jsonl"))).rejects.toMatchObject({ code: "ENOENT" });
+
+    await rm(sourceSession);
+    await expect(firstEngine.push(firstConfig)).resolves.toMatchObject({ outcome: "pushed" });
+    expect(firstConfig.sessionBindings?.[bindingKey]).toBeUndefined();
+    await expect(secondEngine.pull(secondConfig)).resolves.toMatchObject({ outcome: "pulled" });
+    await expect(readFile(secondSession)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(secondConfig.sessionBindings?.[bindingKey]).toBeUndefined();
+  });
+
+  it("keeps session bindings local, rejects traversal, and detects destination collisions before apply (ID-012)", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-session-bindings-"));
+    temporary.push(base);
+    const sourceHarness = join(base, "source-codex");
+    const sourceWorkspaceOne = join(base, "source-workspace-one");
+    const sourceWorkspaceTwo = join(base, "source-workspace-two");
+    const dryHarness = join(base, "dry-codex");
+    const dryWorkspaceOne = join(base, "dry-workspace-one");
+    const dryWorkspaceTwo = join(base, "dry-workspace-two");
+    const unsafeHarness = join(base, "unsafe-codex");
+    const unsafeWorkspaceOne = join(base, "unsafe-workspace-one");
+    const unsafeWorkspaceTwo = join(base, "unsafe-workspace-two");
+    const collisionHarness = join(base, "collision-codex");
+    const collisionWorkspaceOne = join(base, "collision-workspace-one");
+    const collisionWorkspaceTwo = join(base, "collision-workspace-two");
+    await Promise.all([
+      mkdir(join(sourceHarness, "sessions", "2026", "one"), { recursive: true }),
+      mkdir(join(sourceHarness, "sessions", "2026", "two"), { recursive: true }),
+      mkdir(sourceWorkspaceOne),
+      mkdir(sourceWorkspaceTwo),
+      mkdir(dryHarness),
+      mkdir(dryWorkspaceOne),
+      mkdir(dryWorkspaceTwo),
+      mkdir(unsafeHarness),
+      mkdir(unsafeWorkspaceOne),
+      mkdir(unsafeWorkspaceTwo),
+      mkdir(collisionHarness),
+      mkdir(collisionWorkspaceOne),
+      mkdir(collisionWorkspaceTwo),
+    ]);
+    const record = (cwd: string, id: string) => ({ type: "session_meta", id, payload: { cwd } });
+    await Promise.all([
+      writeFile(join(sourceHarness, "sessions", "2026", "one", "same.jsonl"), `${JSON.stringify(record(sourceWorkspaceOne, "one"))}\n`),
+      writeFile(join(sourceHarness, "sessions", "2026", "two", "same.jsonl"), `${JSON.stringify(record(sourceWorkspaceTwo, "two"))}\n`),
+    ]);
+    const boundConfig = (harness: string, workspaceOne: string, workspaceTwo: string): LocalConfig => {
+      const value = harnessConfig(harness, workspaceOne);
+      value.workspaces = [
+        { id: "ws_one", path: workspaceOne, sync: "identity-only" },
+        { id: "ws_two", path: workspaceTwo, sync: "identity-only" },
+      ];
+      return value;
+    };
+    const remote = new MemoryRemote();
+    const key = await randomKey();
+    const sourceEngine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    await sourceEngine.push(boundConfig(sourceHarness, sourceWorkspaceOne, sourceWorkspaceTwo));
+
+    const dryConfig = boundConfig(dryHarness, dryWorkspaceOne, dryWorkspaceTwo);
+    await expect(sourceEngine.pull(dryConfig, true)).resolves.toMatchObject({ outcome: "pulled", files: 2 });
+    expect(dryConfig.sessionBindings).toBeUndefined();
+    await expect(readFile(join(dryHarness, "sessions", "statecase", "ws_one", "same.jsonl"))).rejects.toMatchObject({ code: "ENOENT" });
+
+    const unsafeConfig = boundConfig(unsafeHarness, unsafeWorkspaceOne, unsafeWorkspaceTwo);
+    unsafeConfig.sessionBindings = {
+      [sessionBindingKey("harness:codex:default", "portable-sessions/ws_one/same.jsonl")]: "../../escaped.jsonl",
+    };
+    await expect(sourceEngine.pull(unsafeConfig)).rejects.toThrow("unsafe remote path");
+    await expect(readFile(join(base, "escaped.jsonl"))).rejects.toMatchObject({ code: "ENOENT" });
+
+    const collisionConfig = boundConfig(collisionHarness, collisionWorkspaceOne, collisionWorkspaceTwo);
+    collisionConfig.sessionBindings = {
+      [sessionBindingKey("harness:codex:default", "portable-sessions/ws_one/same.jsonl")]: "sessions/statecase/shared/same.jsonl",
+      [sessionBindingKey("harness:codex:default", "portable-sessions/ws_two/same.jsonl")]: "sessions/statecase/shared/same.jsonl",
+    };
+    await expect(sourceEngine.pull(collisionConfig)).rejects.toThrow("local materialization paths collide");
+    await expect(readFile(join(collisionHarness, "sessions", "same.jsonl"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("preserves an explicit conflict when two offline devices modify the same path (SY-006, SY-007)", async () => {

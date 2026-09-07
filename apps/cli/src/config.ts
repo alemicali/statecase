@@ -29,6 +29,7 @@ export interface LocalConfig {
     gitFetch?: "ask" | "auto" | "never";
   }>;
   applied: Record<string, { revisionId: string; digests: Record<string, string> }>;
+  sessionBindings?: Record<string, string>;
   runtime?: {
     shimDir?: string;
     harnesses: Partial<Record<"codex" | "claude", { realExecutable: string; shimPath?: string }>>;
@@ -62,6 +63,7 @@ export class ConfigStore {
       mappings: [],
       workspaces: [],
       applied: {},
+      sessionBindings: {},
     });
   }
 
@@ -76,6 +78,10 @@ export class ConfigStore {
   async saveSecrets(secrets: LocalSecrets): Promise<void> {
     await atomicJson(join(this.home, "credentials.json"), secrets);
   }
+}
+
+export function sessionBindingKey(namespace: string, logicalPath: string): string {
+  return `${namespace}\0${logicalPath}`;
 }
 
 async function readJson<T>(path: string, fallback: T): Promise<T> {

@@ -269,6 +269,28 @@ Moving a checkout updates only the local mapping. Cloning the same repository
 twice on one device requires an explicit mapping choice or distinct worktree
 identity to prevent accidental concurrent use.
 
+#### 5.1.1 Device-local native session binding
+
+The remote identity of a portable session is its harness namespace plus logical
+`portable-sessions/<workspaceId>/<nativeSessionId>.jsonl` path. Its native
+filesystem location is not part of that identity. Each installation maintains
+a local-only binding from that remote identity to a validated relative path
+inside the mapped harness root.
+
+A successful non-dry-run push records the native relative path that was scanned.
+A pull consults an existing binding before materialization. On a device without
+one, the adapter chooses its deterministic canonical destination and records
+that choice only after the complete materialization transaction succeeds.
+Hydration and supervised final flushes persist the same binding. A remote or
+successfully published local deletion removes it.
+
+Bindings MUST never enter manifests, object IDs, Session Capsules, API payloads,
+or portable configuration. The relative path MUST remain inside its current
+harness root and classify as a native session for that adapter; its basename
+MUST match the portable native session ID. Multiple logical entries resolving
+to one local path MUST fail before filesystem mutation. Applied content digests
+remain keyed by remote logical path so path choice cannot change sync identity.
+
 ### 5.2 Manifest
 
 An encrypted manifest contains:
@@ -708,10 +730,13 @@ marker; it does not delete local files or the encrypted remote namespace.
 4. Compare logical entries to the last applied revision and local journal.
 5. Download missing objects and verify envelope authentication, IDs, lengths,
    and canonical content digests.
-6. Build a materialization plan in a staging directory.
-7. Validate adapter invariants and available disk space.
-8. Atomically replace safe files or append verified records.
-9. Record the applied revision only after successful materialization.
+6. Resolve portable sessions through the device-local native binding, or the
+   adapter's canonical fallback on a fresh device.
+7. Build a materialization plan in a staging directory.
+8. Validate adapter invariants, binding uniqueness, and available disk space.
+9. Atomically replace safe files or append verified records.
+10. Record the applied revision and native session bindings only after
+    successful materialization.
 
 ### 10.3 Commit concurrency
 
