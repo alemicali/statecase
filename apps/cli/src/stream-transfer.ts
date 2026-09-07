@@ -1,12 +1,12 @@
 import { createReadStream } from "node:fs";
-import { mkdtemp, open, rm } from "node:fs/promises";
+import { open, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { chunkJsonlStream, type JsonlStreamPolicy } from "@statecase/chunking";
 import { computeObjectId, computeObjectIdStream, decryptEnvelope, encryptEnvelope } from "@statecase/crypto";
 
-import { assertTemporarySpace } from "./disk-space.js";
+import { createStagingDirectory } from "./disk-space.js";
 
 export interface TransferKeys {
   encryptionKey: Uint8Array;
@@ -75,8 +75,7 @@ export async function downloadVerifiedEntry(input: {
       input.totalSize > input.maximumSize) {
     throw new Error("downloaded session exceeds its declared size");
   }
-  await assertTemporarySpace(tmpdir(), input.totalSize);
-  const root = await mkdtemp(join(tmpdir(), "statecase-download-"));
+  const root = await createStagingDirectory(tmpdir(), "statecase-download-", input.totalSize);
   const path = join(root, "portable.staged");
   const destination = await open(path, "wx", 0o600);
   let plaintextBytes = 0;

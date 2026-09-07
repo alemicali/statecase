@@ -36,7 +36,9 @@ Every plaintext staging allocation first checks available blocks on the target
 temporary filesystem. The required copy count plus a 64-MiB safety reserve must
 fit. Capacity is rechecked as download, localization, merge, and atomic
 materialization artifacts accumulate; this does not replace fail-clean handling
-if free space changes.
+if free space changes. Because object-backed temporary mounts may discard an
+empty root, the client recreates the configured root, creates its private child,
+then checks capacity on that child; failed preflights remove it.
 
 ## Consequences
 

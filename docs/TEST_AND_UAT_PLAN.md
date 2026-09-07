@@ -406,6 +406,9 @@ tests cover suffix-only concurrent merge over a streamed common base and the
 streaming supersequence acceptance check. Disk-space unit tests cover numeric
 and bigint filesystem counters, exact reserve boundaries, and invalid sizes;
 all staging paths also exercise the real filesystem preflight in integration.
+Regression coverage recreates a missing temporary root before allocation and
+removes the empty private staging directory when preflight capacity is
+insufficient.
 
 Performance baselines run on recorded hardware profiles. A statistically
 significant regression requires an explicit approved waiver.

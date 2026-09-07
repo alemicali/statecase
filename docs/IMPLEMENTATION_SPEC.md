@@ -980,7 +980,10 @@ filesystem's available blocks and requires the predicted copy count plus a
 localization, merged-output creation, and the atomic materialization copy
 recheck capacity as earlier staging files accumulate. This is a preflight
 rather than a reservation, so `ENOSPC` must still trigger cleanup and leave
-native destinations unchanged.
+native destinations unchanged. For temporary filesystems that discard empty
+directories, the client recreates the configured temporary root, allocates a
+private child, and runs `statfs` against that materialized child. A failed
+preflight removes the child before returning.
 
 ## 17. Failure behavior
 

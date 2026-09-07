@@ -1,10 +1,16 @@
-import { statfs as readStatfs } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, statfs as readStatfs } from "node:fs/promises";
+import { join } from "node:path";
 
 const DEFAULT_RESERVE_BYTES = 64 * 1024 * 1024;
 
 interface FilesystemCapacity {
   bavail: number | bigint;
   bsize: number | bigint;
+}
+
+interface DiskSpaceOptions {
+  reserveBytes?: number;
+  statfs?: (path: string) => Promise<FilesystemCapacity>;
 }
 
 export class InsufficientDiskSpace extends Error {
@@ -28,10 +34,7 @@ export async function assertTemporarySpace(
   path: string,
   payloadBytes: number,
   copies = 1,
-  options: {
-    reserveBytes?: number;
-    statfs?: (path: string) => Promise<FilesystemCapacity>;
-  } = {},
+  options: DiskSpaceOptions = {},
 ): Promise<void> {
   const reserveBytes = options.reserveBytes ?? DEFAULT_RESERVE_BYTES;
   if (!Number.isSafeInteger(payloadBytes) || payloadBytes < 0 ||
@@ -43,4 +46,27 @@ export async function assertTemporarySpace(
   const availableBytes = BigInt(filesystem.bavail) * BigInt(filesystem.bsize);
   const requiredBytes = BigInt(payloadBytes) * BigInt(copies) + BigInt(reserveBytes);
   if (availableBytes < requiredBytes) throw new InsufficientDiskSpace(requiredBytes, availableBytes);
+}
+
+/**
+ * Creates the private empty directory before checking capacity. Some remote
+ * filesystems discard an empty TMPDIR after its last child is removed, so the
+ * preflight must target the newly materialized child rather than its parent.
+ */
+export async function createStagingDirectory(
+  basePath: string,
+  prefix: string,
+  payloadBytes: number,
+  copies = 1,
+  options: DiskSpaceOptions = {},
+): Promise<string> {
+  await mkdir(basePath, { recursive: true, mode: 0o700 });
+  const root = await mkdtemp(join(basePath, prefix));
+  try {
+    await assertTemporarySpace(root, payloadBytes, copies, options);
+    return root;
+  } catch (error) {
+    await rm(root, { recursive: true, force: true });
+    throw error;
+  }
 }

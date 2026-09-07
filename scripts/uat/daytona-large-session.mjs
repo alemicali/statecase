@@ -64,9 +64,8 @@ for (const [machine, workspace] of [[machineA, workspaceA], [machineB, workspace
 }
 
 const metadataA = { type: "session_meta", payload: { cwd: workspaceA } };
-const fillerRecord = exactRecord(64 * 1024);
 const fillerRecords = 32_768;
-await generateSession(sourceSession, metadataA, fillerRecord, fillerRecords);
+await generateSession(sourceSession, metadataA, 64 * 1024, fillerRecords);
 const generated = await stat(sourceSession);
 assert.ok(generated.size >= 2 * GIB, `generated session is only ${generated.size} bytes`);
 
@@ -191,8 +190,8 @@ async function authorizeDevice(sessionCookie) {
   return exchanged.json.access_token;
 }
 
-function exactRecord(bytes) {
-  const prefix = '{"type":"event","payload":"';
+function exactRecord(bytes, index) {
+  const prefix = `{"type":"event","index":${index},"payload":"`;
   const suffix = '"}\n';
   const payloadBytes = bytes - Buffer.byteLength(prefix) - Buffer.byteLength(suffix);
   assert.ok(payloadBytes > 0);
@@ -201,11 +200,11 @@ function exactRecord(bytes) {
   return record;
 }
 
-async function generateSession(path, metadata, record, count) {
+async function generateSession(path, metadata, recordBytes, count) {
   const handle = await open(path, "wx", 0o600);
   try {
     await handle.writeFile(`${JSON.stringify(metadata)}\n`);
-    for (let index = 0; index < count; index += 1) await handle.writeFile(record);
+    for (let index = 0; index < count; index += 1) await handle.writeFile(exactRecord(recordBytes, index));
     await handle.sync();
   } finally {
     await handle.close();
