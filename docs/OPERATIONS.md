@@ -1,9 +1,9 @@
 # Statecase operations
 
 Status: deployed service
-Last verified: 2026-09-06
+Last verified: 2026-09-07
 
-Current Worker version: `1957598c-cf58-42e6-88a9-9ebc95d9babf`.
+Current Worker version: `e9b7158e-b05a-441a-a807-412d40661858`.
 Remote D1 migrations through `0004_capabilities.sql` are applied. The live
 health endpoint advertises scoped protocol `1.1` and legacy migration protocol
 `1.0`.
@@ -82,3 +82,6 @@ takeover is the only operation allowed to clear an expired lease, so a possibly
 still-running deletion can never race a commit. Never delete the R2 vault
 prefix manually; doing so bypasses reachability, grace, and the commit exclusion
 lease.
+
+The deployment and retention qualification record is
+[2026-09-07 Cloudflare retention UAT](uat/2026-09-07-cloudflare-retention.md).
