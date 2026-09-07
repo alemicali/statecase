@@ -118,6 +118,10 @@ On a second machine, login, join the vault with the encrypted recovery kit,
 attach the same logical Git workspace at its new local path, map any Drops by
 their non-secret IDs, then run `pull`. `setup` installs the Statecase skill into
 both the Codex-compatible `.agents/skills` root and Claude's skills root.
+If a checkout moves later, use `workspace move <id> <new-path>`; use
+`workspace detach <id>` to stop mapping it on that device. Both commands leave
+the checkout and cloud namespace untouched. A changed path invalidates the
+local applied marker so the next pull must verify and hydrate the destination.
 Use the generated shims, the installed daemon, or invoke `statecase run codex
 -- <args>` / `statecase run claude -- <args>` explicitly.
 `statecase bypass codex -- <args>` starts the recorded real executable without

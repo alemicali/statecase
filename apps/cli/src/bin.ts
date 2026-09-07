@@ -378,10 +378,8 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
       if (options.gitFetch !== "ask" && options.gitFetch !== "auto" && options.gitFetch !== "never") {
         throw new StatecaseUsageError("--git-fetch must be ask, auto, or never", 2);
       }
-      if (options.mode === "git-overlay") {
-        const inside = await promisify(execFile)("git", ["-C", path, "rev-parse", "--is-inside-work-tree"], { encoding: "utf8" })
-          .then(({ stdout }) => stdout.trim() === "true", () => false);
-        if (!inside) throw new StatecaseUsageError("git-overlay requires a Git working tree; use --mode metadata-only for identity mapping", 2);
+      if (options.mode === "git-overlay" && !await isGitWorkingTree(path)) {
+        throw new StatecaseUsageError("git-overlay requires a Git working tree; use --mode metadata-only for identity mapping", 2);
       }
       let id = options.id;
       if (!id && options.auto) {
@@ -391,6 +389,11 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
       }
       if (!id || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u.test(id)) throw new StatecaseUsageError("provide --id or use --auto in a Git checkout", 2);
       const config = normalizeConfig(await store.loadConfig());
+      for (const previous of config.workspaces) {
+        if ((previous.id === id || resolve(previous.path) === path) && (previous.id !== id || resolve(previous.path) !== path)) {
+          delete config.applied[`workspace:${previous.id}`];
+        }
+      }
       config.workspaces = config.workspaces.filter((item) => item.id !== id && resolve(item.path) !== path);
       config.workspaces.push({
         id,
@@ -406,6 +409,40 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
     const workspaces = normalizeConfig(await store.loadConfig()).workspaces;
     emit(io, program, { workspaces }, workspaces.map((item) => `${item.id}\t${item.sync === "identity-only" ? "metadata-only" : "git-overlay"}\t${item.gitFetch ?? "ask"}\t${item.path}`).join("\n") || "No workspaces");
   });
+  workspace.command("move <workspaceId> <path>")
+    .description("change a workspace's device-local path without moving files")
+    .action(async (workspaceId: string, pathValue: string) => {
+      const path = resolve(pathValue);
+      const config = normalizeConfig(await store.loadConfig());
+      const index = config.workspaces.findIndex((item) => item.id === workspaceId);
+      if (index < 0) throw new StatecaseUsageError(`workspace is not attached on this device: ${workspaceId}`, 2);
+      const current = config.workspaces[index]!;
+      const previousPath = resolve(current.path);
+      if (previousPath === path) {
+        emit(io, program, { id: workspaceId, previousPath, path, moved: false }, `Workspace ${workspaceId} already maps to ${path}`);
+        return;
+      }
+      const occupied = config.workspaces.find((item, candidateIndex) => candidateIndex !== index && resolve(item.path) === path);
+      if (occupied) throw new StatecaseUsageError(`workspace path is already attached to ${occupied.id}: ${path}`, 2);
+      if (current.sync !== "identity-only" && !await isGitWorkingTree(path)) {
+        throw new StatecaseUsageError("git-overlay requires a Git working tree; use workspace attach --mode metadata-only for identity mapping", 2);
+      }
+      config.workspaces[index] = { ...current, path };
+      delete config.applied[`workspace:${workspaceId}`];
+      await store.saveConfig(config);
+      emit(io, program, { id: workspaceId, previousPath, path, moved: true }, `Moved workspace ${workspaceId} mapping from ${previousPath} to ${path}`);
+    });
+  workspace.command("detach <workspaceId>")
+    .description("remove a device-local workspace mapping without deleting files or cloud state")
+    .action(async (workspaceId: string) => {
+      const config = normalizeConfig(await store.loadConfig());
+      const index = config.workspaces.findIndex((item) => item.id === workspaceId);
+      if (index < 0) throw new StatecaseUsageError(`workspace is not attached on this device: ${workspaceId}`, 2);
+      const [removed] = config.workspaces.splice(index, 1);
+      delete config.applied[`workspace:${workspaceId}`];
+      await store.saveConfig(config);
+      emit(io, program, { id: workspaceId, path: resolve(removed!.path), detached: true }, `Detached workspace ${workspaceId}; local files and cloud state were not changed`);
+    });
   workspace.command("dependencies")
     .description("inspect the immutable dependency closure recorded for resumable sessions")
     .option("--workspace <workspaceId>")
@@ -734,6 +771,11 @@ function normalizeConfig(config: LocalConfig): LocalConfig {
   config.runtime ??= { harnesses: {} };
   config.runtime.harnesses ??= {};
   return config;
+}
+
+async function isGitWorkingTree(path: string): Promise<boolean> {
+  return promisify(execFile)("git", ["-C", path, "rev-parse", "--is-inside-work-tree"], { encoding: "utf8" })
+    .then(({ stdout }) => stdout.trim() === "true", () => false);
 }
 
 function emit(io: CliIO, program: Command, data: unknown, human: string): void {

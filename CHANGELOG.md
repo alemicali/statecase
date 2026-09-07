@@ -32,6 +32,10 @@ All notable changes to Statecase will be documented here.
   destination cleanliness before mutation, with index/filesystem rollback.
 - Added explicit `git-overlay` and `metadata-only` workspace attachment modes;
   Git mode now fails at setup instead of failing later during synchronization.
+- Added device-local `workspace move` and `workspace detach` lifecycle
+  commands. Neither command moves or deletes files or cloud state; changed-path
+  bindings clear stale applied markers and path collisions fail without
+  modifying configuration.
 - Added per-device `ask|auto|never` Git baseline acquisition. Auto mode obtains
   missing commits from the checkout's existing `origin` with bounded,
   non-interactive system Git; shallow clones are supported, raw remote errors

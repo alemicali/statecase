@@ -1,6 +1,8 @@
+import { execFile } from "node:child_process";
 import { mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -153,6 +155,76 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
     expect(await command(io, "--json", "workspace", "attach", "--path", ordinary, "--id", "ws_plain")).toBe(2);
     expect(JSON.parse(errors.at(-1)!)).toMatchObject({ error: { code: 2, message: expect.stringContaining("Git working tree") } });
     expect(await command(io, "--json", "workspace", "attach", "--path", ordinary, "--id", "ws_plain", "--mode", "metadata-only")).toBe(0);
+  });
+
+  it("moves and detaches workspace mappings without moving files or retaining stale apply state (ID-011)", async () => {
+    const home = await mkdtemp(join(tmpdir(), "statecase-cli-workspace-lifecycle-"));
+    const original = join(home, "original");
+    const destination = join(home, "destination");
+    const occupied = join(home, "occupied");
+    temporary.push(home);
+    await Promise.all([mkdir(original), mkdir(destination), mkdir(occupied)]);
+    await writeFile(join(original, "local.txt"), "do not move or delete\n");
+    await writeFile(join(destination, "destination.txt"), "preserve destination\n");
+    process.env.STATECASE_HOME = join(home, "statecase-home");
+    const output: string[] = [];
+    const errors: string[] = [];
+    const io: CliIO = { stdout: (value) => output.push(value), stderr: (value) => errors.push(value), fetch };
+
+    expect(await command(io, "--json", "workspace", "attach", "--id", "ws_main", "--path", original, "--mode", "metadata-only")).toBe(0);
+    const configPath = join(process.env.STATECASE_HOME, "config.json");
+    const configured = JSON.parse(await readFile(configPath, "utf8")) as { applied: Record<string, unknown> };
+    configured.applied["workspace:ws_main"] = { revisionId: "nrev_applied", digests: {} };
+    await writeFile(configPath, `${JSON.stringify(configured, null, 2)}\n`);
+
+    expect(await command(io, "--json", "workspace", "move", "ws_main", original)).toBe(0);
+    expect(JSON.parse(output.at(-1)!)).toMatchObject({ id: "ws_main", moved: false, path: original });
+    expect((JSON.parse(await readFile(configPath, "utf8")) as { applied: Record<string, unknown> }).applied["workspace:ws_main"]).toBeDefined();
+
+    expect(await command(io, "--json", "workspace", "move", "ws_main", destination)).toBe(0);
+    expect(JSON.parse(output.at(-1)!)).toMatchObject({ id: "ws_main", moved: true, previousPath: original, path: destination });
+    let moved = JSON.parse(await readFile(configPath, "utf8")) as { workspaces: Array<{ id: string; path: string }>; applied: Record<string, unknown> };
+    expect(moved.workspaces).toContainEqual(expect.objectContaining({ id: "ws_main", path: destination }));
+    expect(moved.applied["workspace:ws_main"]).toBeUndefined();
+    expect(await readFile(join(original, "local.txt"), "utf8")).toBe("do not move or delete\n");
+    expect(await readFile(join(destination, "destination.txt"), "utf8")).toBe("preserve destination\n");
+
+    expect(await command(io, "--json", "workspace", "attach", "--id", "ws_other", "--path", occupied, "--mode", "metadata-only")).toBe(0);
+    expect(await command(io, "--json", "workspace", "move", "ws_main", occupied)).toBe(2);
+    expect(JSON.parse(errors.at(-1)!)).toMatchObject({ error: { code: 2, message: expect.stringContaining("already attached") } });
+    moved = JSON.parse(await readFile(configPath, "utf8")) as typeof moved;
+    expect(moved.workspaces.find((item) => item.id === "ws_main")?.path).toBe(destination);
+    expect(moved.workspaces.find((item) => item.id === "ws_other")?.path).toBe(occupied);
+
+    expect(await command(io, "--json", "workspace", "detach", "ws_main")).toBe(0);
+    expect(JSON.parse(output.at(-1)!)).toMatchObject({ id: "ws_main", detached: true, path: destination });
+    const detached = JSON.parse(await readFile(configPath, "utf8")) as typeof moved;
+    expect(detached.workspaces.map((item) => item.id)).toEqual(["ws_other"]);
+    expect(detached.applied["workspace:ws_main"]).toBeUndefined();
+    expect(await readFile(join(destination, "destination.txt"), "utf8")).toBe("preserve destination\n");
+    expect(await command(io, "--json", "workspace", "detach", "ws_missing")).toBe(2);
+    expect(await command(io, "--json", "workspace", "move", "ws_missing", original)).toBe(2);
+
+    expect(await command(io, "--json", "workspace", "attach", "--id", "ws_rebind", "--path", original, "--mode", "metadata-only")).toBe(0);
+    const rebound = JSON.parse(await readFile(configPath, "utf8")) as typeof moved;
+    rebound.applied["workspace:ws_rebind"] = { revisionId: "nrev_rebind", digests: {} };
+    await writeFile(configPath, `${JSON.stringify(rebound, null, 2)}\n`);
+    expect(await command(io, "--json", "workspace", "attach", "--id", "ws_rebind", "--path", original, "--mode", "metadata-only", "--git-fetch", "auto")).toBe(0);
+    expect((JSON.parse(await readFile(configPath, "utf8")) as typeof moved).applied["workspace:ws_rebind"]).toBeDefined();
+    expect(await command(io, "--json", "workspace", "attach", "--id", "ws_rebind", "--path", destination, "--mode", "metadata-only", "--git-fetch", "auto")).toBe(0);
+    const reboundElsewhere = JSON.parse(await readFile(configPath, "utf8")) as typeof moved;
+    expect(reboundElsewhere.workspaces.find((item) => item.id === "ws_rebind")?.path).toBe(destination);
+    expect(reboundElsewhere.applied["workspace:ws_rebind"]).toBeUndefined();
+
+    const gitCheckout = join(home, "git-checkout");
+    const notGit = join(home, "not-git");
+    await Promise.all([mkdir(gitCheckout), mkdir(notGit)]);
+    await promisify(execFile)("git", ["-C", gitCheckout, "init", "--quiet"]);
+    expect(await command(io, "--json", "workspace", "attach", "--id", "ws_git", "--path", gitCheckout)).toBe(0);
+    const beforeInvalidMove = await readFile(configPath, "utf8");
+    expect(await command(io, "--json", "workspace", "move", "ws_git", notGit)).toBe(2);
+    expect(JSON.parse(errors.at(-1)!)).toMatchObject({ error: { code: 2, message: expect.stringContaining("Git working tree") } });
+    expect(await readFile(configPath, "utf8")).toBe(beforeInvalidMove);
   });
 
   it("runs an unmodified harness offline and preserves its exit code (RT-002, RT-004, RT-011)", async () => {

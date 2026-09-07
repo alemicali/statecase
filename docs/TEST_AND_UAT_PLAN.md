@@ -95,6 +95,10 @@ regression ID.
   collisions before materialization.
 - `ID-010`: randomized path sets round-trip through manifest normalization
   without traversal or ambiguity.
+- `ID-011`: moving or detaching a device-local workspace mapping never moves
+  or deletes files or cloud state; path changes clear stale applied state,
+  collisions and invalid Git destinations fail without configuration mutation,
+  and same-path operations are idempotent.
 
 ### 4.2 Manifest and merge
 
