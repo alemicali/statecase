@@ -53,6 +53,7 @@ export const chunkingDescriptorSchema = z.discriminatedUnion("strategy", [
 
 export const manifestEntrySchema = z.object({
   namespace: z.string().min(1).max(1024),
+  keyEpoch: z.number().int().positive().safe().optional(),
   logicalPath: z.string().min(1).max(4096),
   entryType: z.enum(["file", "workspace-capsule", "workspace-blob"]).default("file"),
   workspacePath: z.string().min(1).max(4096).optional(),
@@ -143,6 +144,7 @@ export const pathClaimSchema = z.object({
 
 export const namespaceUpdateSchema = z.object({
   namespace: identifier,
+  keyEpoch: z.number().int().positive().safe().optional(),
   baseNamespaceRevisionId: identifier.nullable(),
   namespaceRevisionId: identifier,
   manifestObjectId: identifier,
@@ -189,6 +191,7 @@ export const namespaceManifestSchema = z.object({
   schemaVersion: z.literal(1),
   vaultId: identifier,
   namespace: identifier,
+  keyEpoch: z.number().int().positive().safe().optional(),
   namespaceRevisionId: identifier,
   parentNamespaceRevisionIds: z.array(identifier).max(32),
   createdAt: z.iso.datetime(),
@@ -238,6 +241,9 @@ export type ProtocolErrorCode =
   | "IDEMPOTENCY_CONFLICT"
   | "STALE_BASE"
   | "APPEND_VIOLATION"
+  | "KEY_EPOCH_CONFLICT"
+  | "KEY_RECIPIENT_MISMATCH"
+  | "KEY_ENVELOPE_UNAVAILABLE"
   | "GC_BUSY"
   | "OBJECT_MISSING"
   | "UNSUPPORTED_PROTOCOL";

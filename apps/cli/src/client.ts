@@ -31,6 +31,7 @@ export interface RemoteNamespaceHead {
   namespace: string;
   revisionId: string;
   manifestObjectId: string;
+  keyEpoch?: number;
 }
 
 export interface RemoteNamespaceRevision extends RemoteNamespaceHead {
@@ -61,6 +62,7 @@ export interface CapabilityRecord {
 export interface CreateCapabilityInput {
   id: string;
   vaultId: string;
+  keyEpoch: number;
   tokenHash: string;
   namespaces: string[];
   actions: Array<"read" | "append">;
@@ -113,6 +115,11 @@ export interface DeviceRecord {
   lastSeenAt?: number;
 }
 
+export interface VaultKeyRecipientsRecord {
+  keyEpoch: number;
+  devices: Array<{ id: string; publicExchangeKey: string }>;
+}
+
 export class StatecaseClient {
   readonly #baseUrl: string;
   readonly #token?: string;
@@ -142,7 +149,7 @@ export class StatecaseClient {
     });
   }
 
-  registerDevice(input: { id: string; name: string }): Promise<{ accountId: string; deviceId: string; name: string }> {
+  registerDevice(input: { id: string; name: string; publicExchangeKey: string }): Promise<{ accountId: string; deviceId: string; name: string }> {
     return this.#json("/v1/devices/current", { method: "POST", body: JSON.stringify(input) });
   }
 
@@ -162,8 +169,33 @@ export class StatecaseClient {
     return (await this.#json<{ vaults: VaultRecord[] }>("/v1/vaults")).vaults;
   }
 
-  joinVault(vaultId: string): Promise<VaultRecord> {
-    return this.#json(`/v1/vaults/${encodeURIComponent(vaultId)}/join`, { method: "POST" });
+  joinVault(vaultId: string, keyEpoch = 1): Promise<VaultRecord> {
+    return this.#json(`/v1/vaults/${encodeURIComponent(vaultId)}/join`, { method: "POST", body: JSON.stringify({ keyEpoch }) });
+  }
+
+  vaultKeyRecipients(vaultId: string): Promise<VaultKeyRecipientsRecord> {
+    return this.#json(`/v1/vaults/${encodeURIComponent(vaultId)}/key-recipients`);
+  }
+
+  vaultKeyEnvelope(vaultId: string): Promise<{ keyEpoch: number; envelope: string }> {
+    return this.#json(`/v1/vaults/${encodeURIComponent(vaultId)}/key-envelope`);
+  }
+
+  vaultKeyEnvelopes(vaultId: string, afterEpoch: number): Promise<{
+    keyEpoch: number;
+    envelopes: Array<{ keyEpoch: number; envelope: string }>;
+  }> {
+    return this.#json(
+      `/v1/vaults/${encodeURIComponent(vaultId)}/key-envelopes?afterEpoch=${afterEpoch}`,
+    );
+  }
+
+  rotateVaultKey(vaultId: string, input: {
+    expectedEpoch: number;
+    newEpoch: number;
+    envelopes: Array<{ deviceId: string; envelope: string }>;
+  }): Promise<{ keyEpoch: number; rotated: true }> {
+    return this.#json(`/v1/vaults/${encodeURIComponent(vaultId)}/key-rotations`, { method: "POST", body: JSON.stringify(input) });
   }
 
   head(vaultId: string): Promise<RemoteHead> {

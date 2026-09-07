@@ -28,7 +28,7 @@ export interface LocalConfig {
     sync?: "git" | "identity-only";
     gitFetch?: "ask" | "auto" | "never";
   }>;
-  applied: Record<string, { revisionId: string; digests: Record<string, string> }>;
+  applied: Record<string, { revisionId: string; digests: Record<string, string>; keyEpoch?: number }>;
   sessionBindings?: Record<string, string>;
   runtime?: {
     shimDir?: string;
@@ -40,8 +40,11 @@ export interface LocalSecrets {
   version: 1;
   token?: string;
   vaultKeys: Record<string, string>;
+  deviceExchange?: { publicKey: string; privateKey: string };
+  vaultKeyrings?: Record<string, { currentEpoch: number; keys: Record<string, string> }>;
   scopedVaults?: Record<string, {
     vaultId: string;
+    keyEpoch?: number;
     namespaces: string[];
     actions: Array<"read" | "append">;
     expiresAt: number;

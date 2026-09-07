@@ -29,14 +29,16 @@ merge bounded, complete-record same-session JSONL appends and rebuild their
 Session Capsule activity closure; rewrites and incompatible order fail closed.
 UTC hourly/daily/monthly retention and namespace-object reachability GC are
 implemented with protected-snapshot, Session Capsule, append-parent, grace,
-and conservative migration roots. Sections covering safe parsed text merge,
-workspace in-place restore, and initialized submodule hydration remain target
-requirements, not current claims.
+and conservative migration roots. Full-key historical restore now also covers
+exact Git workspaces. Sections covering safe parsed text merge and initialized
+submodule hydration remain target requirements, not current claims.
 
 Persistent device identities, auth-session binding, device enumeration, and
 server-side revocation are implemented. Revocation blocks new service access
-and membership use but cannot erase locally decrypted data; scope-key rotation
-and rewrapping remain required before a full cryptographic revocation claim.
+and membership use but cannot erase locally decrypted data. Monotonic vault-key
+epochs, exact active-device sealed-box rewrap, old-epoch write rejection,
+capability invalidation, sequential active-device refresh, and encrypted
+multi-epoch recovery kits are implemented as specified by ADR-0019.
 
 ## 2. System boundaries
 
@@ -222,8 +224,11 @@ or decrypted manifests. Initial tables:
 accounts(id, created_at, status)
 devices(id, account_id, name, public_signing_key, public_exchange_key,
         status, created_at, last_seen_at)
-vaults(id, account_id, name, coordinator_name, created_at, status)
-vault_members(vault_id, device_id, role, wrapped_key_ref, created_at, revoked_at)
+vaults(id, account_id, name, coordinator_name, key_epoch, created_at, status)
+vault_members(vault_id, device_id, role, wrapped_key_ref, enrolled_key_epoch,
+              created_at, revoked_at)
+vault_key_envelopes(vault_id, key_epoch, device_id, envelope,
+                    created_by_device_id, created_at)
 tokens(id, account_id, device_id, token_hash, scopes_json, expires_at,
        single_use, redeemed_at, revoked_at)
 workspaces(vault_id, id, display_name, canonical_remote, created_at)
@@ -378,11 +383,13 @@ review before production data is accepted.
 
 ### 6.1 Key hierarchy
 
-- Each vault has a random 256-bit root key.
+- Each vault begins with a random 256-bit root key at key epoch one. Every
+  rotation creates a new independent root and advances the epoch by one.
 - Domain-separated scope encryption and deduplication keys are derived from
-  the root key for global config, global skills, each workspace/Drop/harness,
-  and an optional secrets compartment.
-- Persistent devices receive only authorized wrapped scope keys.
+  the root for that epoch and for global config, global skills, each
+  workspace/Drop/harness, and an optional secrets compartment.
+- Persistent devices keep a historical vault keyring and receive a sealed-box
+  envelope for each new epoch only while they are active vault members.
 - Ephemeral bootstrap capabilities receive only the requested workspace keys
   and optional read-only global skill/config keys.
 - Authentication signing keys are separate from encryption keys.
@@ -415,12 +422,46 @@ No custom primitive is permitted.
 ### 6.3 Device enrollment
 
 Interactive enrollment creates signing and key-exchange keypairs locally. The
-service receives public keys. An existing trusted device or recovery flow wraps
-authorized vault/scope keys to the new device. Device revocation blocks new API
-operations but cannot make already decrypted data disappear from that device.
+service receives public keys. The encrypted recovery flow supplies a new
+persistent device with the historical vault keyring; active members then
+receive separately wrapped keys on future rotations. Device revocation blocks
+new API operations but cannot make already decrypted data disappear from that
+device.
 
 Recovery material MUST be shown once, never logged, and tested with a recovery
 verification step during onboarding.
+
+After revoking a lost device, an owner rotates each affected vault. The client
+MUST generate a fresh root rather than rewrap the old root, seal it separately
+to the exact active-member public-key set, and publish all envelopes plus the
+next epoch in one D1 transaction. The transaction MUST fail if an active member
+lacks an exchange key, the membership changes, recipients are missing or
+duplicated, or the epoch is no longer current. It also revokes all outstanding
+capability grants and sessions for the vault.
+
+The vault Durable Object serializes the D1 rotation with final commit epoch
+checks. It persists a monotonic minimum write epoch before dispatching the
+transaction; D1 below that floor blocks commits until a valid rotation retry
+completes it. An ambiguous D1 result MUST NOT roll the floor back. Capability
+insertion checks epoch and active owner inside its own D1 transaction.
+Registered device exchange keys are immutable; key replacement requires a new
+device identity. See ADR-0019 for ordering and failure recovery.
+
+Namespace heads, immutable manifests, and entries carry their encryption
+epoch. The first commit after rotation MUST be a snapshot, not an append delta;
+the Worker rejects stale-epoch writes and all protocol 1.0 writes after epoch
+one. Active clients fetch and unwrap every missing per-device envelope in
+order. Any gap fails closed. Version-two recovery kits contain every retained
+historical root plus the current epoch and are required for a replacement
+device after rotation. Enrollment submits the kit epoch and D1 validates it
+inside membership insertion; a stale kit MUST NOT add membership or become
+local authority. An omitted epoch is treated as one for old-client compatibility.
+
+The recovery kit is written exclusively before the remote mutation. An
+ambiguous response is reconciled by reading the authoritative epoch and opening
+the current device's envelope, then comparing the recovered root to the
+candidate root in constant time. If that proof cannot be obtained, the kit is
+preserved and local credentials remain at the old epoch. See ADR-0019.
 
 ### 6.4 Bootstrap capability
 
@@ -814,6 +855,10 @@ POST   /v1/auth/token/refresh
 POST   /api/bootstrap/redeem
 GET    /v1/devices
 DELETE /v1/devices/:deviceId
+GET    /v1/vaults/:vaultId/key-recipients
+GET    /v1/vaults/:vaultId/key-envelope
+GET    /v1/vaults/:vaultId/key-envelopes?afterEpoch=<epoch>
+POST   /v1/vaults/:vaultId/key-rotations
 POST   /v1/tokens
 GET    /v1/tokens
 DELETE /v1/tokens/:tokenId
@@ -856,6 +901,8 @@ condition, `413` size limit, `422` semantically invalid manifest metadata,
 statecase login [--device-name] [--device-code] [--non-interactive]
 statecase logout
 statecase vault create|list|select
+statecase vault join <vaultId> --recovery-file <path>
+statecase vault key rotate --recovery-file <new-path> --yes
 statecase setup [--harness ...] [--transparent] [--dry-run]
 statecase bootstrap [--token-file ...] [--non-interactive]
 statecase workspace attach [--id ...] [--path ...] [--auto] [--mode git-overlay|metadata-only] [--git-fetch ask|auto|never]
@@ -1059,6 +1106,9 @@ preflight removes the child before returning.
 | Durable Object unavailable | queue local work; do not invent a head |
 | Token expires | refresh or return auth code; never discard work |
 | Device revoked mid-session | local work remains; remote writes denied |
+| Rotation response lost | verify own new envelope; otherwise preserve recovery kit and report unknown outcome |
+| Active-device key history has a gap | integrity exit; do not read or write with a guessed/current-only key |
+| Recovery kit is older than the vault | reject join locally; require the current encrypted keyring kit |
 | Disk full | stop before replace; preserve native files and journal |
 | Clock wrong | rely on server expiry and revision graph, not client ordering |
 | Two devices delete/modify | preserve modification and conflict record |

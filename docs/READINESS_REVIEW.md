@@ -166,8 +166,22 @@ Persistent installations now keep a stable device ID independent of absolute
 paths and Better Auth session rotation. D1 binds each service session to that
 installation. Device listing and explicit revocation atomically revoke vault
 memberships and all bound sessions; attempts to re-register through a revoked
-session fail. Cryptographic key rewrapping after revocation remains a separate
-release gate because already-decrypted data cannot be remotely withdrawn.
+session fail. Post-revocation cryptographic rotation is implemented locally:
+each rotation creates a fresh root at the next epoch, commits sealed envelopes
+for the exact active-device set in one D1 transaction, revokes existing scoped
+capabilities, rejects stale writes, and lets active devices ingest contiguous
+envelope history. Encrypted version-two recovery kits retain the historical
+keyring and reject stale replacement enrollment. Lost mutation responses are
+accepted only after the rotating device decrypts and matches its own envelope;
+an unprovable outcome preserves the candidate kit. Already-decrypted data and
+historical ciphertext copied by a revoked device cannot be remotely withdrawn.
+Packaged live Cloudflare/Daytona UAT remains the release gate for this slice.
+The [2026-09-08 local key-epoch qualification](uat/2026-09-08-key-epochs-local.md)
+records passing offline/restore variants, final coordinator fencing,
+transactional capability/enrollment checks, immutable exchange identities,
+and injected D1 failure recovery. It explicitly separates this evidence from
+live deployment, real process-reset fault injection, and outstanding
+key-history/failure-path qualification.
 
 Full-key devices now merge concurrent appends to the same recognized Codex or
 Claude JSONL session when both branches retain one byte-identical complete
@@ -232,8 +246,8 @@ ordinary baseline acquisition. See the
 [workspace restore UAT](uat/2026-09-07-workspace-in-place-restore-daytona.md).
 
 Automated background steady state is not yet claimed. Real-OS daemon/service
-UAT, real-version harness restore UAT, post-revocation key rewrap, and real
-harness-version compatibility remain
+UAT, real-version harness restore UAT, packaged live post-revocation rotation
+UAT, and real harness-version compatibility remain
 blocking work for a public or unattended release.
 
 The design is intentionally not called production-complete. Crypto selection,

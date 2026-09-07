@@ -31,6 +31,7 @@ import { DEVICE_HTML, UI_CSS, UI_JAVASCRIPT } from "./ui.js";
 
 const MAX_OBJECT_BYTES = 8 * 1024 * 1024;
 const identifier = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u;
+const publicExchangeKey = /^stc_x25519_public_v1\.[A-Za-z0-9_-]{43}$/u;
 
 export interface Principal {
   accountId: string;
@@ -49,6 +50,7 @@ export interface Principal {
 export interface CapabilitySummary {
   id: string;
   vaultId: string;
+  keyEpoch?: number;
   namespaces: string[];
   actions: Array<"read" | "append">;
   expiresAt: number;
@@ -61,6 +63,7 @@ export interface CapabilityService {
   create(principal: Principal, input: {
     id: string;
     vaultId: string;
+    keyEpoch: number;
     tokenHash: string;
     namespaces: string[];
     actions: Array<"read" | "append">;
@@ -93,14 +96,14 @@ export interface ObjectStore {
 export interface Coordinator {
   head(): Promise<VaultHead | null>;
   revision(revisionId: string): Promise<VaultRevision | null>;
-  commit(request: CommitRequest): Promise<CommitResult>;
+  commit(request: CommitRequest, vaultId: string): Promise<CommitResult | { outcome: "key-epoch-conflict" }>;
   listSnapshots(): Promise<VaultSnapshot[]>;
   createSnapshot(input: { id: string; name: string; createdAt: number }): Promise<CreateSnapshotResult>;
   deleteSnapshot(snapshotId: string): Promise<boolean>;
   namespaceHeads(allowedNamespaces?: ReadonlySet<string>): Promise<NamespaceHead[]>;
   namespaceRevision(namespace: string, revisionId: string): Promise<NamespaceRevision | null>;
   scopedHead(): Promise<ScopedVaultHead | null>;
-  commitNamespaces(request: ScopedCommitRequest): Promise<ScopedCommitResult>;
+  commitNamespaces(request: ScopedCommitRequest, vaultId: string): Promise<ScopedCommitResult | { outcome: "key-epoch-conflict" }>;
   scopedRevision(revisionId: string): Promise<ScopedVaultRevision | null>;
   planGarbageCollection(input: Parameters<VaultCoordinatorCore["planGarbageCollection"]>[0]): Promise<GarbageCollectionPlanResult>;
   finalizeGarbageCollection(planId: string): Promise<boolean>;
@@ -120,6 +123,21 @@ export interface DeviceSummary {
   lastSeenAt?: number;
 }
 
+export interface VaultKeyRecipients {
+  keyEpoch: number;
+  devices: Array<{ id: string; publicExchangeKey: string }>;
+}
+
+export interface VaultKeyEnvelope {
+  keyEpoch: number;
+  envelope: string;
+}
+
+export type RotateVaultKeyResult =
+  | { outcome: "rotated"; keyEpoch: number }
+  | { outcome: "stale-epoch" }
+  | { outcome: "recipient-mismatch" };
+
 export interface ControlPlane {
   registerDevice(
     principal: Principal,
@@ -129,7 +147,16 @@ export interface ControlPlane {
   revokeDevice(principal: Principal, deviceId: string): Promise<void>;
   createVault(principal: Principal, input: { name: string }): Promise<VaultSummary>;
   listVaults(principal: Principal): Promise<VaultSummary[]>;
-  joinVault(principal: Principal, vaultId: string): Promise<VaultSummary>;
+  joinVault(principal: Principal, vaultId: string, keyEpoch?: number): Promise<VaultSummary>;
+  listVaultKeyRecipients(principal: Principal, vaultId: string): Promise<VaultKeyRecipients>;
+  vaultKeyEnvelope(principal: Principal, vaultId: string): Promise<VaultKeyEnvelope | null>;
+  vaultKeyEnvelopes(principal: Principal, vaultId: string, afterEpoch: number): Promise<{ keyEpoch: number; envelopes: VaultKeyEnvelope[] }>;
+  vaultKeyEpoch(principal: Principal, vaultId: string): Promise<number | null>;
+  rotateVaultKey(principal: Principal, vaultId: string, input: {
+    expectedEpoch: number;
+    newEpoch: number;
+    envelopes: Array<{ deviceId: string; envelope: string }>;
+  }): Promise<RotateVaultKeyResult>;
   listActiveVaultIds(): Promise<string[]>;
 }
 
@@ -271,7 +298,7 @@ export function createCloudApp(services: CloudServices): Hono<AppEnvironment> {
       id: z.string().regex(identifier),
       name: z.string().trim().min(1).max(120),
       publicSigningKey: z.string().min(1).max(4096).optional(),
-      publicExchangeKey: z.string().min(1).max(4096).optional(),
+      publicExchangeKey: z.string().regex(publicExchangeKey).optional(),
     }).strict());
     if (!body.success) return body.response;
     return context.json(await services.control.registerDevice(context.get("principal"), body.data));
@@ -292,6 +319,7 @@ export function createCloudApp(services: CloudServices): Hono<AppEnvironment> {
     const body = await parseBody(context, z.object({
       id: z.string().regex(identifier),
       vaultId: z.string().regex(identifier),
+      keyEpoch: z.number().int().positive().safe(),
       tokenHash: z.string().regex(/^[A-Za-z0-9_-]{43}$/u),
       namespaces: z.array(z.string().regex(identifier)).min(1).max(64),
       actions: z.array(z.enum(["read", "append"])).min(1).max(2),
@@ -313,6 +341,9 @@ export function createCloudApp(services: CloudServices): Hono<AppEnvironment> {
     }));
     if (!body.success) return body.response;
     if (!(await allowed(services, context, body.data.vaultId, "admin"))) return notFound(context);
+    if (await services.control.vaultKeyEpoch(context.get("principal"), body.data.vaultId) !== body.data.keyEpoch) {
+      return jsonError(context, "KEY_EPOCH_CONFLICT", "vault key epoch advanced", 409);
+    }
     return context.json(await services.capabilities.create(context.get("principal"), body.data), 201);
   });
 
@@ -340,7 +371,66 @@ export function createCloudApp(services: CloudServices): Hono<AppEnvironment> {
 
   app.post("/v1/vaults/:vaultId/join", async (context) => {
     const vaultId = requireIdentifier(context.req.param("vaultId"));
-    return context.json(await services.control.joinVault(context.get("principal"), vaultId));
+    let input: unknown;
+    try {
+      const text = await context.req.text();
+      input = text.length === 0 ? {} : JSON.parse(text);
+    } catch { return jsonError(context, "INVALID_REQUEST", "invalid vault enrollment request", 400); }
+    const body = z.object({ keyEpoch: z.number().int().positive().safe().default(1) }).strict().safeParse(input);
+    if (!body.success) return jsonError(context, "INVALID_REQUEST", "invalid vault enrollment request", 400);
+    return context.json(await services.control.joinVault(context.get("principal"), vaultId, body.data.keyEpoch));
+  });
+
+  app.get("/v1/vaults/:vaultId/key-recipients", async (context) => {
+    const vaultId = requireIdentifier(context.req.param("vaultId"));
+    if (!(await allowed(services, context, vaultId, "admin"))) return notFound(context);
+    return context.json(await services.control.listVaultKeyRecipients(context.get("principal"), vaultId));
+  });
+
+  app.get("/v1/vaults/:vaultId/key-envelope", async (context) => {
+    const vaultId = requireIdentifier(context.req.param("vaultId"));
+    if (!(await allowed(services, context, vaultId, "read"))) return notFound(context);
+    context.header("cache-control", "no-store");
+    context.header("pragma", "no-cache");
+    const envelope = await services.control.vaultKeyEnvelope(context.get("principal"), vaultId);
+    return envelope
+      ? context.json(envelope)
+      : jsonError(context, "KEY_ENVELOPE_UNAVAILABLE", "no key envelope is available for this device and epoch", 409);
+  });
+
+  app.get("/v1/vaults/:vaultId/key-envelopes", async (context) => {
+    const vaultId = requireIdentifier(context.req.param("vaultId"));
+    if (!(await allowed(services, context, vaultId, "read"))) return notFound(context);
+    const afterEpoch = Number(context.req.query("afterEpoch") ?? "0");
+    if (!Number.isSafeInteger(afterEpoch) || afterEpoch < 0) return jsonError(context, "INVALID_REQUEST", "invalid key epoch cursor", 400);
+    context.header("cache-control", "no-store");
+    context.header("pragma", "no-cache");
+    return context.json(await services.control.vaultKeyEnvelopes(context.get("principal"), vaultId, afterEpoch));
+  });
+
+  app.post("/v1/vaults/:vaultId/key-rotations", async (context) => {
+    const vaultId = requireIdentifier(context.req.param("vaultId"));
+    if (!(await allowed(services, context, vaultId, "admin"))) return notFound(context);
+    const body = await parseBody(context, z.object({
+      expectedEpoch: z.number().int().positive().safe(),
+      newEpoch: z.number().int().positive().safe(),
+      envelopes: z.array(z.object({
+        deviceId: z.string().regex(identifier),
+        envelope: z.string().min(1).max(128 * 1024),
+      }).strict()).min(1).max(1_000),
+    }).strict().superRefine((input, refinement) => {
+      if (input.newEpoch !== input.expectedEpoch + 1) refinement.addIssue({ code: "custom", message: "new epoch must immediately follow expected epoch" });
+      const recipients = new Set<string>();
+      for (const [index, envelope] of input.envelopes.entries()) {
+        if (recipients.has(envelope.deviceId)) refinement.addIssue({ code: "custom", message: "duplicate key recipient", path: ["envelopes", index, "deviceId"] });
+        recipients.add(envelope.deviceId);
+      }
+    }));
+    if (!body.success) return body.response;
+    const result = await services.control.rotateVaultKey(context.get("principal"), vaultId, body.data);
+    if (result.outcome === "stale-epoch") return jsonError(context, "KEY_EPOCH_CONFLICT", "vault key epoch advanced", 409);
+    if (result.outcome === "recipient-mismatch") return jsonError(context, "KEY_RECIPIENT_MISMATCH", "key envelopes must match the exact active device set", 409);
+    return context.json({ keyEpoch: result.keyEpoch, rotated: true }, 201);
   });
 
   app.put("/v1/vaults/:vaultId/objects/:objectId", async (context) => {
@@ -400,6 +490,9 @@ export function createCloudApp(services: CloudServices): Hono<AppEnvironment> {
   app.post("/v1/vaults/:vaultId/commits", async (context) => {
     const vaultId = requireIdentifier(context.req.param("vaultId"));
     if (!(await allowed(services, context, vaultId, "write"))) return notFound(context);
+    if (await services.control.vaultKeyEpoch(context.get("principal"), vaultId) !== 1) {
+      return jsonError(context, "KEY_EPOCH_CONFLICT", "legacy commits are disabled after vault key rotation", 409);
+    }
     let parsed: ReturnType<typeof commitRequestSchema.safeParse>;
     try {
       parsed = commitRequestSchema.safeParse(await context.req.json());
@@ -414,7 +507,8 @@ export function createCloudApp(services: CloudServices): Hono<AppEnvironment> {
       return jsonError(context, "OBJECT_MISSING", "one or more encrypted objects are missing", 409);
     }
 
-    const result = await services.coordinator(vaultId).commit(request);
+    const result = await services.coordinator(vaultId).commit(request, vaultId);
+    if (result.outcome === "key-epoch-conflict") return jsonError(context, "KEY_EPOCH_CONFLICT", "vault key epoch advanced", 409);
     if (result.outcome === "idempotency-conflict") {
       return jsonError(context, "IDEMPOTENCY_CONFLICT", "operation ID was already used for another payload", 409);
     }
@@ -446,7 +540,12 @@ export function createCloudApp(services: CloudServices): Hono<AppEnvironment> {
         return jsonError(context, "OBJECT_MISSING", "one or more encrypted namespace objects are missing", 409);
       }
     }
-    const result = await services.coordinator(vaultId).commitNamespaces(body.data);
+    const keyEpoch = await services.control.vaultKeyEpoch(context.get("principal"), vaultId);
+    if (keyEpoch === null || body.data.updates.some((update) => (update.keyEpoch ?? 1) !== keyEpoch)) {
+      return jsonError(context, "KEY_EPOCH_CONFLICT", "vault key epoch advanced", 409);
+    }
+    const result = await services.coordinator(vaultId).commitNamespaces(body.data, vaultId);
+    if (result.outcome === "key-epoch-conflict") return jsonError(context, "KEY_EPOCH_CONFLICT", "vault key epoch advanced", 409);
     if (result.outcome === "idempotency-conflict") return jsonError(context, "IDEMPOTENCY_CONFLICT", "operation ID was already used for another payload", 409);
     if (result.outcome === "revision-conflict") return jsonError(context, "IDEMPOTENCY_CONFLICT", "revision ID was already used", 409);
     if (result.outcome === "gc-busy") {
@@ -463,12 +562,15 @@ export function createCloudApp(services: CloudServices): Hono<AppEnvironment> {
 
   app.notFound((context) => notFound(context));
   app.onError((error, context) => {
+    if (error instanceof RecoveryEpochConflict) return jsonError(context, "KEY_EPOCH_CONFLICT", error.message, 409);
+    if (error instanceof KeyEpochConflict) return jsonError(context, "KEY_EPOCH_CONFLICT", error.message, 409);
     if (error instanceof BodyTooLarge) {
       return jsonError(context, "INVALID_REQUEST", "encrypted object exceeds the upload limit", 413);
     }
     if (error instanceof InvalidIdentifier) return jsonError(context, "INVALID_REQUEST", "invalid resource identifier", 400);
     if (error instanceof ControlPlaneError) {
       if (error.reason === "not-found") return notFound(context);
+      if (error.reason === "device-key-conflict") return jsonError(context, "INVALID_REQUEST", "device exchange key cannot change; enroll a new device identity", 409);
       return jsonError(context, "INVALID_REQUEST", "register this device before managing vaults", 409);
     }
     return jsonError(context, "INVALID_REQUEST", "request failed safely", 500);
@@ -595,8 +697,16 @@ async function readLimited(source: ReadableStream<Uint8Array>, maximum: number):
 class BodyTooLarge extends Error {}
 class InvalidIdentifier extends Error {}
 
+export class KeyEpochConflict extends Error {
+  constructor() { super("vault key epoch advanced or issuer is no longer authorized"); }
+}
+
+export class RecoveryEpochConflict extends Error {
+  constructor() { super("recovery kit epoch is stale; enrollment requires the current vault epoch"); }
+}
+
 export class ControlPlaneError extends Error {
-  constructor(readonly reason: "device-required" | "not-found") {
+  constructor(readonly reason: "device-required" | "not-found" | "device-key-conflict") {
     super(reason);
   }
 }

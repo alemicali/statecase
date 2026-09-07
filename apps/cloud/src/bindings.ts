@@ -16,6 +16,8 @@ import {
 
 import {
   ControlPlaneError,
+  KeyEpochConflict,
+  RecoveryEpochConflict,
   type AuthService,
   type CapabilityService,
   type CapabilitySummary,
@@ -54,8 +56,11 @@ export class VaultCoordinator extends DurableObject<StatecaseEnvironment> {
     return this.#core.revision(revisionId);
   }
 
-  async commit(request: CommitRequest): Promise<CommitResult> {
-    return this.#core.commit(request);
+  async commit(request: CommitRequest, vaultId: string): Promise<CommitResult | { outcome: "key-epoch-conflict" }> {
+    return this.ctx.blockConcurrencyWhile(async () => {
+      if (await this.#keyEpoch(vaultId) !== 1) return { outcome: "key-epoch-conflict" as const };
+      return this.#core.commit(request);
+    });
   }
 
   async listSnapshots(): Promise<VaultSnapshot[]> {
@@ -86,8 +91,46 @@ export class VaultCoordinator extends DurableObject<StatecaseEnvironment> {
     return this.#core.scopedRevision(revisionId);
   }
 
-  async commitNamespaces(request: ScopedCommitRequest): Promise<ScopedCommitResult> {
-    return this.#core.commitNamespaces(request);
+  async commitNamespaces(request: ScopedCommitRequest, vaultId: string): Promise<ScopedCommitResult | { outcome: "key-epoch-conflict" }> {
+    return this.ctx.blockConcurrencyWhile(async () => {
+      const epoch = await this.#keyEpoch(vaultId);
+      if (epoch === null || request.updates.some((update) => (update.keyEpoch ?? 1) !== epoch)) {
+        return { outcome: "key-epoch-conflict" as const };
+      }
+      return this.#core.commitNamespaces(request);
+    });
+  }
+
+  async rotateVaultKey(principal: Principal, vaultId: string, input: Parameters<ControlPlane["rotateVaultKey"]>[2]) {
+    const result = await this.ctx.blockConcurrencyWhile(async () => {
+      if (!(await authorizeVault(this.env.DB, principal, vaultId, "admin"))) throw new ControlPlaneError("not-found");
+      const control = new D1ControlPlane(this.env.DB);
+      const rejected = await control.validateVaultKeyRotation(principal, vaultId, input);
+      if (rejected) return rejected;
+      // Persist before sending D1 the transaction. An unknown/late D1 result
+      // after object reset must never reopen writes encrypted with the old key.
+      // Do not roll back this floor on failure; retrying a valid rotation to
+      // the same next epoch safely completes it, even after a recipient race.
+      const floorKey = `key-epoch-floor:${vaultId}`;
+      const floor = await this.ctx.storage.get<number>(floorKey) ?? 1;
+      await this.ctx.storage.put(floorKey, Math.max(floor, input.newEpoch));
+      try {
+        return await control.rotateVaultKey(principal, vaultId, input);
+      } catch {
+        // Return through the gate before surfacing the sanitized error. A D1
+        // outage must preserve the fence without breaking every existing stub.
+        return { outcome: "unavailable" as const };
+      }
+    });
+    if (result.outcome === "unavailable") throw new Error("vault key rotation outcome unavailable");
+    return result;
+  }
+
+  async #keyEpoch(vaultId: string): Promise<number | null> {
+    const vault = await this.env.DB.prepare("SELECT key_epoch FROM vaults WHERE id = ? AND status = 'active'")
+      .bind(vaultId).first<{ key_epoch: number }>();
+    const floor = await this.ctx.storage.get<number>(`key-epoch-floor:${vaultId}`) ?? 1;
+    return vault && vault.key_epoch >= floor ? vault.key_epoch : null;
   }
 
   async planGarbageCollection(input: Parameters<VaultCoordinatorCore["planGarbageCollection"]>[0]) {
@@ -111,7 +154,7 @@ export function createCloudServices(environment: StatecaseEnvironment): CloudSer
           principal.capability.actions.includes(action))
       : authorizeVault(environment.DB, principal, vaultId, action === "read" ? "read" : "write"),
     coordinator: (vaultId): Coordinator => environment.VAULTS.getByName(vaultId),
-    control: new D1ControlPlane(environment.DB),
+    control: new CoordinatedControlPlane(environment),
     capabilities: new D1CapabilityService(environment.DB),
     garbageCollectionGracePeriodMs: garbageCollectionGracePeriod(environment.STATECASE_GC_GRACE_DAYS),
   };
@@ -245,10 +288,13 @@ class D1ControlPlane implements ControlPlane {
       throw new ControlPlaneError("device-required");
     }
     const existing = await this.#database.prepare(`
-      SELECT account_id, status FROM devices WHERE id = ? LIMIT 1
-    `).bind(input.id).first<{ account_id: string; status: DeviceSummary["status"] }>();
+      SELECT account_id, status, public_exchange_key FROM devices WHERE id = ? LIMIT 1
+    `).bind(input.id).first<{ account_id: string; status: DeviceSummary["status"]; public_exchange_key: string | null }>();
     if (existing && (existing.account_id !== principal.accountId || existing.status !== "active")) {
       throw new ControlPlaneError("device-required");
+    }
+    if (existing?.public_exchange_key && input.publicExchangeKey && existing.public_exchange_key !== input.publicExchangeKey) {
+      throw new ControlPlaneError("device-key-conflict");
     }
     const now = Date.now();
     await this.#database.batch([
@@ -263,7 +309,7 @@ class D1ControlPlane implements ControlPlane {
         ON CONFLICT(id) DO UPDATE SET
           name = excluded.name,
           public_signing_key = excluded.public_signing_key,
-          public_exchange_key = excluded.public_exchange_key,
+          public_exchange_key = COALESCE(excluded.public_exchange_key, devices.public_exchange_key),
           last_seen_at = excluded.last_seen_at
         WHERE devices.account_id = excluded.account_id AND devices.status = 'active'
       `).bind(
@@ -369,28 +415,194 @@ class D1ControlPlane implements ControlPlane {
     return rows.results.map((row) => ({ id: row.id, name: row.name, role: row.role ?? null }));
   }
 
-  async joinVault(principal: Principal, vaultId: string): Promise<VaultSummary> {
+  async joinVault(principal: Principal, vaultId: string, keyEpoch = 1): Promise<VaultSummary> {
     await this.#requireDevice(principal);
     const vault = await this.#database.prepare(`
-      SELECT id, name FROM vaults WHERE id = ? AND account_id = ? AND status = 'active' LIMIT 1
-    `).bind(vaultId, principal.accountId).first<{ id: string; name: string }>();
+      SELECT id, name, key_epoch FROM vaults WHERE id = ? AND account_id = ? AND status = 'active' LIMIT 1
+    `).bind(vaultId, principal.accountId).first<{ id: string; name: string; key_epoch: number }>();
     if (!vault) throw new ControlPlaneError("not-found");
+    if (vault.key_epoch !== keyEpoch) throw new RecoveryEpochConflict();
 
     const existing = await this.#database.prepare(`
       SELECT role FROM vault_members WHERE vault_id = ? AND device_id = ? AND revoked_at IS NULL LIMIT 1
     `).bind(vaultId, principal.deviceId).first<{ role: Exclude<VaultSummary["role"], null> }>();
-    if (existing) return { ...vault, role: existing.role };
+    if (existing) return { id: vault.id, name: vault.name, role: existing.role };
 
     const now = Date.now();
-    await this.#database.batch([
-      this.#database.prepare(`
-        INSERT INTO vault_members (vault_id, device_id, role, created_at)
-        VALUES (?, ?, 'writer', ?)
-        ON CONFLICT(vault_id, device_id) DO UPDATE SET role = 'writer', revoked_at = NULL, created_at = excluded.created_at
-      `).bind(vaultId, principal.deviceId, now),
-      auditStatement(this.#database, principal, "vault.join", "vault", vaultId, now),
-    ]);
-    return { ...vault, role: "writer" };
+    try {
+      await this.#database.batch([
+        this.#database.prepare(`
+          INSERT INTO vault_members (vault_id, device_id, role, created_at, enrolled_key_epoch)
+          VALUES (?, ?, 'writer', ?, ?)
+          ON CONFLICT(vault_id, device_id) DO UPDATE SET role = vault_members.role, revoked_at = NULL,
+            created_at = excluded.created_at, enrolled_key_epoch = excluded.enrolled_key_epoch
+        `).bind(vaultId, principal.deviceId, now, keyEpoch),
+        auditStatement(this.#database, principal, "vault.join", "vault", vaultId, now),
+      ]);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("invalid vault enrollment epoch")) throw new RecoveryEpochConflict();
+      throw error;
+    }
+    return { id: vault.id, name: vault.name, role: "writer" };
+  }
+
+  async listVaultKeyRecipients(principal: Principal, vaultId: string): Promise<{
+    keyEpoch: number;
+    devices: Array<{ id: string; publicExchangeKey: string }>;
+  }> {
+    const vault = await this.#database.prepare(`
+      SELECT key_epoch FROM vaults
+      WHERE id = ? AND account_id = ? AND status = 'active' LIMIT 1
+    `).bind(vaultId, principal.accountId).first<{ key_epoch: number }>();
+    if (!vault) throw new ControlPlaneError("not-found");
+    const rows = await this.#database.prepare(`
+      SELECT d.id, d.public_exchange_key
+      FROM vault_members AS vm
+      JOIN devices AS d ON d.id = vm.device_id
+      WHERE vm.vault_id = ? AND vm.revoked_at IS NULL AND d.status = 'active'
+      ORDER BY d.id
+    `).bind(vaultId).all<{ id: string; public_exchange_key: string | null }>();
+    return {
+      keyEpoch: vault.key_epoch,
+      devices: rows.results.flatMap((row) => row.public_exchange_key
+        ? [{ id: row.id, publicExchangeKey: row.public_exchange_key }]
+        : []),
+    };
+  }
+
+  async vaultKeyEnvelope(principal: Principal, vaultId: string): Promise<{ keyEpoch: number; envelope: string } | null> {
+    const row = await this.#database.prepare(`
+      SELECT v.key_epoch, envelope.envelope
+      FROM vaults AS v
+      JOIN vault_members AS vm
+        ON vm.vault_id = v.id AND vm.device_id = ? AND vm.revoked_at IS NULL
+      JOIN devices AS d
+        ON d.id = vm.device_id AND d.account_id = v.account_id AND d.status = 'active'
+      LEFT JOIN vault_key_envelopes AS envelope
+        ON envelope.vault_id = v.id AND envelope.key_epoch = v.key_epoch AND envelope.device_id = vm.device_id
+      WHERE v.id = ? AND v.account_id = ? AND v.status = 'active'
+      LIMIT 1
+    `).bind(principal.deviceId, vaultId, principal.accountId).first<{ key_epoch: number; envelope: string | null }>();
+    return row?.envelope ? { keyEpoch: row.key_epoch, envelope: row.envelope } : null;
+  }
+
+  async vaultKeyEnvelopes(principal: Principal, vaultId: string, afterEpoch: number): Promise<{
+    keyEpoch: number;
+    envelopes: Array<{ keyEpoch: number; envelope: string }>;
+  }> {
+    const keyEpoch = await this.vaultKeyEpoch(principal, vaultId);
+    if (keyEpoch === null) throw new ControlPlaneError("not-found");
+    const rows = await this.#database.prepare(`
+      SELECT envelope.key_epoch, envelope.envelope
+      FROM vault_key_envelopes AS envelope
+      JOIN vaults AS v ON v.id = envelope.vault_id
+      JOIN vault_members AS vm
+        ON vm.vault_id = v.id AND vm.device_id = ? AND vm.revoked_at IS NULL
+      JOIN devices AS d
+        ON d.id = vm.device_id AND d.account_id = v.account_id AND d.status = 'active'
+      WHERE v.id = ? AND v.account_id = ? AND v.status = 'active'
+        AND envelope.device_id = vm.device_id AND envelope.key_epoch > ?
+      ORDER BY envelope.key_epoch
+      LIMIT 1000
+    `).bind(principal.deviceId, vaultId, principal.accountId, afterEpoch).all<{ key_epoch: number; envelope: string }>();
+    return {
+      keyEpoch,
+      envelopes: rows.results.map((row) => ({ keyEpoch: row.key_epoch, envelope: row.envelope })),
+    };
+  }
+
+  async vaultKeyEpoch(principal: Principal, vaultId: string): Promise<number | null> {
+    if (principal.capability) {
+      if (principal.capability.vaultId !== vaultId) return null;
+      const capabilityVault = await this.#database.prepare(`
+        SELECT key_epoch FROM vaults
+        WHERE id = ? AND account_id = ? AND status = 'active' LIMIT 1
+      `).bind(vaultId, principal.accountId).first<{ key_epoch: number }>();
+      return capabilityVault?.key_epoch ?? null;
+    }
+    const row = await this.#database.prepare(`
+      SELECT v.key_epoch
+      FROM vaults AS v
+      JOIN vault_members AS vm
+        ON vm.vault_id = v.id AND vm.device_id = ? AND vm.revoked_at IS NULL
+      JOIN devices AS d
+        ON d.id = vm.device_id AND d.account_id = v.account_id AND d.status = 'active'
+      WHERE v.id = ? AND v.account_id = ? AND v.status = 'active'
+      LIMIT 1
+    `).bind(principal.deviceId, vaultId, principal.accountId).first<{ key_epoch: number }>();
+    return row?.key_epoch ?? null;
+  }
+
+  async validateVaultKeyRotation(principal: Principal, vaultId: string, input: Parameters<ControlPlane["rotateVaultKey"]>[2]):
+    Promise<{ outcome: "stale-epoch" } | { outcome: "recipient-mismatch" } | null> {
+    const vault = await this.#database.prepare(`
+      SELECT key_epoch FROM vaults
+      WHERE id = ? AND account_id = ? AND status = 'active' LIMIT 1
+    `).bind(vaultId, principal.accountId).first<{ key_epoch: number }>();
+    if (!vault) throw new ControlPlaneError("not-found");
+    if (vault.key_epoch !== input.expectedEpoch || input.newEpoch !== input.expectedEpoch + 1) {
+      return { outcome: "stale-epoch" };
+    }
+    const rows = await this.#database.prepare(`
+      SELECT d.id, d.public_exchange_key
+      FROM vault_members AS vm
+      JOIN devices AS d ON d.id = vm.device_id
+      WHERE vm.vault_id = ? AND vm.revoked_at IS NULL AND d.status = 'active'
+      ORDER BY d.id
+    `).bind(vaultId).all<{ id: string; public_exchange_key: string | null }>();
+    const activeIds = rows.results.map((row) => row.id).sort((left, right) => left.localeCompare(right, "en"));
+    const recipientIds = input.envelopes.map((item) => item.deviceId).sort((left, right) => left.localeCompare(right, "en"));
+    if (rows.results.some((row) => !row.public_exchange_key) || activeIds.join("\0") !== recipientIds.join("\0")) {
+      return { outcome: "recipient-mismatch" };
+    }
+    return null;
+  }
+
+  async rotateVaultKey(principal: Principal, vaultId: string, input: Parameters<ControlPlane["rotateVaultKey"]>[2]): ReturnType<ControlPlane["rotateVaultKey"]> {
+    const rejected = await this.validateVaultKeyRotation(principal, vaultId, input);
+    if (rejected) return rejected;
+
+    const now = Date.now();
+    try {
+      await this.#database.batch([
+        ...input.envelopes.map((item) => this.#database.prepare(`
+          INSERT INTO vault_key_envelopes (
+            vault_id, key_epoch, device_id, envelope, created_by_device_id, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?)
+        `).bind(vaultId, input.newEpoch, item.deviceId, item.envelope, principal.deviceId, now)),
+        this.#database.prepare(`
+          UPDATE vaults SET key_epoch = ?
+          WHERE id = ? AND account_id = ? AND key_epoch = ? AND status = 'active'
+        `).bind(input.newEpoch, vaultId, principal.accountId, input.expectedEpoch),
+        this.#database.prepare(`
+          UPDATE capability_grants SET revoked_at = COALESCE(revoked_at, ?)
+          WHERE vault_id = ? AND account_id = ?
+        `).bind(now, vaultId, principal.accountId),
+        this.#database.prepare(`
+          UPDATE capability_sessions SET revoked_at = COALESCE(revoked_at, ?)
+          WHERE grant_id IN (SELECT id FROM capability_grants WHERE vault_id = ? AND account_id = ?)
+        `).bind(now, vaultId, principal.accountId),
+        auditStatement(this.#database, principal, "vault.key.rotate", "vault", vaultId, now),
+      ]);
+    } catch (error) {
+      // Only a confirmed invariant/uniqueness rejection proves this batch did
+      // not commit. A transport/backend failure remains ambiguous to the CLI.
+      if (!(error instanceof Error) || !/invalid vault key (?:recipient|issuer|epoch)|incomplete vault key recipients|active device lacks exchange key|UNIQUE constraint failed: vault_key_envelopes/u.test(error.message)) {
+        throw error;
+      }
+      const current = await this.#database.prepare(`
+        SELECT key_epoch FROM vaults WHERE id = ? AND account_id = ? LIMIT 1
+      `).bind(vaultId, principal.accountId).first<{ key_epoch: number }>();
+      return current?.key_epoch !== input.expectedEpoch
+        ? { outcome: "stale-epoch" }
+        : { outcome: "recipient-mismatch" };
+    }
+    const updated = await this.#database.prepare(`
+      SELECT key_epoch FROM vaults WHERE id = ? AND account_id = ? LIMIT 1
+    `).bind(vaultId, principal.accountId).first<{ key_epoch: number }>();
+    return updated?.key_epoch === input.newEpoch
+      ? { outcome: "rotated", keyEpoch: input.newEpoch }
+      : { outcome: "stale-epoch" };
   }
 
   async listActiveVaultIds(): Promise<string[]> {
@@ -408,6 +620,16 @@ class D1ControlPlane implements ControlPlane {
   }
 }
 
+class CoordinatedControlPlane extends D1ControlPlane {
+  constructor(readonly environment: StatecaseEnvironment) {
+    super(environment.DB);
+  }
+
+  override rotateVaultKey(principal: Principal, vaultId: string, input: Parameters<ControlPlane["rotateVaultKey"]>[2]) {
+    return this.environment.VAULTS.getByName(vaultId).rotateVaultKey(principal, vaultId, input);
+  }
+}
+
 class D1CapabilityService implements CapabilityService {
   readonly #database: D1Database;
 
@@ -417,26 +639,32 @@ class D1CapabilityService implements CapabilityService {
 
   async create(principal: Principal, input: Parameters<CapabilityService["create"]>[1]): Promise<CapabilitySummary> {
     const now = Date.now();
-    await this.#database.batch([
-      this.#database.prepare(`
-        INSERT INTO capability_grants (
-          id, account_id, creator_device_id, vault_id, token_hash, namespaces_json,
-          actions_json, key_envelope, expires_at, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).bind(
-        input.id,
-        principal.accountId,
-        principal.deviceId,
-        input.vaultId,
-        input.tokenHash,
-        JSON.stringify(input.namespaces),
-        JSON.stringify(input.actions),
-        input.keyEnvelope,
-        input.expiresAt,
-        now,
-      ),
-      auditStatement(this.#database, principal, "capability.create", "capability", input.id, now),
-    ]);
+    try {
+      await this.#database.batch([
+        this.#database.prepare(`
+          INSERT INTO capability_grants (
+            id, account_id, creator_device_id, vault_id, token_hash, namespaces_json,
+            actions_json, key_envelope, expires_at, created_at, key_epoch
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(
+          input.id,
+          principal.accountId,
+          principal.deviceId,
+          input.vaultId,
+          input.tokenHash,
+          JSON.stringify(input.namespaces),
+          JSON.stringify(input.actions),
+          input.keyEnvelope,
+          input.expiresAt,
+          now,
+          input.keyEpoch,
+        ),
+        auditStatement(this.#database, principal, "capability.create", "capability", input.id, now),
+      ]);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("invalid capability epoch or issuer")) throw new KeyEpochConflict();
+      throw error;
+    }
     return {
       id: input.id,
       vaultId: input.vaultId,

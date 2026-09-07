@@ -1,4 +1,5 @@
 import { homedir, hostname } from "node:os";
+import { timingSafeEqual } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { chmod, lstat, mkdir, readFile, readdir, realpath, unlink, writeFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
@@ -8,19 +9,19 @@ import { fileURLToPath } from "node:url";
 
 import { resolveClaudeRoot } from "@statecase/adapter-claude";
 import { resolveCodexRoots } from "@statecase/adapter-codex";
-import { randomKey } from "@statecase/crypto";
+import { createDeviceExchangeKeyPair, openVaultKeyEnvelope, randomKey, sealVaultKeyForDevice } from "@statecase/crypto";
 import { workspaceIdForRemote } from "@statecase/domain";
 import { LocalStateStore } from "@statecase/storage-local";
 import { ProfileLock } from "@statecase/runtime";
 import { captureWorkspace } from "@statecase/workspace";
 import { Command } from "commander";
 
-import { StatecaseClient } from "./client.js";
+import { RemoteError, StatecaseClient } from "./client.js";
 import { assertNoHarnessProcess, HarnessActivityRegistry, type ActivityHandle } from "./activity.js";
 import { createBootstrapCapability, openBootstrapCapability, type ScopedVaultKeys } from "./capability.js";
 import { ConfigStore, type LocalConfig, type LocalSecrets, type RootMapping } from "./config.js";
 import { PersistentRuntime, readRuntimeStatus, type DaemonTrigger } from "./daemon.js";
-import { readRecoveryKit, writeRecoveryKit } from "./recovery.js";
+import { readRecoveryKeyringKit, writeRecoveryKeyringKit } from "./recovery.js";
 import { DurableReconciler } from "./reconciler.js";
 import { createEmergencySnapshot, inspectEmergencySnapshot, restoreEmergencySnapshot, type EmergencySnapshot } from "./emergency.js";
 import { exitCodeFor, requireSession, selectedVault, StatecaseUsageError } from "./runtime.js";
@@ -28,7 +29,7 @@ import { activateService, installServiceDefinition, removeServiceDefinition, ser
 import { installHarnessShim, removeHarnessShim, verifyHarnessShim } from "./shims.js";
 import { installSkill, uninstallSkill, verifySkill } from "./skills.js";
 import { HarnessSupervisor, resolveHarnessExecutable, type HarnessName, type ReconcileReason } from "./supervisor.js";
-import { SyncConflict, SyncEngine } from "./sync.js";
+import { SyncConflict, SyncEngine, type VaultKeyring } from "./sync.js";
 
 export interface CliIO {
   stdout(value: string): void;
@@ -83,10 +84,16 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
       }
       const deviceName = options.deviceName ?? config.deviceName ?? hostname();
       const deviceId = config.deviceId ?? randomLocalId("dev");
-      await new StatecaseClient(config.apiUrl, token, io.fetch).registerDevice({ id: deviceId, name: deviceName });
+      const deviceExchange = secrets.deviceExchange ?? await createDeviceExchangeKeyPair();
+      await new StatecaseClient(config.apiUrl, token, io.fetch).registerDevice({
+        id: deviceId,
+        name: deviceName,
+        publicExchangeKey: deviceExchange.publicKey,
+      });
       config.deviceId = deviceId;
       config.deviceName = deviceName;
       secrets.token = token;
+      secrets.deviceExchange = deviceExchange;
       await Promise.all([store.saveConfig(config), store.saveSecrets(secrets)]);
       emit(io, program, { authenticated: true, deviceName }, `Authenticated as device ${deviceName}`);
     });
@@ -108,7 +115,7 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
     if (!options.yes) throw new StatecaseUsageError("device revocation requires --yes", 2);
     const { client } = await requireSession(store, io.fetch);
     await client.revokeDevice(deviceId);
-    emit(io, program, { id: deviceId, revoked: true }, `Revoked device ${deviceId}`);
+    emit(io, program, { id: deviceId, revoked: true, keyRotationRequired: true }, `Revoked device ${deviceId}; rotate each affected vault key`);
   });
 
   const vault = program.command("vault").description("manage encrypted vaults");
@@ -118,8 +125,10 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
     const record = await client.createVault(name);
     const key = await randomKey();
     try {
-      await writeRecoveryKit(resolve(options.recoveryFile), record.id, key, passphrase);
+      await writeRecoveryKeyringKit(resolve(options.recoveryFile), record.id, { currentEpoch: 1, keys: { 1: key } }, passphrase);
       secrets.vaultKeys[record.id] = Buffer.from(key).toString("base64url");
+      secrets.vaultKeyrings ??= {};
+      secrets.vaultKeyrings[record.id] = { currentEpoch: 1, keys: { 1: Buffer.from(key).toString("base64url") } };
       config.selectedVaultId = record.id;
       await Promise.all([store.saveConfig(config), store.saveSecrets(secrets)]);
     } finally {
@@ -142,17 +151,108 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
   });
   vault.command("join <vaultId>").requiredOption("--recovery-file <path>").action(async (vaultId: string, options: { recoveryFile: string }) => {
     const { config, secrets, client } = await requireSession(store, io.fetch);
-    const key = await readRecoveryKit(resolve(options.recoveryFile), vaultId, requireRecoveryPassphrase());
+    const keyring = await readRecoveryKeyringKit(resolve(options.recoveryFile), vaultId, requireRecoveryPassphrase());
     try {
-      const record = await client.joinVault(vaultId);
-      secrets.vaultKeys[vaultId] = Buffer.from(key).toString("base64url");
+      const record = await client.joinVault(vaultId, keyring.currentEpoch);
+      secrets.vaultKeyrings ??= {};
+      secrets.vaultKeyrings[vaultId] = encodeVaultKeyring(keyring);
+      secrets.vaultKeys[vaultId] = Buffer.from(keyring.keys[keyring.currentEpoch]!).toString("base64url");
       config.selectedVaultId = vaultId;
       await Promise.all([store.saveConfig(config), store.saveSecrets(secrets)]);
       emit(io, program, record, `Joined and selected ${record.name ?? record.id}`);
+    } catch (error) {
+      if (error instanceof RemoteError && error.code === "KEY_EPOCH_CONFLICT") {
+        throw new StatecaseUsageError("recovery kit does not contain the current vault key epoch", 6);
+      }
+      throw error;
     } finally {
-      key.fill(0);
+      for (const key of Object.values(keyring.keys)) key.fill(0);
     }
   });
+
+  const vaultKey = vault.command("key").description("manage encrypted vault-key epochs");
+  vaultKey.command("rotate")
+    .requiredOption("--recovery-file <path>", "new encrypted recovery keyring path")
+    .requiredOption("--yes", "confirm cryptographic key rotation")
+    .action(async (options: { recoveryFile: string; yes: boolean }) => {
+      const { config, secrets, client } = await requireSession(store, io.fetch);
+      const vaultId = selectedVault(config, secrets);
+      if (!config.deviceId || !secrets.deviceExchange) throw new StatecaseUsageError("log in again to initialize this device's exchange key", 3);
+      const keyring = decodeVaultKeyring(secrets, vaultId);
+      const recipients = await client.vaultKeyRecipients(vaultId);
+      if (recipients.keyEpoch !== keyring.currentEpoch) throw new StatecaseUsageError("refresh the latest vault key before rotating it", 5);
+      if (!recipients.devices.some((device) => device.id === config.deviceId)) {
+        throw new StatecaseUsageError("the current device is not an eligible key recipient", 4);
+      }
+      const scoped = await client.namespaceHeads(vaultId);
+      if (scoped.namespaces.length === 0 && (await client.head(vaultId)).revisionId) {
+        throw new StatecaseUsageError("synchronize once to migrate the vault to protocol 1.1 before rotating keys", 5);
+      }
+      const newEpoch = keyring.currentEpoch + 1;
+      const newKey = await randomKey();
+      const recoveryFile = resolve(options.recoveryFile);
+      const nextKeyring = { currentEpoch: newEpoch, keys: { ...keyring.keys, [newEpoch]: newKey } };
+      let remoteRotated = false;
+      let recoveryCreated = false;
+      let preserveRecovery = false;
+      let reconciled = false;
+      try {
+        await writeRecoveryKeyringKit(recoveryFile, vaultId, nextKeyring, requireRecoveryPassphrase());
+        recoveryCreated = true;
+        const envelopes = await Promise.all(recipients.devices.map(async (device) => ({
+          deviceId: device.id,
+          envelope: await sealVaultKeyForDevice({
+            vaultId,
+            keyEpoch: newEpoch,
+            deviceId: device.id,
+            vaultKey: newKey,
+            recipientPublicKey: device.publicExchangeKey,
+          }),
+        })));
+        let rotated: { keyEpoch: number; rotated: true };
+        try {
+          rotated = await client.rotateVaultKey(vaultId, {
+            expectedEpoch: keyring.currentEpoch,
+            newEpoch,
+            envelopes,
+          });
+          remoteRotated = true;
+        } catch (error) {
+          if (!isAmbiguousRemoteMutation(error)) throw error;
+          const outcome = await reconcileVaultKeyRotation({
+            client,
+            vaultId,
+            expectedEpoch: keyring.currentEpoch,
+            newEpoch,
+            newKey,
+            deviceId: config.deviceId,
+            deviceExchange: secrets.deviceExchange,
+          });
+          if (outcome === "unknown") {
+            preserveRecovery = true;
+            throw new StatecaseUsageError(
+              `vault key rotation outcome is unknown; recovery kit preserved at ${recoveryFile}; run statecase sync before retrying`,
+              7,
+            );
+          }
+          if (outcome === "not-committed") throw error;
+          remoteRotated = true;
+          reconciled = true;
+          rotated = { keyEpoch: newEpoch, rotated: true };
+        }
+        secrets.vaultKeyrings ??= {};
+        secrets.vaultKeyrings[vaultId] = encodeVaultKeyring(nextKeyring);
+        secrets.vaultKeys[vaultId] = Buffer.from(newKey).toString("base64url");
+        await store.saveSecrets(secrets);
+        emit(io, program, { ...rotated, reconciled, recoveryFile, rekeyPending: scoped.namespaces.length > 0 }, `Rotated ${vaultId} to key epoch ${newEpoch}`);
+      } catch (error) {
+        if (recoveryCreated && !remoteRotated && !preserveRecovery) await unlink(recoveryFile).catch(() => undefined);
+        throw error;
+      } finally {
+        newKey.fill(0);
+        for (const key of Object.values(keyring.keys)) key.fill(0);
+      }
+    });
 
   const token = program.command("token").description("grant and revoke short-lived namespace capabilities");
   token.command("create")
@@ -165,8 +265,17 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
       const vaultId = selectedVault(config, secrets);
       const encodedVaultKey = secrets.vaultKeys[vaultId];
       if (!encodedVaultKey) throw new StatecaseUsageError("a full vault key is required to grant a capability", 4);
+      const vaultKeyring = decodeVaultKeyring(secrets, vaultId);
       const namespaces = parseCsv(options.namespace);
       const actions = parseCapabilityActions(options.actions);
+      const namespaceHeads = new Map((await client.namespaceHeads(vaultId)).namespaces.map((head) => [head.namespace, head]));
+      const staleEpochNamespaces = namespaces.filter((namespace) => {
+        const head = namespaceHeads.get(namespace);
+        return head && (head.keyEpoch ?? 1) !== vaultKeyring.currentEpoch;
+      });
+      if (staleEpochNamespaces.length > 0) {
+        throw new StatecaseUsageError(`synchronize rotated namespaces before granting a capability: ${staleEpochNamespaces.join(", ")}`, 5);
+      }
       const ttlMinutes = Number(options.ttl);
       if (!Number.isSafeInteger(ttlMinutes) || ttlMinutes < 1 || ttlMinutes > 1440) {
         throw new StatecaseUsageError("--ttl must be an integer from 1 to 1440 minutes", 2);
@@ -175,13 +284,14 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
       const vaultKey = Buffer.from(encodedVaultKey, "base64url");
       const outputPath = resolve(options.output);
       try {
-        const material = await createBootstrapCapability({ vaultId, vaultKey, namespaces, actions, expiresAt });
+        const material = await createBootstrapCapability({ vaultId, keyEpoch: vaultKeyring.currentEpoch, vaultKey, namespaces, actions, expiresAt });
         await writeProtectedBootstrapFile(outputPath, `${material.bootstrapToken}\n`);
         let record;
         try {
           record = await client.createCapability({
             id: randomLocalId("cap"),
             vaultId,
+            keyEpoch: vaultKeyring.currentEpoch,
             tokenHash: material.tokenHash,
             namespaces,
             actions,
@@ -195,6 +305,7 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
         emit(io, program, { capability: record, bootstrapFile: outputPath }, `Created ${record.id}; bootstrap token written to ${outputPath}`);
       } finally {
         vaultKey.fill(0);
+        wipeSyncAccess(vaultKeyring);
       }
     });
   token.command("list").action(async () => {
@@ -328,7 +439,7 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
         restoreConfig.mappings = [];
         restoreConfig.workspaces = [{ ...workspace!, path: target, sync: "git" }];
       }
-      const key = syncAccess(secrets, vaultId);
+      const key = await syncAccess(store, config, secrets, client, vaultId);
       let daemonBarrier: ProfileLock | undefined;
       let harnessBarrier: ActivityHandle | undefined;
       let emergency: EmergencySnapshot | undefined;
@@ -458,7 +569,7 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
         resolveConfig.mappings = [];
         resolveConfig.workspaces = [workspace!];
       }
-      const key = syncAccess(secrets, vaultId);
+      const key = await syncAccess(store, config, secrets, client, vaultId);
       try {
         const result = await new SyncEngine(client, vaultId, key).push(resolveConfig, false, {
           resolveLocalNamespaces: new Set([namespace]),
@@ -661,7 +772,7 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
     .action(async (options: { workspace?: string; revision?: string }) => {
       const { config, secrets, client } = await requireSession(store, io.fetch);
       const vaultId = selectedVault(config, secrets);
-      const key = syncAccess(secrets, vaultId);
+      const key = await syncAccess(store, config, secrets, client, vaultId);
       try {
         const reports = (await new SyncEngine(client, vaultId, key).dependencies(options.revision))
           .filter((report) => !options.workspace || report.workspace.workspaceId === options.workspace);
@@ -685,7 +796,7 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
       }
       const { config, secrets, client } = await requireSession(store, io.fetch);
       const vaultId = selectedVault(config, secrets);
-      const key = syncAccess(secrets, vaultId);
+      const key = await syncAccess(store, config, secrets, client, vaultId);
       try {
         const hydrated = await new SyncEngine(client, vaultId, key).hydrate(config, options.session, {
           mode: options.mode,
@@ -761,15 +872,18 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
         ? resolve(options.executable)
         : localConfig.runtime!.harnesses[harness]?.realExecutable ?? await resolveHarnessExecutable(harness, process.env, [argv[1] ?? ""]);
       const journal = new LocalStateStore(join(store.home, "state.db"));
-      let liveKey: Buffer | ScopedVaultKeys | undefined;
       const sync = async (reason: ReconcileReason): Promise<string | null> => {
         const { config, secrets, client } = await requireSession(store, io.fetch);
         const vaultId = selectedVault(config, secrets);
-        liveKey ??= syncAccess(secrets, vaultId);
-        const engine = new SyncEngine(client, vaultId, liveKey);
-        const result = reason === "preflight" ? await engine.pull(config) : await engine.push(config);
-        await store.saveConfig(config);
-        return result.revisionId;
+        const liveKey = await syncAccess(store, config, secrets, client, vaultId);
+        try {
+          const engine = new SyncEngine(client, vaultId, liveKey);
+          const result = reason === "preflight" ? await engine.pull(config) : await engine.push(config);
+          await store.saveConfig(config);
+          return result.revisionId;
+        } finally {
+          wipeSyncAccess(liveKey);
+        }
       };
       const reconciler = new DurableReconciler(journal, sync, harness);
       const supervisor = new HarnessSupervisor({
@@ -789,7 +903,6 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
         requestedExitCode = result.exitCode;
       } finally {
         await activity.release();
-        if (liveKey) wipeSyncAccess(liveKey);
         journal.close();
       }
     });
@@ -855,16 +968,19 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
         ...initial.workspaces.map((workspaceValue) => workspaceValue.path),
       ];
       const journal = new LocalStateStore(join(store.home, "state.db"));
-      let liveKey: Buffer | ScopedVaultKeys | undefined;
       const sync = async (reason: ReconcileReason): Promise<string | null> => {
         const { config, secrets, client } = await requireSession(store, io.fetch);
         const vaultId = selectedVault(config, secrets);
-        liveKey ??= syncAccess(secrets, vaultId);
-        const engine = new SyncEngine(client, vaultId, liveKey);
-        const pulled = await engine.pull(config);
-        const result = reason === "preflight" ? pulled : await engine.push(config);
-        await store.saveConfig(config);
-        return result.revisionId ?? pulled.revisionId;
+        const liveKey = await syncAccess(store, config, secrets, client, vaultId);
+        try {
+          const engine = new SyncEngine(client, vaultId, liveKey);
+          const pulled = await engine.pull(config);
+          const result = reason === "preflight" ? pulled : await engine.push(config);
+          await store.saveConfig(config);
+          return result.revisionId ?? pulled.revisionId;
+        } finally {
+          wipeSyncAccess(liveKey);
+        }
       };
       const reconciler = new DurableReconciler(journal, sync, "daemon");
       const runtime = new PersistentRuntime({
@@ -880,7 +996,6 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
         if (!options.once) await waitForTermination();
       } finally {
         await runtime.stop();
-        if (liveKey) wipeSyncAccess(liveKey);
         journal.close();
       }
     });
@@ -930,7 +1045,7 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
     program.command(command).option("--dry-run").action(async (options: { dryRun?: boolean }) => {
       const { config, secrets, client } = await requireSession(store, io.fetch);
       const vaultId = selectedVault(config, secrets);
-      const key = syncAccess(secrets, vaultId);
+      const key = await syncAccess(store, config, secrets, client, vaultId);
       const engine = new SyncEngine(client, vaultId, key);
       try {
         const results = [];
@@ -949,7 +1064,7 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
     const secrets = await store.loadSecrets();
     const selectedVaultId = config.selectedVaultId;
     const scoped = selectedVaultId ? secrets.scopedVaults?.[selectedVaultId] : undefined;
-    const accessMode = selectedVaultId && secrets.vaultKeys[selectedVaultId] ? "full" : scoped ? "scoped" : "none";
+    const accessMode = selectedVaultId && (secrets.vaultKeys[selectedVaultId] || secrets.vaultKeyrings?.[selectedVaultId]) ? "full" : scoped ? "scoped" : "none";
     const data = {
       authenticated: Boolean(secrets.token),
       selectedVaultId: selectedVaultId ?? null,
@@ -965,7 +1080,7 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
     const config = normalizeConfig(await store.loadConfig());
     const secrets = await store.loadSecrets();
     const git = await promisify(execFile)("git", ["--version"]).then(() => true, () => false);
-    const checks = { config: true, authenticated: Boolean(secrets.token), vaultKey: Boolean(config.selectedVaultId && (secrets.vaultKeys[config.selectedVaultId] || secrets.scopedVaults?.[config.selectedVaultId])), git, mappings: config.mappings.length };
+    const checks = { config: true, authenticated: Boolean(secrets.token), vaultKey: Boolean(config.selectedVaultId && (secrets.vaultKeys[config.selectedVaultId] || secrets.vaultKeyrings?.[config.selectedVaultId] || secrets.scopedVaults?.[config.selectedVaultId])), git, mappings: config.mappings.length };
     emit(io, program, { healthy: checks.authenticated && checks.vaultKey && git, checks }, checks.authenticated && checks.vaultKey && git ? "Statecase is ready" : "Statecase needs Git, login, or vault selection");
   });
 
@@ -1025,16 +1140,123 @@ function randomLocalId(prefix: string): string {
   return `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
 }
 
-function syncAccess(secrets: LocalSecrets, vaultId: string): Buffer | ScopedVaultKeys {
-  const root = secrets.vaultKeys[vaultId];
-  if (root) return Buffer.from(root, "base64url");
+function isAmbiguousRemoteMutation(error: unknown): boolean {
+  return !(error instanceof RemoteError) || error.status === 0 || error.status >= 500 || error.code === "INVALID_RESPONSE";
+}
+
+async function reconcileVaultKeyRotation(input: {
+  client: StatecaseClient;
+  vaultId: string;
+  expectedEpoch: number;
+  newEpoch: number;
+  newKey: Uint8Array;
+  deviceId: string;
+  deviceExchange: { publicKey: string; privateKey: string };
+}): Promise<"committed" | "not-committed" | "unknown"> {
+  try {
+    const recipients = await input.client.vaultKeyRecipients(input.vaultId);
+    // A read of the old epoch cannot prove that an in-flight POST will not
+    // commit later. Preserve recovery material until a committed key is known.
+    if (recipients.keyEpoch < input.newEpoch) return "unknown";
+    const history = await input.client.vaultKeyEnvelopes(input.vaultId, input.expectedEpoch);
+    const current = history.envelopes.find((item) => item.keyEpoch === input.newEpoch);
+    if (!current) return "unknown";
+    const opened = await openVaultKeyEnvelope({
+      envelope: current.envelope,
+      expectedVaultId: input.vaultId,
+      expectedKeyEpoch: input.newEpoch,
+      expectedDeviceId: input.deviceId,
+      recipientPublicKey: input.deviceExchange.publicKey,
+      recipientPrivateKey: input.deviceExchange.privateKey,
+    });
+    try {
+      return opened.byteLength === input.newKey.byteLength && timingSafeEqual(opened, input.newKey)
+        ? "committed"
+        : "not-committed";
+    } finally {
+      opened.fill(0);
+    }
+  } catch {
+    return "unknown";
+  }
+}
+
+async function syncAccess(
+  store: ConfigStore,
+  config: LocalConfig,
+  secrets: LocalSecrets,
+  client: StatecaseClient,
+  vaultId: string,
+): Promise<Buffer | VaultKeyring | ScopedVaultKeys> {
+  if (secrets.vaultKeyrings?.[vaultId] || secrets.vaultKeys[vaultId]) {
+    const keyring = decodeVaultKeyring(secrets, vaultId);
+    if (!config.deviceId || !secrets.deviceExchange) return keyring;
+    const history = await client.vaultKeyEnvelopes(vaultId, keyring.currentEpoch);
+    let expectedEpoch = keyring.currentEpoch + 1;
+    for (const item of history.envelopes) {
+      if (item.keyEpoch !== expectedEpoch) {
+        wipeSyncAccess(keyring);
+        throw new StatecaseUsageError("vault key history is incomplete on this device", 6);
+      }
+      const key = await openVaultKeyEnvelope({
+        envelope: item.envelope,
+        expectedVaultId: vaultId,
+        expectedKeyEpoch: item.keyEpoch,
+        expectedDeviceId: config.deviceId,
+        recipientPublicKey: secrets.deviceExchange.publicKey,
+        recipientPrivateKey: secrets.deviceExchange.privateKey,
+      });
+      keyring.keys[item.keyEpoch] = key;
+      keyring.currentEpoch = item.keyEpoch;
+      expectedEpoch += 1;
+    }
+    if (keyring.currentEpoch !== history.keyEpoch) {
+      wipeSyncAccess(keyring);
+      throw new StatecaseUsageError("vault key history is incomplete on this device", 6);
+    }
+    if (history.envelopes.length > 0) {
+      secrets.vaultKeyrings ??= {};
+      secrets.vaultKeyrings[vaultId] = encodeVaultKeyring(keyring);
+      secrets.vaultKeys[vaultId] = Buffer.from(keyring.keys[keyring.currentEpoch]!).toString("base64url");
+      await store.saveSecrets(secrets);
+    }
+    return keyring;
+  }
   const scoped = secrets.scopedVaults?.[vaultId];
   if (!scoped) throw new StatecaseUsageError("selected vault key is unavailable", 2);
   return scoped;
 }
 
-function wipeSyncAccess(access: Buffer | ScopedVaultKeys): void {
+function wipeSyncAccess(access: Buffer | VaultKeyring | ScopedVaultKeys): void {
   if (access instanceof Uint8Array) access.fill(0);
+  else if ("currentEpoch" in access) for (const key of Object.values(access.keys)) key.fill(0);
+}
+
+function decodeVaultKeyring(secrets: LocalSecrets, vaultId: string): VaultKeyring {
+  const stored = secrets.vaultKeyrings?.[vaultId];
+  if (!stored) {
+    const root = secrets.vaultKeys[vaultId];
+    if (!root) throw new StatecaseUsageError("selected vault key is unavailable", 2);
+    const key = Buffer.from(root, "base64url");
+    if (key.byteLength !== 32) throw new StatecaseUsageError("stored vault key is invalid", 6);
+    return { currentEpoch: 1, keys: { 1: key } };
+  }
+  if (!Number.isSafeInteger(stored.currentEpoch) || stored.currentEpoch < 1) throw new StatecaseUsageError("stored vault keyring is invalid", 6);
+  const keys: Record<number, Uint8Array> = {};
+  for (const [epoch, encoded] of Object.entries(stored.keys)) {
+    const key = Buffer.from(encoded, "base64url");
+    if (!/^\d+$/u.test(epoch) || Number(epoch) < 1 || key.byteLength !== 32) throw new StatecaseUsageError("stored vault keyring is invalid", 6);
+    keys[Number(epoch)] = key;
+  }
+  if (!keys[stored.currentEpoch]) throw new StatecaseUsageError("stored vault keyring current epoch is unavailable", 6);
+  return { currentEpoch: stored.currentEpoch, keys };
+}
+
+function encodeVaultKeyring(keyring: { currentEpoch: number; keys: Record<number, Uint8Array> }): { currentEpoch: number; keys: Record<string, string> } {
+  return {
+    currentEpoch: keyring.currentEpoch,
+    keys: Object.fromEntries(Object.entries(keyring.keys).map(([epoch, key]) => [epoch, Buffer.from(key).toString("base64url")])),
+  };
 }
 
 function parseCsv(value: string): string[] {

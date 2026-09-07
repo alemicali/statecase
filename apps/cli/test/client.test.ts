@@ -3,6 +3,16 @@ import { describe, expect, it } from "vitest";
 import { RemoteError, StatecaseClient } from "../src/client.js";
 
 describe("HTTP client contract (PR-001, AU-011)", () => {
+  it("binds enrollment to the recovery epoch while retaining epoch-one compatibility (CR-010)", async () => {
+    const bodies: unknown[] = [];
+    const client = new StatecaseClient("https://statecase.test", "token", async (_input, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return Response.json({ id: "vlt_test", role: "writer" });
+    });
+    await client.joinVault("vlt_test");
+    await client.joinVault("vlt_test", 2);
+    expect(bodies).toEqual([{ keyEpoch: 1 }, { keyEpoch: 2 }]);
+  });
   it("sends bearer identity without exposing it in errors", async () => {
     let authorization: string | null = null;
     const client = new StatecaseClient("https://statecase.test/", "top-secret-token", async (_input, init) => {
@@ -39,6 +49,10 @@ describe("HTTP client contract (PR-001, AU-011)", () => {
       if (path === "/v1/vaults" && init?.method === "POST") return Response.json({ id: "vlt_one", role: "owner" });
       if (path === "/v1/vaults") return Response.json({ vaults: [] });
       if (path.endsWith("/join")) return Response.json({ id: "vlt_one", role: "writer" });
+      if (path.endsWith("/key-recipients")) return Response.json({ keyEpoch: 1, devices: [] });
+      if (path.endsWith("/key-envelope")) return Response.json({ keyEpoch: 2, envelope: "sealed" });
+      if (path.endsWith("/key-envelopes")) return Response.json({ keyEpoch: 2, envelopes: [{ keyEpoch: 2, envelope: "sealed" }] });
+      if (path.endsWith("/key-rotations")) return Response.json({ keyEpoch: 2, rotated: true });
       if (path.endsWith("/head")) return Response.json({ revisionId: null, manifestObjectId: null });
       if (path.endsWith("/namespaces")) return Response.json({ revisionId: "rev_scoped", namespaces: [{ namespace: "workspace:ws_01", revisionId: "nrev_01", manifestObjectId: "obj_manifest" }] });
       if (path.includes("/namespaces/") && path.includes("/revisions/")) return Response.json({ namespace: "workspace:ws_01", revisionId: "nrev_01", manifestObjectId: "obj_manifest", previousRevisionId: null });
@@ -55,12 +69,16 @@ describe("HTTP client contract (PR-001, AU-011)", () => {
     });
     await client.startDeviceCode();
     await client.pollDeviceCode("device");
-    await client.registerDevice({ id: "dev_stable", name: "device" });
+    await client.registerDevice({ id: "dev_stable", name: "device", publicExchangeKey: `stc_x25519_public_v1.${"a".repeat(43)}` });
     await client.listDevices();
     await client.revokeDevice("dev_old");
     await client.createVault("vault");
     await client.listVaults();
     await client.joinVault("vlt_one");
+    await client.vaultKeyRecipients("vlt_one");
+    await client.vaultKeyEnvelope("vlt_one");
+    await client.vaultKeyEnvelopes("vlt_one", 1);
+    await client.rotateVaultKey("vlt_one", { expectedEpoch: 1, newEpoch: 2, envelopes: [{ deviceId: "dev_stable", envelope: "sealed" }] });
     await client.head("vlt_one");
     await client.namespaceHeads("vlt_one");
     await client.namespaceRevision("vlt_one", "workspace:ws_01", "nrev_01");
@@ -69,7 +87,7 @@ describe("HTTP client contract (PR-001, AU-011)", () => {
     await client.createSnapshot("vlt_one", "snapshot");
     await client.listSnapshots("vlt_one");
     await client.deleteSnapshot("vlt_one", "snp_one");
-    await client.createCapability({ id: "cap_one", vaultId: "vlt_one", tokenHash: "a".repeat(43), namespaces: ["workspace:ws_01"], actions: ["read"], expiresAt: 2, keyEnvelope: "opaque" });
+    await client.createCapability({ id: "cap_one", vaultId: "vlt_one", keyEpoch: 1, tokenHash: "a".repeat(43), namespaces: ["workspace:ws_01"], actions: ["read"], expiresAt: 2, keyEnvelope: "opaque" });
     await client.listCapabilities();
     await client.revokeCapability("cap_one");
     await client.redeemBootstrap("stc_boot_" + "a".repeat(43));
@@ -81,6 +99,6 @@ describe("HTTP client contract (PR-001, AU-011)", () => {
     await client.commit("vlt_one", {
       protocolVersion: "1.0", operationId: "op_one", baseRevisionId: null, revisionId: "rev_one", manifestObjectId: "obj_one", requiredObjectIds: [],
     });
-    expect(calls).toHaveLength(24);
+    expect(calls).toHaveLength(28);
   });
 });

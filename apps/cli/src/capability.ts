@@ -11,6 +11,7 @@ const encodedKey = z.string().regex(/^[A-Za-z0-9_-]{43}$/u);
 const payloadSchema = z.object({
   version: z.literal(1),
   vaultId: identifier,
+  keyEpoch: z.number().int().positive().optional(),
   namespaces: z.array(identifier).min(1).max(64),
   actions: z.array(z.enum(["read", "append"])).min(1).max(2),
   expiresAt: z.number().int().positive(),
@@ -19,6 +20,7 @@ const payloadSchema = z.object({
 
 export interface ScopedVaultKeys {
   vaultId: string;
+  keyEpoch?: number;
   namespaces: string[];
   actions: Array<"read" | "append">;
   expiresAt: number;
@@ -27,6 +29,7 @@ export interface ScopedVaultKeys {
 
 export async function createBootstrapCapability(input: {
   vaultId: string;
+  keyEpoch: number;
   vaultKey: Uint8Array;
   namespaces: string[];
   actions: Array<"read" | "append">;
@@ -46,6 +49,7 @@ export async function createBootstrapCapability(input: {
     const payload = payloadSchema.parse({
       version: 1,
       vaultId: input.vaultId,
+      keyEpoch: input.keyEpoch,
       namespaces: [...input.namespaces].sort((left, right) => left.localeCompare(right, "en")),
       actions: [...input.actions].sort((left, right) => left.localeCompare(right, "en")),
       expiresAt: input.expiresAt,

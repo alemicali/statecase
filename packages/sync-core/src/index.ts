@@ -115,7 +115,14 @@ function pathStateEquals(left: PathState | undefined, right: PathState | undefin
   if (!left || !right) return left === right;
   if (left.kind !== right.kind) return false;
   if (left.kind === "tombstone") return true;
-  return canonicalJson(left.value) === canonicalJson((right as Extract<PathState, { kind: "entry" }>).value);
+  return semanticEntry(left.value) === semanticEntry((right as Extract<PathState, { kind: "entry" }>).value);
+}
+
+// Callers normalize keyed content digests into one epoch before comparing.
+// Encryption and chunk boundaries describe storage, not a user's file edit.
+function semanticEntry(entry: ManifestEntry): string {
+  const { objectIds: _objects, chunking: _chunking, keyEpoch: _epoch, ...semantic } = entry;
+  return canonicalJson(semantic);
 }
 
 function allPaths(...states: NamespaceState[]): string[] {
@@ -177,6 +184,7 @@ export interface NamespaceHead {
   namespace: string;
   revisionId: string;
   manifestObjectId: string;
+  keyEpoch?: number;
 }
 
 export interface NamespaceRevision extends NamespaceHead {
@@ -441,11 +449,13 @@ export class VaultCoordinatorCore {
         namespace: update.namespace,
         revisionId: update.namespaceRevisionId,
         manifestObjectId: update.manifestObjectId,
+        ...(update.keyEpoch === undefined ? {} : { keyEpoch: update.keyEpoch }),
       } satisfies NamespaceHead;
       writes[namespaceRevisionKey(update.namespace, update.namespaceRevisionId)] = {
         namespace: update.namespace,
         revisionId: update.namespaceRevisionId,
         manifestObjectId: update.manifestObjectId,
+        ...(update.keyEpoch === undefined ? {} : { keyEpoch: update.keyEpoch }),
         previousRevisionId: currentHeads.get(update.namespace)?.revisionId ?? null,
       } satisfies NamespaceRevision;
       writes[namespaceRetentionKey(update.namespace, update.namespaceRevisionId)] = {

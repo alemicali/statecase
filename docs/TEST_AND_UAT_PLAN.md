@@ -141,7 +141,30 @@ regression ID.
 - `CR-008`: old envelope readers remain deterministic after new versions ship.
 - `CR-009`: device wrap/unwrap and recovery vectors work across supported Node
   and OS builds.
-- `CR-010`: revoked device cannot obtain newly wrapped keys.
+- `CR-010`: rotation creates a fresh root at exactly the next epoch, commits
+  envelopes for the exact active-device set atomically, and excludes revoked
+  devices. Missing/duplicate recipients, missing exchange keys, membership or
+  epoch races, old-epoch/legacy commits, and stale capability creation fail
+  without partial mutation. Active devices ingest contiguous envelope history;
+  a gap or stale recovery kit fails closed. A lost successful HTTP response is
+  accepted only after decrypting the current device's envelope and matching the
+  candidate key; an unavailable reconciliation preserves the recovery kit and
+  old local authority. Rotation revokes all existing vault capabilities.
+  Regression evidence also covers disjoint offline edits, same-session append
+  merges, and historical Drop/harness restores across epochs; previews leave
+  objects and heads unchanged. The workerd suite exercises late coordinator
+  commits, a persisted epoch floor while D1 remains behind, completion by a
+  valid retry, stale capability insertion after HTTP preflight, immutable
+  device exchange keys, registration that omits an existing public key, and
+  rejection of non-owner envelope issuers inside D1. Injected infrastructure
+  failures remain ambiguous (HTTP 5xx), preserve the durable write fence, and
+  permit a subsequent valid retry without breaking existing coordinator stubs.
+  Enrollment rejects a stale recovery epoch at both the API and D1 insertion
+  boundary with zero added memberships; valid replacement enrollment and
+  idempotent owner enrollment preserve their intended roles.
+  Actual process-reset/late-D1 completion fault injection remains a release
+  qualification case; injecting a durable floor proves fencing and retry, not
+  the whole infrastructure failure sequence.
 
 ### 4.4 Ignore and filesystem policy
 
@@ -549,11 +572,24 @@ packaged live workspace portion passed separately; see
 
 ### UAT-09 Lost device and recovery
 
-Revoke a device, attempt remote access from it, enroll a clean replacement with
-recovery material, and restore selected state.
+Create at least two independently authorized persistent devices and publish a
+namespace at epoch one. Revoke one device, rotate from the remaining owner with
+a new encrypted keyring kit, and publish changed data at epoch two. Verify a
+second still-active device automatically unwraps its envelope. Attempt pull and
+write from the revoked device, then enroll a clean replacement. First try the
+epoch-one kit and confirm it fails closed; use the new kit and restore both
+historical and current state. Also inject a connection loss after the live
+rotation mutation and reconcile from the device envelope, then repeat with the
+reconciliation endpoint unavailable and confirm the new kit is preserved.
 
-Acceptance: revoked writes fail; replacement succeeds; recovery material is
-not logged; pre-revocation local plaintext limitations are clearly stated.
+Acceptance: the D1 epoch and envelope set advance atomically; no envelope exists
+for the revoked device; its old key cannot decrypt epoch-two objects or commit
+old-epoch state; active peers and the replacement converge; existing
+capabilities are unusable; stale recovery does not become local authority; an
+ambiguous result never deletes the candidate kit; recovery material is absent
+from logs/output; pre-revocation local plaintext limitations are clearly
+stated. Remove every disposable account, vault, object, token, and sandbox and
+restore the production signup allowlist after the drill.
 
 ### UAT-10 Product isolation
 

@@ -1,12 +1,13 @@
+import { randomBytes } from "node:crypto";
 import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { randomKey } from "@statecase/crypto";
+import { deriveRecoveryKey, encryptEnvelope, randomKey } from "@statecase/crypto";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ConfigStore } from "../src/config.js";
-import { readRecoveryKit, writeRecoveryKit } from "../src/recovery.js";
+import { readRecoveryKeyringKit, readRecoveryKit, writeRecoveryKeyringKit, writeRecoveryKit } from "../src/recovery.js";
 
 const temporary: string[] = [];
 
@@ -54,8 +55,81 @@ describe("CLI local security and recovery (CR-007, CR-009, AU-011)", () => {
     const key = await randomKey();
     await writeRecoveryKit(path, "vlt_one", key, "correct horse battery staple");
     expect(await readRecoveryKit(path, "vlt_one", "correct horse battery staple")).toEqual(key);
+    expect(await readRecoveryKeyringKit(path, "vlt_one", "correct horse battery staple")).toEqual({ currentEpoch: 1, keys: { 1: key } });
     await expect(readRecoveryKit(path, "vlt_two", "correct horse battery staple")).rejects.toThrow(/does not match/u);
     await expect(readRecoveryKit(path, "vlt_one", "a completely wrong password")).rejects.toMatchObject({ code: "AUTHENTICATION_FAILED" });
     expect(await readFile(path, "utf8")).not.toContain(Buffer.from(key).toString("base64url"));
   });
+
+  it("preserves every historical vault-key epoch in a versioned encrypted recovery kit (CR-009, CR-010)", async () => {
+    const home = await mkdtemp(join(tmpdir(), "statecase-recovery-keyring-"));
+    temporary.push(home);
+    const path = join(home, "recovery-v2.json");
+    const first = new Uint8Array(32).fill(1);
+    const second = new Uint8Array(32).fill(2);
+    await writeRecoveryKeyringKit(path, "vlt_one", { currentEpoch: 2, keys: { 1: first, 2: second } }, "correct horse battery staple");
+
+    const restored = await readRecoveryKeyringKit(path, "vlt_one", "correct horse battery staple");
+    expect(restored).toEqual({ currentEpoch: 2, keys: { 1: first, 2: second } });
+    expect(await readRecoveryKit(path, "vlt_one", "correct horse battery staple")).toEqual(second);
+    const serialized = await readFile(path, "utf8");
+    expect(serialized).not.toContain(Buffer.from(first).toString("base64url"));
+    expect(serialized).not.toContain(Buffer.from(second).toString("base64url"));
+    await expect(writeRecoveryKeyringKit(join(home, "invalid.json"), "vlt_one", { currentEpoch: 2, keys: { 1: first } }, "correct horse battery staple"))
+      .rejects.toThrow("current epoch");
+  });
+
+  it("rejects malformed encrypted keyring payloads without accepting partial history (CR-010)", async () => {
+    const home = await mkdtemp(join(tmpdir(), "statecase-recovery-malformed-"));
+    temporary.push(home);
+    const encodedKey = Buffer.alloc(32, 4).toString("base64url");
+    const fixtures: Array<[string, unknown, string]> = [
+      ["scalar", null, "malformed"],
+      ["wrong-version", { version: 2, currentEpoch: 1, keys: { 1: encodedKey } }, "malformed"],
+      ["empty", { version: 1, currentEpoch: 1, keys: {} }, "malformed"],
+      ["invalid-epoch", { version: 1, currentEpoch: 1, keys: { 1: encodedKey, "-1": encodedKey } }, "malformed"],
+      ["invalid-key", { version: 1, currentEpoch: 1, keys: { 1: "a" } }, "malformed"],
+      ["missing-current", { version: 1, currentEpoch: 2, keys: { 1: encodedKey } }, "current epoch"],
+    ];
+    for (const [name, payload, message] of fixtures) {
+      const path = join(home, `${name}.json`);
+      await writeEncryptedKeyringPayload(path, payload);
+      await expect(readRecoveryKeyringKit(path, "vlt_one", "correct horse battery staple")).rejects.toThrow(message);
+    }
+
+    const invalidOuter = join(home, "invalid-outer.json");
+    await writeFile(invalidOuter, JSON.stringify({ version: 3, vaultId: "vlt_one", salt: "salt", envelope: "envelope" }));
+    await expect(readRecoveryKeyringKit(invalidOuter, "vlt_one", "correct horse battery staple")).rejects.toThrow("does not match");
+
+    const tooManyKeys = Object.fromEntries(Array.from({ length: 1_001 }, (_, index) => [index + 1, new Uint8Array(32)]));
+    await expect(writeRecoveryKeyringKit(join(home, "too-many.json"), "vlt_one", { currentEpoch: 1, keys: tooManyKeys }, "correct horse battery staple"))
+      .rejects.toThrow("size");
+    await expect(writeRecoveryKeyringKit(join(home, "bad-history.json"), "vlt_one", {
+      currentEpoch: 1,
+      keys: { 1: new Uint8Array(32), 2: new Uint8Array(31) },
+    }, "correct horse battery staple")).rejects.toThrow("invalid epoch");
+  });
 });
+
+async function writeEncryptedKeyringPayload(path: string, payload: unknown): Promise<void> {
+  const salt = randomBytes(16);
+  const recoveryKey = await deriveRecoveryKey("correct horse battery staple", salt);
+  const plaintext = new TextEncoder().encode(JSON.stringify(payload));
+  try {
+    const envelope = await encryptEnvelope({
+      plaintext,
+      key: recoveryKey,
+      dedupKey: recoveryKey,
+      context: { vaultId: "vlt_one", scopeId: "recovery-keyring", compression: "none" },
+    });
+    await writeFile(path, JSON.stringify({
+      version: 2,
+      vaultId: "vlt_one",
+      salt: Buffer.from(salt).toString("base64url"),
+      envelope: Buffer.from(envelope).toString("base64url"),
+    }));
+  } finally {
+    plaintext.fill(0);
+    recoveryKey.fill(0);
+  }
+}

@@ -49,8 +49,10 @@ qualified 2-GiB transfer and concurrent append merge. Daily reachability GC now
 applies 24 hourly, 30 daily, and 12 monthly UTC checkpoints plus protected
 snapshots, Session Capsule pins, and a 30-day grace period. Remaining release
 gates include real-OS service UAT, initialized-submodule hydration, live
-real-version harness restore UAT, post-revocation key rewrapping, key rotation,
-and real-version Codex/Claude fixture certification.
+real-version harness restore UAT, live post-revocation rotation qualification,
+and real-version Codex/Claude fixture certification. Local and workerd coverage
+already exercises fresh vault-key epochs, exact active-device sealed envelopes,
+old-epoch write denial, capability invalidation, and multi-epoch recovery.
 This is not yet a public-production release.
 
 The approved direction lives in:
@@ -181,7 +183,27 @@ atomically written, hardened on systemd, and safely removable with
 Use `device list` to inspect stable installation identities and `device revoke
 <id> --yes` to block a lost installation and all of its bound service sessions.
 Revocation prevents future server access; it cannot erase plaintext already
-present on the lost machine.
+present on the lost machine. Then rotate every vault the device could access
+from a remaining owner device, writing a new recovery artifact to a path that
+does not already exist:
+
+```bash
+read -rsp 'New recovery passphrase: ' STATECASE_RECOVERY_PASSPHRASE && export STATECASE_RECOVERY_PASSPHRASE
+printf '\n'
+statecase --json vault key rotate --recovery-file /secure/new.statecase-recovery.json --yes
+statecase --json sync
+unset STATECASE_RECOVERY_PASSPHRASE
+```
+
+Rotation creates a new root key, excludes revoked members, invalidates existing
+scoped capabilities, and makes the next write for each configured namespace a
+new-epoch snapshot. Keep the new recovery kit and retire the old kit only after
+an active peer has synchronized and a replacement-device recovery drill has
+succeeded. Existing installations without an exchange key must run
+`statecase login` again before rotation. If the mutation outcome cannot be
+confirmed after a connection failure, Statecase leaves local credentials at
+the old epoch and preserves the candidate kit at the reported path; run
+`statecase sync` before attempting another rotation.
 
 Protect the current remote head with `snapshot create <name>`, inspect it with
 `snapshot list`, and recover one configured namespace without touching the

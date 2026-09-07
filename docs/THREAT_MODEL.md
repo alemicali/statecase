@@ -61,6 +61,9 @@ comes from client-side encryption.
 - A fully compromised authorized device can read data already decrypted on it.
 - Revocation prevents future service access but cannot erase copied plaintext or
   keys from a previously authorized device.
+- Post-revocation rotation protects data first encrypted under the new epoch;
+  it does not retroactively hide historical ciphertext that the device already
+  downloaded.
 - A malicious harness running with user filesystem permissions can access what
   that user exposes to it; Statecase minimizes additional credentials/scopes.
 - Availability cannot be guaranteed during provider/network outage; local-first
@@ -82,6 +85,15 @@ Controls:
 - single-use, short-lived, workspace/category/method-scoped bootstrap tokens;
 - refresh rotation, server-side expiry/revocation, audience binding;
 - separate device signing and encryption keys;
+- device-local X25519 exchange keys and per-epoch sealed-box vault-key
+  envelopes; rotation uses a fresh root and the exact active-member set;
+- D1 transaction triggers enforce next-epoch/exact-recipient invariants while
+  the coordinator rechecks commit epochs, persists a write-epoch floor before
+  rotation, and D1 revokes outstanding capabilities; grant insertion checks
+  epoch/active-owner identity transactionally, and registered exchange keys
+  are immutable so recipient discovery cannot race a key replacement;
+- sequential key-history ingestion, multi-epoch encrypted recovery kits, and
+  cryptographic reconciliation of ambiguous rotation responses;
 - CLI redaction and no secret values in arguments or JSON output;
 - append-only ephemeral default and no ephemeral secrets scope;
 - optional secret-file descriptor/secret mount consumed then removed;
@@ -273,6 +285,8 @@ authorization, materialization, deletion/GC, and bootstrap threat surfaces.
 | Risk | Current treatment |
 | --- | --- |
 | Compromised authorized endpoint | disclosed limitation; least scope/revocation |
+| Revoked device retains historical plaintext/key material | fresh-root epoch rotation protects subsequent writes; historical disclosure is irreversible and explicit |
+| Lost response after key rotation | decrypt and constant-time match the device envelope; preserve the recovery kit when outcome cannot be proven |
 | Cloud metadata leakage | opaque revision/object relationships only; identifiers and lifecycle documented in ADR-0017 |
 | Unavailable Git baseline | explicit ask/auto/never policy; bounded system-Git fetch; redacted failure; atomic rollback |
 | Git LFS pointer mistaken for content | baseline pointer scan; explicit auto policy; device-local cache/origin/credentials; size and SHA-256 verification; redacted failure and rollback |

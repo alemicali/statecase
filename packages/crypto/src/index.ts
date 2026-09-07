@@ -29,7 +29,10 @@ export type CryptoFailureCode =
   | "MALFORMED_ENVELOPE"
   | "CONTEXT_MISMATCH"
   | "AUTHENTICATION_FAILED"
-  | "NONCE_REUSE";
+  | "NONCE_REUSE"
+  | "MALFORMED_KEY_ENVELOPE"
+  | "KEY_ENVELOPE_AUTHENTICATION_FAILED"
+  | "KEY_ENVELOPE_CONTEXT_MISMATCH";
 
 export class CryptoFailure extends Error {
   readonly code: CryptoFailureCode;
@@ -59,9 +62,101 @@ export interface ScopeKeys {
   dedupKey: Uint8Array;
 }
 
+export interface DeviceExchangeKeyPair {
+  publicKey: string;
+  privateKey: string;
+}
+
+const PUBLIC_KEY_PREFIX = "stc_x25519_public_v1.";
+const PRIVATE_KEY_PREFIX = "stc_x25519_private_v1.";
+const VAULT_KEY_ENVELOPE_PREFIX = "stc_vault_key_v1.";
+
+interface VaultKeyPayloadV1 {
+  version: 1;
+  vaultId: string;
+  keyEpoch: number;
+  deviceId: string;
+  vaultKey: string;
+}
+
 export async function randomKey(): Promise<Uint8Array> {
   await sodium.ready;
   return sodium.randombytes_buf(KEY_LENGTH);
+}
+
+export async function createDeviceExchangeKeyPair(): Promise<DeviceExchangeKeyPair> {
+  await sodium.ready;
+  const pair = sodium.crypto_box_keypair();
+  return {
+    publicKey: `${PUBLIC_KEY_PREFIX}${encodeBase64(pair.publicKey)}`,
+    privateKey: `${PRIVATE_KEY_PREFIX}${encodeBase64(pair.privateKey)}`,
+  };
+}
+
+export async function sealVaultKeyForDevice(input: {
+  vaultId: string;
+  keyEpoch: number;
+  deviceId: string;
+  vaultKey: Uint8Array;
+  recipientPublicKey: string;
+}): Promise<string> {
+  await sodium.ready;
+  requireKey(input.vaultKey, "vault key");
+  validateKeyEnvelopeContext(input.vaultId, input.keyEpoch, input.deviceId);
+  const publicKey = decodeTaggedKey(input.recipientPublicKey, PUBLIC_KEY_PREFIX, sodium.crypto_box_PUBLICKEYBYTES);
+  const payload: VaultKeyPayloadV1 = {
+    version: 1,
+    vaultId: input.vaultId,
+    keyEpoch: input.keyEpoch,
+    deviceId: input.deviceId,
+    vaultKey: encodeBase64(input.vaultKey),
+  };
+  const ciphertext = sodium.crypto_box_seal(encoder.encode(canonicalJson(payload)), publicKey);
+  return `${VAULT_KEY_ENVELOPE_PREFIX}${encodeBase64(ciphertext)}`;
+}
+
+export async function openVaultKeyEnvelope(input: {
+  envelope: string;
+  expectedVaultId: string;
+  expectedKeyEpoch: number;
+  expectedDeviceId: string;
+  recipientPublicKey: string;
+  recipientPrivateKey: string;
+}): Promise<Uint8Array> {
+  await sodium.ready;
+  validateKeyEnvelopeContext(input.expectedVaultId, input.expectedKeyEpoch, input.expectedDeviceId);
+  const publicKey = decodeTaggedKey(input.recipientPublicKey, PUBLIC_KEY_PREFIX, sodium.crypto_box_PUBLICKEYBYTES);
+  const privateKey = decodeTaggedKey(input.recipientPrivateKey, PRIVATE_KEY_PREFIX, sodium.crypto_box_SECRETKEYBYTES);
+  const ciphertext = decodeTaggedKey(
+    input.envelope,
+    VAULT_KEY_ENVELOPE_PREFIX,
+    undefined,
+    sodium.crypto_box_SEALBYTES + 1,
+  );
+  let plaintext: Uint8Array;
+  try {
+    plaintext = sodium.crypto_box_seal_open(ciphertext, publicKey, privateKey);
+  } catch {
+    throw new CryptoFailure("KEY_ENVELOPE_AUTHENTICATION_FAILED", "vault key envelope authentication failed");
+  }
+  let parsed: VaultKeyPayloadV1;
+  try {
+    const value = JSON.parse(decoder.decode(plaintext)) as unknown;
+    parsed = requireVaultKeyPayload(value);
+  } catch (error) {
+    if (error instanceof CryptoFailure) throw error;
+    throw new CryptoFailure("MALFORMED_KEY_ENVELOPE", "vault key envelope is malformed or unsupported");
+  } finally {
+    plaintext.fill(0);
+  }
+  if (
+    parsed.vaultId !== input.expectedVaultId ||
+    parsed.keyEpoch !== input.expectedKeyEpoch ||
+    parsed.deviceId !== input.expectedDeviceId
+  ) {
+    throw new CryptoFailure("KEY_ENVELOPE_CONTEXT_MISMATCH", "vault key envelope context does not match the requesting device");
+  }
+  return decodeVaultKey(parsed.vaultKey);
 }
 
 export async function deriveScopeKey(rootKey: Uint8Array, scope: string): Promise<ScopeKeys> {
@@ -203,6 +298,52 @@ function derive(rootKey: Uint8Array, context: string): Uint8Array {
   return sodium.crypto_generichash(KEY_LENGTH, encoder.encode(context), rootKey);
 }
 
+function encodeBase64(value: Uint8Array): string {
+  return sodium.to_base64(value, sodium.base64_variants.URLSAFE_NO_PADDING);
+}
+
+function decodeTaggedKey(value: string, prefix: string, exactLength?: number, minimumLength?: number): Uint8Array {
+  if (typeof value !== "string" || !value.startsWith(prefix)) malformedKeyEnvelope();
+  let decoded: Uint8Array;
+  try {
+    decoded = sodium.from_base64(value.slice(prefix.length), sodium.base64_variants.URLSAFE_NO_PADDING);
+  } catch {
+    malformedKeyEnvelope();
+  }
+  if ((exactLength !== undefined && decoded.byteLength !== exactLength) ||
+      (minimumLength !== undefined && decoded.byteLength < minimumLength)) malformedKeyEnvelope();
+  return decoded;
+}
+
+function validateKeyEnvelopeContext(vaultId: string, keyEpoch: number, deviceId: string): void {
+  if (vaultId.length === 0 || deviceId.length === 0) throw new TypeError("vault and device IDs are required");
+  if (!Number.isSafeInteger(keyEpoch) || keyEpoch < 1) throw new TypeError("key epoch must be a positive safe integer");
+}
+
+function requireVaultKeyPayload(value: unknown): VaultKeyPayloadV1 {
+  if (!value || typeof value !== "object" || Array.isArray(value)) malformedKeyEnvelope();
+  const record = value as Record<string, unknown>;
+  const expectedKeys = ["deviceId", "keyEpoch", "vaultId", "vaultKey", "version"];
+  if (Object.keys(record).sort().join("\0") !== expectedKeys.join("\0") ||
+      record.version !== 1 ||
+      typeof record.vaultId !== "string" || record.vaultId.length === 0 ||
+      typeof record.deviceId !== "string" || record.deviceId.length === 0 ||
+      typeof record.keyEpoch !== "number" || !Number.isSafeInteger(record.keyEpoch) || record.keyEpoch < 1 ||
+      typeof record.vaultKey !== "string") malformedKeyEnvelope();
+  return record as unknown as VaultKeyPayloadV1;
+}
+
+function decodeVaultKey(value: string): Uint8Array {
+  let decoded: Uint8Array;
+  try {
+    decoded = sodium.from_base64(value, sodium.base64_variants.URLSAFE_NO_PADDING);
+  } catch {
+    malformedKeyEnvelope();
+  }
+  if (decoded.byteLength !== KEY_LENGTH) malformedKeyEnvelope();
+  return decoded;
+}
+
 function nonceToken(key: Uint8Array, nonce: Uint8Array): string {
   const digest = sodium.crypto_generichash(16, nonce, key);
   return sodium.to_base64(digest, sodium.base64_variants.URLSAFE_NO_PADDING);
@@ -277,6 +418,10 @@ function requireKey(key: Uint8Array, name: string): void {
 
 function malformed(): never {
   throw new CryptoFailure("MALFORMED_ENVELOPE", "encrypted object envelope is malformed or unsupported");
+}
+
+function malformedKeyEnvelope(): never {
+  throw new CryptoFailure("MALFORMED_KEY_ENVELOPE", "vault key envelope is malformed or unsupported");
 }
 
 function concat(left: Uint8Array, right: Uint8Array): Uint8Array {

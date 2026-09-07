@@ -4,6 +4,7 @@ import { InMemoryCoordinatorStorage, VaultCoordinatorCore } from "@statecase/syn
 
 import {
   ControlPlaneError,
+  RecoveryEpochConflict,
   createCloudApp,
   runScheduledGarbageCollection,
   type AuthService,
@@ -36,7 +37,21 @@ function fixture(options: { authenticated?: boolean; authorized?: boolean; admin
         coordinator = new VaultCoordinatorCore(new InMemoryCoordinatorStorage());
         coordinators.set(vaultId, coordinator);
       }
-      return coordinator;
+      return {
+        head: () => coordinator.head(),
+        revision: (id) => coordinator.revision(id),
+        commit: (request) => coordinator.commit(request),
+        listSnapshots: () => coordinator.listSnapshots(),
+        createSnapshot: (input) => coordinator.createSnapshot(input),
+        deleteSnapshot: (id) => coordinator.deleteSnapshot(id),
+        namespaceHeads: (allowed) => coordinator.namespaceHeads(allowed),
+        namespaceRevision: (namespace, id) => coordinator.namespaceRevision(namespace, id),
+        scopedHead: () => coordinator.scopedHead(),
+        commitNamespaces: (request) => coordinator.commitNamespaces(request),
+        scopedRevision: (id) => coordinator.scopedRevision(id),
+        planGarbageCollection: (input) => coordinator.planGarbageCollection(input),
+        finalizeGarbageCollection: (id) => coordinator.finalizeGarbageCollection(id),
+      };
     },
     control,
     capabilities: new MemoryCapabilities(),
@@ -82,13 +97,24 @@ describe("Cloud API contract (PR-001..PR-015)", () => {
     const response = await fixture({ authorized: false }).app.request("/v1/vaults/vlt_other/head");
     expect(response.status).toBe(404);
     expect(await response.json()).toMatchObject({ error: { code: "NOT_FOUND" } });
+    expect((await fixture({ authorized: false }).app.request("/v1/vaults/vlt_other/key-envelope")).status).toBe(404);
+    expect((await fixture({ authorized: false }).app.request("/v1/vaults/vlt_other/key-envelopes?afterEpoch=0")).status).toBe(404);
+    expect((await fixture({ adminAuthorized: false }).app.request("/v1/vaults/vlt_other/key-recipients")).status).toBe(404);
+    expect((await fixture({ adminAuthorized: false }).app.request("/v1/vaults/vlt_other/key-rotations", {
+      method: "POST",
+      body: JSON.stringify({ expectedEpoch: 1, newEpoch: 2, envelopes: [{ deviceId: "dev_01", envelope: "opaque" }] }),
+    })).status).toBe(404);
   });
 
   it("registers the current device and manages account vaults", async () => {
     const { app } = fixture();
+    expect((await app.request("/v1/devices/current", {
+      method: "POST",
+      body: JSON.stringify({ id: "dev_bad", name: "Invalid exchange key", publicExchangeKey: "exchange" }),
+    })).status).toBe(400);
     const registered = await app.request("/v1/devices/current", {
       method: "POST",
-      body: JSON.stringify({ id: "dev_01", name: "Test laptop", publicSigningKey: "sign", publicExchangeKey: "exchange" }),
+      body: JSON.stringify({ id: "dev_01", name: "Test laptop", publicSigningKey: "sign", publicExchangeKey: `stc_x25519_public_v1.${"a".repeat(43)}` }),
     });
     expect(registered.status).toBe(200);
     expect(await registered.json()).toEqual({ accountId: "acct_01", deviceId: "dev_01", name: "Test laptop" });
@@ -99,6 +125,24 @@ describe("Cloud API contract (PR-001..PR-015)", () => {
     expect(vault).toMatchObject({ id: "vlt_test", name: "Personal", role: "owner" });
     expect(await (await app.request("/v1/vaults")).json()).toEqual({ vaults: [vault] });
     expect((await app.request(`/v1/vaults/${vault.id}/join`, { method: "POST" })).status).toBe(200);
+  });
+
+  it("validates enrollment epochs and reports stale recovery before membership mutation (CR-010, AU-008)", async () => {
+    const { app, services } = fixture();
+    const join = vi.fn(async (_principal: Principal, id: string, epoch = 1) => {
+      if (epoch !== 2) throw new RecoveryEpochConflict();
+      return { id, role: "writer" as const };
+    });
+    services.control.joinVault = join;
+    for (const body of ["{", "null", '{"keyEpoch":0}', '{"keyEpoch":1.5}', '{"unknown":1}']) {
+      expect((await app.request("/v1/vaults/vlt_test/join", { method: "POST", body })).status).toBe(400);
+    }
+    expect(join).not.toHaveBeenCalled();
+    const stale = await app.request("/v1/vaults/vlt_test/join", { method: "POST" });
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toMatchObject({ error: { code: "KEY_EPOCH_CONFLICT" } });
+    expect((await app.request("/v1/vaults/vlt_test/join", { method: "POST", body: JSON.stringify({ keyEpoch: 2 }) })).status).toBe(200);
+    expect(join).toHaveBeenLastCalledWith(principal, "vlt_test", 2);
   });
 
   it("lists and revokes account devices without leaking unknown IDs (AU-008, AU-009)", async () => {
@@ -120,6 +164,100 @@ describe("Cloud API contract (PR-001..PR-015)", () => {
     ] });
   });
 
+  it("rotates a vault key epoch only for the exact active-device set (CR-010, AU-008)", async () => {
+    const { app, control } = fixture();
+    await app.request("/v1/devices/current", {
+      method: "POST",
+      body: JSON.stringify({ id: "dev_01", name: "Laptop", publicExchangeKey: `stc_x25519_public_v1.${"a".repeat(43)}` }),
+    });
+    const created = await app.request("/v1/vaults", { method: "POST", body: JSON.stringify({ name: "Personal" }) });
+    const vault = await created.json() as { id: string };
+    control.addVaultDevice(vault.id, { id: "dev_old", publicExchangeKey: `stc_x25519_public_v1.${"b".repeat(43)}` });
+
+    const recipients = await app.request(`/v1/vaults/${vault.id}/key-recipients`);
+    expect(recipients.status).toBe(200);
+    expect(await recipients.json()).toEqual({
+      keyEpoch: 1,
+      devices: [
+        { id: "dev_01", publicExchangeKey: `stc_x25519_public_v1.${"a".repeat(43)}` },
+        { id: "dev_old", publicExchangeKey: `stc_x25519_public_v1.${"b".repeat(43)}` },
+      ],
+    });
+
+    const incomplete = await app.request(`/v1/vaults/${vault.id}/key-rotations`, {
+      method: "POST",
+      body: JSON.stringify({ expectedEpoch: 1, newEpoch: 2, envelopes: [{ deviceId: "dev_01", envelope: "sealed-for-current" }] }),
+    });
+    expect(incomplete.status).toBe(409);
+    expect(await incomplete.json()).toMatchObject({ error: { code: "KEY_RECIPIENT_MISMATCH" } });
+
+    const rotated = await app.request(`/v1/vaults/${vault.id}/key-rotations`, {
+      method: "POST",
+      body: JSON.stringify({
+        expectedEpoch: 1,
+        newEpoch: 2,
+        envelopes: [
+          { deviceId: "dev_01", envelope: "sealed-for-current" },
+          { deviceId: "dev_old", envelope: "sealed-for-old" },
+        ],
+      }),
+    });
+    expect(rotated.status).toBe(201);
+    expect(await rotated.json()).toEqual({ keyEpoch: 2, rotated: true });
+
+    const envelope = await app.request(`/v1/vaults/${vault.id}/key-envelope`);
+    expect(envelope.status).toBe(200);
+    expect(envelope.headers.get("cache-control")).toBe("no-store");
+    expect(await envelope.json()).toEqual({ keyEpoch: 2, envelope: "sealed-for-current" });
+    expect(await (await app.request(`/v1/vaults/${vault.id}/key-envelopes?afterEpoch=1`)).json()).toEqual({
+      keyEpoch: 2,
+      envelopes: [{ keyEpoch: 2, envelope: "sealed-for-current" }],
+    });
+    expect((await app.request(`/v1/vaults/${vault.id}/key-envelopes?afterEpoch=-1`)).status).toBe(400);
+
+    const duplicate = await app.request(`/v1/vaults/${vault.id}/key-rotations`, {
+      method: "POST",
+      body: JSON.stringify({ expectedEpoch: 2, newEpoch: 3, envelopes: [
+        { deviceId: "dev_01", envelope: "first" },
+        { deviceId: "dev_01", envelope: "duplicate" },
+      ] }),
+    });
+    expect(duplicate.status).toBe(400);
+
+    const stale = await app.request(`/v1/vaults/${vault.id}/key-rotations`, {
+      method: "POST",
+      body: JSON.stringify({ expectedEpoch: 1, newEpoch: 2, envelopes: [
+        { deviceId: "dev_01", envelope: "replacement" },
+        { deviceId: "dev_old", envelope: "replacement" },
+      ] }),
+    });
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toMatchObject({ error: { code: "KEY_EPOCH_CONFLICT" } });
+
+    const objectBase = `/v1/vaults/${vault.id}/namespaces/drop%3Arotated/objects`;
+    await app.request(`${objectBase}/obj_manifest`, { method: "PUT", body: Uint8Array.of(1) });
+    await app.request(`${objectBase}/obj_chunk`, { method: "PUT", body: Uint8Array.of(2) });
+    const oldEpochBase = scopedCommit("op_old_epoch", "srev_old_epoch", "drop:rotated", null, "nrev_old_epoch", "replace", "pth_old");
+    const oldEpoch = { ...oldEpochBase, updates: [{ ...oldEpochBase.updates[0]!, keyEpoch: 1 }] };
+    const rejectedCommit = await app.request(`/v1/vaults/${vault.id}/namespace-commits`, {
+      method: "POST", body: JSON.stringify(oldEpoch),
+    });
+    expect(rejectedCommit.status).toBe(409);
+    expect(await rejectedCommit.json()).toMatchObject({ error: { code: "KEY_EPOCH_CONFLICT" } });
+    const rejectedLegacy = await app.request(`/v1/vaults/${vault.id}/commits`, {
+      method: "POST",
+      body: JSON.stringify(commit("op_legacy_after_rotation", null, "rev_legacy_after_rotation", "obj_manifest", ["obj_chunk"])),
+    });
+    expect(rejectedLegacy.status).toBe(409);
+    expect(await rejectedLegacy.json()).toMatchObject({ error: { code: "KEY_EPOCH_CONFLICT" } });
+    const currentEpoch = { ...oldEpoch, operationId: "op_new_epoch", vaultRevisionId: "srev_new_epoch", updates: [
+      { ...oldEpoch.updates[0]!, namespaceRevisionId: "nrev_new_epoch", keyEpoch: 2 },
+    ] };
+    expect((await app.request(`/v1/vaults/${vault.id}/namespace-commits`, {
+      method: "POST", body: JSON.stringify(currentEpoch),
+    })).status).toBe(200);
+  });
+
   it("creates, lists, redeems once, and revokes redacted ephemeral capabilities (AU-003..AU-007)", async () => {
     const { app } = fixture();
     const token = `stc_boot_${"a".repeat(43)}`;
@@ -128,6 +266,7 @@ describe("Cloud API contract (PR-001..PR-015)", () => {
       body: JSON.stringify({
         id: "cap_01",
         vaultId: "vlt_01",
+        keyEpoch: 1,
         tokenHash: await sha256(token),
         namespaces: ["workspace:ws_01", "harness:codex:sandbox"],
         actions: ["read", "append"],
@@ -163,6 +302,7 @@ describe("Cloud API contract (PR-001..PR-015)", () => {
     const valid = {
       id: "cap_invalid",
       vaultId: "vlt_01",
+      keyEpoch: 1,
       tokenHash: "a".repeat(43),
       namespaces: ["workspace:ws_01"],
       actions: ["read"],
@@ -553,12 +693,26 @@ class MemoryObjects implements ObjectStore {
 
 class MemoryControl implements ControlPlane {
   readonly #vaults: Array<{ id: string; name: string; role: "owner" }> = [];
-  readonly #devices = new Map<string, { id: string; name: string; status: "active" | "revoked" }>([
+  readonly #devices = new Map<string, { id: string; name: string; status: "active" | "revoked"; publicExchangeKey?: string }>([
     ["dev_old", { id: "dev_old", name: "Old laptop", status: "active" }],
   ]);
+  readonly #vaultDevices = new Map<string, Set<string>>();
+  readonly #keyEpochs = new Map<string, number>();
+  readonly #keyEnvelopes = new Map<string, string>();
 
-  async registerDevice(principalValue: Principal, input: { id: string; name: string }): Promise<{ accountId: string; deviceId: string; name: string }> {
-    this.#devices.set(input.id, { id: input.id, name: input.name, status: "active" });
+  addVaultDevice(vaultId: string, device: { id: string; publicExchangeKey: string }): void {
+    const existing = this.#devices.get(device.id);
+    this.#devices.set(device.id, {
+      id: device.id,
+      name: existing?.name ?? device.id,
+      status: "active",
+      publicExchangeKey: device.publicExchangeKey,
+    });
+    this.#vaultDevices.get(vaultId)?.add(device.id);
+  }
+
+  async registerDevice(principalValue: Principal, input: { id: string; name: string; publicExchangeKey?: string }): Promise<{ accountId: string; deviceId: string; name: string }> {
+    this.#devices.set(input.id, { id: input.id, name: input.name, status: "active", publicExchangeKey: input.publicExchangeKey });
     return { accountId: principalValue.accountId, deviceId: input.id, name: input.name };
   }
 
@@ -575,6 +729,8 @@ class MemoryControl implements ControlPlane {
   async createVault(_principalValue: Principal, input: { name: string }): Promise<{ id: string; name: string; role: "owner" }> {
     const vault = { id: "vlt_test", name: input.name, role: "owner" as const };
     this.#vaults.push(vault);
+    this.#vaultDevices.set(vault.id, new Set([principal.deviceId]));
+    this.#keyEpochs.set(vault.id, 1);
     return vault;
   }
 
@@ -583,7 +739,56 @@ class MemoryControl implements ControlPlane {
   }
 
   async joinVault(_principalValue: Principal, vaultId: string): Promise<{ id: string; role: "owner" }> {
+    this.#vaultDevices.get(vaultId)?.add(principal.deviceId);
     return { id: vaultId, role: "owner" };
+  }
+
+  async listVaultKeyRecipients(_principalValue: Principal, vaultId: string): Promise<{ keyEpoch: number; devices: Array<{ id: string; publicExchangeKey: string }> }> {
+    const devices = [...(this.#vaultDevices.get(vaultId) ?? [])]
+      .map((id) => this.#devices.get(id))
+      .filter((device): device is NonNullable<typeof device> & { publicExchangeKey: string } =>
+        device?.status === "active" && typeof device.publicExchangeKey === "string")
+      .map((device) => ({ id: device.id, publicExchangeKey: device.publicExchangeKey }))
+      .sort((left, right) => left.id.localeCompare(right.id, "en"));
+    return { keyEpoch: this.#keyEpochs.get(vaultId) ?? 1, devices };
+  }
+
+  async vaultKeyEnvelope(principalValue: Principal, vaultId: string): Promise<{ keyEpoch: number; envelope: string } | null> {
+    const keyEpoch = this.#keyEpochs.get(vaultId) ?? 1;
+    const envelope = this.#keyEnvelopes.get(`${vaultId}:${keyEpoch}:${principalValue.deviceId}`);
+    return envelope ? { keyEpoch, envelope } : null;
+  }
+
+  async vaultKeyEnvelopes(principalValue: Principal, vaultId: string, afterEpoch: number): Promise<{
+    keyEpoch: number;
+    envelopes: Array<{ keyEpoch: number; envelope: string }>;
+  }> {
+    const keyEpoch = this.#keyEpochs.get(vaultId) ?? 1;
+    const current = await this.vaultKeyEnvelope(principalValue, vaultId);
+    return { keyEpoch, envelopes: current && current.keyEpoch > afterEpoch ? [current] : [] };
+  }
+
+  async vaultKeyEpoch(_principalValue: Principal, vaultId: string): Promise<number | null> {
+    return this.#keyEpochs.get(vaultId) ?? 1;
+  }
+
+  async rotateVaultKey(_principalValue: Principal, vaultId: string, input: {
+    expectedEpoch: number;
+    newEpoch: number;
+    envelopes: Array<{ deviceId: string; envelope: string }>;
+  }): Promise<{ outcome: "rotated"; keyEpoch: number } | { outcome: "stale-epoch" } | { outcome: "recipient-mismatch" }> {
+    const currentEpoch = this.#keyEpochs.get(vaultId) ?? 1;
+    if (input.expectedEpoch !== currentEpoch || input.newEpoch !== currentEpoch + 1) return { outcome: "stale-epoch" };
+    const active = [...(this.#vaultDevices.get(vaultId) ?? [])]
+      .filter((id) => this.#devices.get(id)?.status === "active")
+      .sort((left, right) => left.localeCompare(right, "en"));
+    const recipients = input.envelopes.map((item) => item.deviceId).sort((left, right) => left.localeCompare(right, "en"));
+    if (active.join("\0") !== recipients.join("\0") || active.some((id) => !this.#devices.get(id)?.publicExchangeKey)) {
+      return { outcome: "recipient-mismatch" };
+    }
+    for (const item of input.envelopes) this.#keyEnvelopes.set(`${vaultId}:${input.newEpoch}:${item.deviceId}`, item.envelope);
+    this.#keyEpochs.set(vaultId, input.newEpoch);
+    return { outcome: "rotated", keyEpoch: input.newEpoch };
   }
 
   async listActiveVaultIds(): Promise<string[]> {

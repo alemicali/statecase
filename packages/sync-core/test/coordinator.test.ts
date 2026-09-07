@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import fc from "fast-check";
 
-import { appendOnlyViolations, InMemoryCoordinatorStorage, mergeNamespace, namespaceStateEquals, VaultCoordinatorCore } from "../src/index.js";
+import { appendOnlyViolations, InMemoryCoordinatorStorage, mergeNamespace, namespaceStateEquals, VaultCoordinatorCore, type NamespaceState } from "../src/index.js";
 
 const first = {
   protocolVersion: "1.0" as const,
@@ -154,6 +154,23 @@ describe("atomic namespace heads for scoped capabilities (AU-004..AU-007, PR-003
     });
   });
 
+  it("persists the cryptographic key epoch on namespace heads and immutable revisions (CR-010)", async () => {
+    const coordinator = new VaultCoordinatorCore(new InMemoryCoordinatorStorage());
+    await coordinator.commitNamespaces({
+      protocolVersion: "1.1",
+      operationId: "op_epoch_02",
+      vaultRevisionId: "rev_epoch_02",
+      updates: [{ ...update("drop:rotated", "nrev_epoch_02"), keyEpoch: 2 }],
+    });
+    expect(await coordinator.namespaceHeads()).toEqual([{
+      namespace: "drop:rotated",
+      revisionId: "nrev_epoch_02",
+      manifestObjectId: "obj_nrev_epoch_02",
+      keyEpoch: 2,
+    }]);
+    expect(await coordinator.namespaceRevision("drop:rotated", "nrev_epoch_02")).toMatchObject({ keyEpoch: 2 });
+  });
+
   it("allows disjoint offline namespace commits while rejecting a stale touched namespace", async () => {
     const coordinator = new VaultCoordinatorCore(new InMemoryCoordinatorStorage());
     await coordinator.commitNamespaces({ protocolVersion: "1.1", operationId: "op_a", vaultRevisionId: "rev_a", updates: [update("drop:a", "nrev_a")] });
@@ -212,6 +229,17 @@ describe("atomic namespace heads for scoped capabilities (AU-004..AU-007, PR-003
 });
 
 describe("three-way namespace merge (SY-002..SY-009)", () => {
+  it("compares authenticated content and semantic metadata, not encryption or chunk layout (CR-010)", () => {
+    const original = { ...entry("file.txt", "same"), keyEpoch: 1, fileMode: 0o100644 };
+    const rewrapped = { ...original, keyEpoch: 2, objectIds: ["obj_new"], chunking: { strategy: "fixed" as const, size: 4096 } };
+    expect(namespaceStateEquals(state(original), state(rewrapped))).toBe(true);
+    expect(namespaceStateEquals(state(original), state({ ...rewrapped, fileMode: 0o100755 }))).toBe(false);
+    expect(namespaceStateEquals(state(original), state({ ...rewrapped, contentDigest: "digest_other" }))).toBe(false);
+    const changed = state(entry("file.txt", "changed"));
+    expect(mergeNamespace(state(original), state(rewrapped), changed, { atomic: false }))
+      .toEqual({ outcome: "merged", state: changed });
+  });
+
   it("merges disjoint additions and preserves both writers", () => {
     const result = mergeNamespace(state(), state(entry("remote.txt", "remote")), state(entry("local.txt", "local")), { atomic: false });
     expect(result).toMatchObject({ outcome: "merged" });
@@ -286,7 +314,7 @@ function entry(logicalPath: string, digest: string) {
   return { namespace, logicalPath, entryType: "file" as const, objectIds: [`obj_${digest}`], totalSize: 1, contentDigest: `digest_${digest}` };
 }
 
-function state(...entries: ReturnType<typeof entry>[]) {
+function state(...entries: NamespaceState["entries"]) {
   return { entries, tombstones: [] as Array<{ namespace: string; logicalPath: string; deletedAt: string }> };
 }
 

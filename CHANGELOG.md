@@ -4,6 +4,24 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Added post-revocation cryptographic key rotation with fresh monotonic vault
+  key epochs, device-local X25519 exchange identities, sealed envelopes for the
+  exact active-member set, transactional D1 recipient enforcement, old-epoch
+  and legacy-write rejection, and automatic capability invalidation. Full-key
+  clients retain authenticated historical keyrings, ingest missing envelopes
+  sequentially, force a namespace snapshot across epoch boundaries, and reject
+  incomplete histories. Version-two recovery kits carry every required epoch
+  and reject stale replacement enrollment. The CLI writes recovery material
+  before mutation, cryptographically reconciles lost successful responses, and
+  preserves the candidate kit whenever the remote outcome remains unknown.
+  Rotation and commit decisions now share the vault coordinator, with a
+  persistent minimum epoch fencing late requests and ambiguous D1 completion.
+  Capability creation validates its epoch and issuer transactionally; registered
+  device exchange keys cannot be silently replaced. Cross-epoch offline merge
+  compares authenticated content rather than ciphertext identities, and
+  historical Drop/harness restore re-encrypts entries while preserving pins.
+  Replacement enrollment now binds the recovery epoch transactionally and
+  rejects stale kits before adding any vault membership.
 - Added forward-forking in-place historical restore for full-key, two-way Drop,
   stopped Codex/Claude mappings, and exact Git workspaces. Restore now excludes daemon/harness
   writers, refuses SQLite/WAL/SHM targets, protects the current cloud head,

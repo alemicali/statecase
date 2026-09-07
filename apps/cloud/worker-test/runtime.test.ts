@@ -1,7 +1,8 @@
 import { env, exports } from "cloudflare:workers";
+import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import type { VaultCoordinator } from "../src/bindings.js";
+import { createCloudServices, type StatecaseEnvironment, type VaultCoordinator } from "../src/bindings.js";
 
 describe("Statecase in workerd (PR-001, PR-005, PR-010, PR-011, AU-001)", () => {
   it("runs the real Worker entrypoint", async () => {
@@ -14,8 +15,196 @@ describe("Statecase in workerd (PR-001, PR-005, PR-010, PR-011, AU-001)", () => 
     const rows = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all<{ name: string }>();
     const names = rows.results.map((row) => row.name);
     expect(names).toEqual(expect.arrayContaining([
-      "vaults", "devices", "device_sessions", "bootstrap_tokens", "capability_grants", "capability_sessions", "user", "session", "deviceCode",
+      "vaults", "devices", "device_sessions", "vault_key_envelopes", "bootstrap_tokens", "capability_grants", "capability_sessions", "user", "session", "deviceCode",
     ]));
+  });
+
+  it("stores a new vault-key epoch atomically for every active member (CR-010, AU-008)", async () => {
+    const signup = await exports.default.fetch("http://statecase.test/api/auth/sign-up/email", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "rotation@statecase.test", name: "Rotation Operator", password: "a-strong-rotation-password" }),
+    });
+    const token = signup.headers.get("set-auth-token");
+    expect(token).toBeTruthy();
+    const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+    const currentPublicKey = `stc_x25519_public_v1.${"a".repeat(43)}`;
+    const peerPublicKey = `stc_x25519_public_v1.${"b".repeat(43)}`;
+    const registered = await exports.default.fetch("http://statecase.test/v1/devices/current", {
+      method: "POST", headers, body: JSON.stringify({ id: "dev_rotation", name: "Rotation device", publicExchangeKey: currentPublicKey }),
+    });
+    const account = await registered.json() as { accountId: string };
+    expect((await exports.default.fetch("http://statecase.test/v1/devices/current", {
+      method: "POST", headers, body: JSON.stringify({ id: "dev_rotation", name: "Same installation" }),
+    })).status).toBe(200);
+    expect(await env.DB.prepare("SELECT public_exchange_key FROM devices WHERE id = 'dev_rotation'").first("public_exchange_key")).toBe(currentPublicKey);
+    expect((await exports.default.fetch("http://statecase.test/v1/devices/current", {
+      method: "POST", headers, body: JSON.stringify({ id: "dev_rotation", name: "Changed key", publicExchangeKey: peerPublicKey }),
+    })).status).toBe(409);
+    await expect(env.DB.prepare("UPDATE devices SET public_exchange_key = ? WHERE id = 'dev_rotation'").bind(peerPublicKey).run())
+      .rejects.toThrow("device exchange key is immutable");
+    const created = await exports.default.fetch("http://statecase.test/v1/vaults", {
+      method: "POST", headers, body: JSON.stringify({ name: "Rotation vault" }),
+    });
+    const vault = await created.json() as { id: string };
+    const now = Date.now();
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO devices (id, account_id, name, public_exchange_key, status, created_at, last_seen_at) VALUES (?, ?, ?, ?, 'active', ?, ?)")
+        .bind("dev_rotation_peer", account.accountId, "Rotation peer", peerPublicKey, now, now),
+      env.DB.prepare("INSERT INTO vault_members (vault_id, device_id, role, created_at) VALUES (?, ?, 'writer', ?)")
+        .bind(vault.id, "dev_rotation_peer", now),
+      env.DB.prepare("INSERT INTO capability_grants (id, account_id, creator_device_id, vault_id, token_hash, namespaces_json, actions_json, key_envelope, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .bind("cap_rotation", account.accountId, "dev_rotation", vault.id, "rotation-token-hash", "[\"drop:rotated\"]", "[\"read\"]", "opaque", now + 60_000, now),
+      env.DB.prepare("INSERT INTO capability_sessions (id, grant_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)")
+        .bind("caps_rotation", "cap_rotation", "rotation-access-hash", now + 60_000, now),
+    ]);
+
+    const recipients = await exports.default.fetch(`http://statecase.test/v1/vaults/${vault.id}/key-recipients`, { headers });
+    expect(await recipients.json()).toEqual({ keyEpoch: 1, devices: [
+      { id: "dev_rotation", publicExchangeKey: currentPublicKey },
+      { id: "dev_rotation_peer", publicExchangeKey: peerPublicKey },
+    ] });
+
+    // The mutation boundary must still require an active owner, not merely
+    // a recipient who was authorized to write ordinary namespace data.
+    await expect(env.DB.prepare(`INSERT INTO vault_key_envelopes
+      (vault_id, key_epoch, device_id, envelope, created_by_device_id, created_at)
+      VALUES (?, 2, 'dev_rotation', 'unauthorized-wrap', 'dev_rotation_peer', ?)`)
+      .bind(vault.id, now).run()).rejects.toThrow("invalid vault key issuer");
+
+    const incomplete = await exports.default.fetch(`http://statecase.test/v1/vaults/${vault.id}/key-rotations`, {
+      method: "POST", headers, body: JSON.stringify({ expectedEpoch: 1, newEpoch: 2, envelopes: [
+        { deviceId: "dev_rotation", envelope: "sealed-current" },
+      ] }),
+    });
+    expect(incomplete.status).toBe(409);
+    expect(await env.DB.prepare("SELECT key_epoch FROM vaults WHERE id = ?").bind(vault.id).first("key_epoch")).toBe(1);
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM vault_key_envelopes WHERE vault_id = ?").bind(vault.id).first("count")).toBe(0);
+
+    const rotated = await exports.default.fetch(`http://statecase.test/v1/vaults/${vault.id}/key-rotations`, {
+      method: "POST", headers, body: JSON.stringify({ expectedEpoch: 1, newEpoch: 2, envelopes: [
+        { deviceId: "dev_rotation", envelope: "sealed-current" },
+        { deviceId: "dev_rotation_peer", envelope: "sealed-peer" },
+      ] }),
+    });
+    expect(rotated.status).toBe(201);
+    expect(await rotated.json()).toEqual({ keyEpoch: 2, rotated: true });
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM vault_key_envelopes WHERE vault_id = ? AND key_epoch = 2").bind(vault.id).first("count")).toBe(2);
+    expect(await env.DB.prepare("SELECT revoked_at FROM capability_grants WHERE id = 'cap_rotation'").first("revoked_at")).toEqual(expect.any(Number));
+    expect(await env.DB.prepare("SELECT revoked_at FROM capability_sessions WHERE id = 'caps_rotation'").first("revoked_at")).toEqual(expect.any(Number));
+    const ownEnvelope = await exports.default.fetch(`http://statecase.test/v1/vaults/${vault.id}/key-envelope`, { headers });
+    expect(ownEnvelope.headers.get("cache-control")).toBe("no-store");
+    expect(await ownEnvelope.json()).toEqual({ keyEpoch: 2, envelope: "sealed-current" });
+    const envelopeHistory = await exports.default.fetch(`http://statecase.test/v1/vaults/${vault.id}/key-envelopes?afterEpoch=1`, { headers });
+    expect(envelopeHistory.headers.get("cache-control")).toBe("no-store");
+    expect(await envelopeHistory.json()).toEqual({ keyEpoch: 2, envelopes: [{ keyEpoch: 2, envelope: "sealed-current" }] });
+    const services = createCloudServices(env as StatecaseEnvironment);
+    const issuer = { accountId: account.accountId, deviceId: "dev_rotation", sessionId: "rotation-fixture", scopes: ["sync"] };
+    const lateCapability = { id: "cap_late_rotation", vaultId: vault.id, keyEpoch: 1, tokenHash: "late-rotation-hash",
+      namespaces: ["drop:rotated"], actions: ["read" as const], expiresAt: Date.now() + 60_000, keyEnvelope: "opaque-old-epoch" };
+    await expect(services.capabilities.create(issuer, lateCapability)).rejects.toThrow("vault key epoch advanced");
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM capability_grants WHERE id = ?").bind(lateCapability.id).first("count")).toBe(0);
+    expect(await services.capabilities.create(issuer, { ...lateCapability, keyEpoch: 2 })).toMatchObject({ id: lateCapability.id });
+
+    const namespace = "drop:rotated-runtime";
+    const objectUrl = `http://statecase.test/v1/vaults/${vault.id}/namespaces/${encodeURIComponent(namespace)}/objects/obj_rotated_manifest`;
+    expect((await exports.default.fetch(objectUrl, { method: "PUT", headers, body: Uint8Array.of(1) })).status).toBe(201);
+    const staleCommit = await exports.default.fetch(`http://statecase.test/v1/vaults/${vault.id}/namespace-commits`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        protocolVersion: "1.1",
+        operationId: "op_rotated_stale",
+        vaultRevisionId: "srev_rotated_stale",
+        updates: [{
+          namespace,
+          keyEpoch: 1,
+          baseNamespaceRevisionId: null,
+          namespaceRevisionId: "nrev_rotated_stale",
+          manifestObjectId: "obj_rotated_manifest",
+          requiredObjectIds: [],
+          mode: "replace",
+          pathClaims: [],
+        }],
+      }),
+    });
+    expect(staleCommit.status).toBe(409);
+    expect(await staleCommit.json()).toMatchObject({ error: { code: "KEY_EPOCH_CONFLICT" } });
+    const legacyCommit = await exports.default.fetch(`http://statecase.test/v1/vaults/${vault.id}/commits`, {
+      method: "POST", headers, body: JSON.stringify({}),
+    });
+    expect(legacyCommit.status).toBe(409);
+    expect(await legacyCommit.json()).toMatchObject({ error: { code: "KEY_EPOCH_CONFLICT" } });
+
+    // Models a request that passed the HTTP epoch check before rotation and
+    // reached the ordered decision boundary only after rotation committed.
+    const coordinator = (env.VAULTS as DurableObjectNamespace<VaultCoordinator>).getByName(vault.id);
+    const delayed = {
+      protocolVersion: "1.1" as const, operationId: "op_delayed_rotation", vaultRevisionId: "srev_delayed_rotation",
+      updates: [{ namespace, keyEpoch: 1, baseNamespaceRevisionId: null,
+        namespaceRevisionId: "nrev_delayed_rotation", manifestObjectId: "obj_rotated_manifest",
+        requiredObjectIds: [], mode: "replace" as const, pathClaims: [] }],
+    };
+    expect(await coordinator.commitNamespaces(delayed, vault.id)).toEqual({ outcome: "key-epoch-conflict" });
+    expect(await coordinator.commit({ protocolVersion: "1.0", operationId: "op_delayed_legacy", revisionId: "rev_delayed_legacy",
+      baseRevisionId: null, manifestObjectId: "obj_rotated_manifest", requiredObjectIds: [] }, vault.id))
+      .toEqual({ outcome: "key-epoch-conflict" });
+    expect(await coordinator.scopedHead()).toBeNull();
+    expect(await coordinator.commitNamespaces({ ...delayed,
+      updates: delayed.updates.map((update) => ({ ...update, keyEpoch: 2 })) }, vault.id))
+      .toMatchObject({ outcome: "committed" });
+    // Persistent intent remains authoritative when a prior D1 mutation has
+    // an unknown outcome; a fresh stub must not reopen the old write epoch.
+    await runInDurableObject(coordinator, async (_instance, state) => {
+      expect(await state.storage.get(`key-epoch-floor:${vault.id}`)).toBe(2);
+      await state.storage.put(`key-epoch-floor:${vault.id}`, 3);
+    });
+    const freshCoordinator = (env.VAULTS as DurableObjectNamespace<VaultCoordinator>).getByName(vault.id);
+    expect(await freshCoordinator.commitNamespaces({ ...delayed,
+      updates: delayed.updates.map((update) => ({ ...update, keyEpoch: 2 })) }, vault.id))
+      .toEqual({ outcome: "key-epoch-conflict" });
+    const completedRetry = await exports.default.fetch(`http://statecase.test/v1/vaults/${vault.id}/key-rotations`, {
+      method: "POST", headers, body: JSON.stringify({ expectedEpoch: 2, newEpoch: 3,
+        envelopes: [{ deviceId: "dev_rotation", envelope: "sealed-current-3" }, { deviceId: "dev_rotation_peer", envelope: "sealed-peer-3" }] }),
+    });
+    expect(completedRetry.status).toBe(201);
+    expect(await freshCoordinator.commitNamespaces({ ...delayed, operationId: "op_retry_rotation", vaultRevisionId: "srev_retry_rotation",
+      updates: delayed.updates.map((update) => ({ ...update, keyEpoch: 3,
+        baseNamespaceRevisionId: "nrev_delayed_rotation", namespaceRevisionId: "nrev_retry_rotation" })) }, vault.id))
+      .toMatchObject({ outcome: "committed" });
+
+    // An infrastructure failure is not evidence that a client can delete its
+    // candidate recovery kit. Preserve an ambiguous 5xx and the durable floor.
+    await env.DB.prepare(`CREATE TRIGGER test_rotation_outage BEFORE INSERT ON vault_key_envelopes
+      BEGIN SELECT RAISE(ABORT, 'injected infrastructure failure'); END`).run();
+    const fourthRotation = { expectedEpoch: 3, newEpoch: 4,
+      envelopes: [{ deviceId: "dev_rotation", envelope: "sealed-current-4" }, { deviceId: "dev_rotation_peer", envelope: "sealed-peer-4" }] };
+    try {
+      const failed = await exports.default.fetch(`http://statecase.test/v1/vaults/${vault.id}/key-rotations`, {
+        method: "POST", headers, body: JSON.stringify(fourthRotation),
+      });
+      expect(failed.status).toBe(500);
+    } finally {
+      await env.DB.prepare("DROP TRIGGER test_rotation_outage").run();
+    }
+    expect(await env.DB.prepare("SELECT key_epoch FROM vaults WHERE id = ?").bind(vault.id).first("key_epoch")).toBe(3);
+    expect(await freshCoordinator.commitNamespaces({ ...delayed,
+      updates: delayed.updates.map((update) => ({ ...update, keyEpoch: 3 })) }, vault.id))
+      .toEqual({ outcome: "key-epoch-conflict" });
+    expect((await exports.default.fetch(`http://statecase.test/v1/vaults/${vault.id}/key-rotations`, {
+      method: "POST", headers, body: JSON.stringify(fourthRotation),
+    })).status).toBe(201);
+
+    await env.DB.prepare("INSERT INTO devices (id, account_id, name, public_exchange_key, status, created_at, last_seen_at) VALUES (?, ?, ?, ?, 'active', ?, ?)")
+      .bind("dev_replacement_rotation", account.accountId, "Replacement", peerPublicKey, now, now).run();
+    const replacement = { ...issuer, deviceId: "dev_replacement_rotation" };
+    await expect(env.DB.prepare("INSERT INTO vault_members (vault_id, device_id, role, created_at, enrolled_key_epoch) VALUES (?, ?, 'writer', ?, 1)")
+      .bind(vault.id, replacement.deviceId, now).run()).rejects.toThrow("invalid vault enrollment epoch");
+    await expect(services.control.joinVault(replacement, vault.id, 1)).rejects.toThrow("recovery kit epoch is stale");
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM vault_members WHERE vault_id = ? AND device_id = ?")
+      .bind(vault.id, replacement.deviceId).first("count")).toBe(0);
+    expect(await services.control.joinVault(replacement, vault.id, 4)).toMatchObject({ role: "writer" });
+    expect(await services.control.joinVault(issuer, vault.id, 4)).toMatchObject({ role: "owner" });
   });
 
   it("issues a real RFC 8628 device code for the registered CLI", async () => {
@@ -185,6 +374,7 @@ describe("Statecase in workerd (PR-001, PR-005, PR-010, PR-011, AU-001)", () => 
       body: JSON.stringify({
         id: capabilityId,
         vaultId: vault.id,
+        keyEpoch: 1,
         tokenHash: await sha256Base64Url(bootstrapToken),
         namespaces: [namespace],
         actions: ["read", "append"],
@@ -277,6 +467,10 @@ describe("Statecase in workerd (PR-001, PR-005, PR-010, PR-011, AU-001)", () => 
   });
 
   it("persists Durable Object commits across stubs", async () => {
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO statecase_accounts (id, created_at, status) VALUES ('acct_coordinator', 1, 'active')"),
+      env.DB.prepare("INSERT INTO vaults (id, account_id, name, created_at, status) VALUES ('vlt_runtime', 'acct_coordinator', 'Coordinator fixture', 1, 'active')"),
+    ]);
     const vaults = env.VAULTS as DurableObjectNamespace<VaultCoordinator>;
     const firstStub = vaults.getByName("vlt_runtime");
     const request = {
@@ -287,7 +481,7 @@ describe("Statecase in workerd (PR-001, PR-005, PR-010, PR-011, AU-001)", () => 
       manifestObjectId: "obj_manifest",
       requiredObjectIds: [],
     };
-    expect(await firstStub.commit(request)).toMatchObject({ outcome: "committed", revisionId: "rev_runtime" });
+    expect(await firstStub.commit(request, "vlt_runtime")).toMatchObject({ outcome: "committed", revisionId: "rev_runtime" });
     expect(await vaults.getByName("vlt_runtime").head()).toEqual({
       revisionId: "rev_runtime",
       manifestObjectId: "obj_manifest",

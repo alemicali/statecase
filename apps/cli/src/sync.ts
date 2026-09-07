@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { classifyClaudePath, claudeProjectDirectory } from "@statecase/adapter-claude";
 import { classifyCodexPath } from "@statecase/adapter-codex";
 import { extractActivityReferences, scanCompleteJsonl, sessionWorkingDirectory, type ActivityReference } from "@statecase/adapter-common";
-import { chunkBytes, concatChunks } from "@statecase/chunking";
+import { chunkBytes, chunkJsonlStream, concatChunks } from "@statecase/chunking";
 import { computeObjectId, computeObjectIdStream, decryptEnvelope, deriveScopeKey, encryptEnvelope } from "@statecase/crypto";
 import {
   canonicalJson,
@@ -129,21 +129,41 @@ export class SessionDependencyError extends Error {
   }
 }
 
+export interface VaultKeyring {
+  currentEpoch: number;
+  keys: Record<number, Uint8Array>;
+}
+
 export class SyncEngine {
   readonly vaultKey?: Uint8Array;
+  readonly vaultKeyring?: VaultKeyring;
+  readonly keyEpoch: number;
   readonly scopedAccess?: ScopedVaultKeys;
 
   constructor(
     readonly client: StatecaseClient,
     readonly vaultId: string,
-    access: Uint8Array | ScopedVaultKeys,
+    access: Uint8Array | VaultKeyring | ScopedVaultKeys,
   ) {
     if (access instanceof Uint8Array) {
       if (access.byteLength !== 32) throw new TypeError("invalid vault key");
       this.vaultKey = access;
+      this.vaultKeyring = { currentEpoch: 1, keys: { 1: access } };
+      this.keyEpoch = 1;
+    } else if ("currentEpoch" in access) {
+      if (!Number.isSafeInteger(access.currentEpoch) || access.currentEpoch < 1 || access.keys[access.currentEpoch]?.byteLength !== 32) {
+        throw new TypeError("invalid vault keyring");
+      }
+      for (const [epoch, key] of Object.entries(access.keys)) {
+        if (!/^\d+$/u.test(epoch) || Number(epoch) < 1 || key.byteLength !== 32) throw new TypeError("invalid vault keyring");
+      }
+      this.vaultKeyring = access;
+      this.vaultKey = access.keys[access.currentEpoch];
+      this.keyEpoch = access.currentEpoch;
     } else {
       if (access.vaultId !== vaultId) throw new TypeError("scoped access belongs to another vault");
       this.scopedAccess = access;
+      this.keyEpoch = access.keyEpoch ?? 1;
     }
   }
 
@@ -438,7 +458,7 @@ export class SyncEngine {
     const createdAt = new Date().toISOString();
     const createdByDeviceId = config.deviceId ?? "capability_sandbox";
     const updates = [];
-    const nextApplied = new Map<string, { revisionId: string; digests: Record<string, string> }>();
+    const nextApplied = new Map<string, { revisionId: string; digests: Record<string, string>; keyEpoch: number }>();
     let objects = 0;
     let bytes = 0;
 
@@ -476,6 +496,7 @@ export class SyncEngine {
       encoded.digests[file.logicalPath] = contentDigest;
       encoded.entries.push({
         namespace: file.namespace,
+        keyEpoch: this.keyEpoch,
         logicalPath: file.logicalPath,
         entryType: file.entryType ?? "file",
         ...(file.workspacePath ? { workspacePath: file.workspacePath } : {}),
@@ -593,30 +614,48 @@ export class SyncEngine {
       const localTombstones = [...baseEntries.values()]
         .filter((entry) => !localPaths.has(entry.logicalPath))
         .map((entry) => ({ namespace, logicalPath: entry.logicalPath, deletedAt: createdAt }));
-      const baseState: NamespaceState = { entries: baseManifest?.entries ?? [], tombstones: baseManifest?.tombstones ?? [] };
+      const originalEntries = new Map<NamespaceManifestV1["entries"][number], NamespaceManifestV1["entries"][number]>();
+      const compareEntriesAtCurrentEpoch = async (entries: NamespaceManifestV1["entries"]): Promise<NamespaceManifestV1["entries"]> => {
+        const compared = [];
+        for (const entry of entries) {
+          const comparable = await this.#entryAtCurrentDigest(entry);
+          originalEntries.set(comparable, entry);
+          compared.push(comparable);
+        }
+        return compared;
+      };
+      const baseState: NamespaceState = { entries: await compareEntriesAtCurrentEpoch(baseManifest?.entries ?? []), tombstones: baseManifest?.tombstones ?? [] };
       const remoteState: NamespaceState = { entries: remoteManifest?.entries ?? [], tombstones: remoteManifest?.tombstones ?? [] };
+      const comparableRemoteState = { ...remoteState, entries: await compareEntriesAtCurrentEpoch(remoteState.entries) };
       const remoteObjectIds = new Set(remoteState.entries.flatMap((entry) => entry.objectIds));
       const localState = { entries: localEntries, tombstones: localTombstones };
       if (mapping.mode === "append") {
         const violations = appendOnlyViolations(baseState, localState);
         if (violations.length > 0) throw new SyncConflict(violations.map((path) => `${namespace}:${path}:append-only`));
       }
-      const mergeRemoteState = maskMergedAppendPaths(remoteState, baseState, appendMergedPaths.get(namespace));
+      const mergeRemoteState = maskMergedAppendPaths(comparableRemoteState, baseState, appendMergedPaths.get(namespace));
       const merged = mergeNamespace(baseState, mergeRemoteState, localState, { atomic: namespace.startsWith("workspace:") });
       if (merged.outcome === "conflict") throw new SyncConflict(merged.paths.map((path) => `${namespace}:${path}`));
       const finalState = merged.state;
+      for (let index = 0; index < finalState.entries.length; index += 1) {
+        const original = originalEntries.get(finalState.entries[index]!);
+        if (!original || (original.keyEpoch ?? 1) === this.keyEpoch) continue;
+        const rekeyed = await this.#rekeyEntry(original, dryRun);
+        finalState.entries[index] = rekeyed;
+        for (const objectId of rekeyed.objectIds) remoteObjectIds.add(objectId);
+      }
       const remoteEntries = new Map(remoteState.entries.map((entry) => [entry.logicalPath, entry]));
       const finalEntries = new Map(finalState.entries.map((entry) => [entry.logicalPath, entry]));
       const changedEntries = finalState.entries.filter((entry) => remoteEntries.get(entry.logicalPath)?.contentDigest !== entry.contentDigest);
       const tombstones = remoteState.entries
         .filter((entry) => !finalEntries.has(entry.logicalPath))
         .map((entry) => finalState.tombstones.find((item) => item.logicalPath === entry.logicalPath) ?? { namespace, logicalPath: entry.logicalPath, deletedAt: createdAt });
-      if (changedEntries.length === 0 && tombstones.length === 0) {
-        if (head) nextApplied.set(namespace, { revisionId: head.revisionId, digests });
+      if (changedEntries.length === 0 && tombstones.length === 0 && (!head || (head.keyEpoch ?? 1) === this.keyEpoch)) {
+        if (head) nextApplied.set(namespace, { revisionId: head.revisionId, digests, keyEpoch: head.keyEpoch ?? 1 });
         continue;
       }
       const namespaceRevisionId = randomId("nrev");
-      const manifestMode = appendOnly && head ? "delta" as const : "snapshot" as const;
+      const manifestMode = appendOnly && head && (head.keyEpoch ?? 1) === this.keyEpoch ? "delta" as const : "snapshot" as const;
       const manifestEntries = manifestMode === "delta" ? changedEntries : finalState.entries;
       const manifestTombstones = manifestMode === "delta" ? tombstones : finalState.tombstones;
       const pathClaims = await Promise.all([
@@ -633,6 +672,7 @@ export class SyncEngine {
         schemaVersion: 1,
         vaultId: this.vaultId,
         namespace,
+        keyEpoch: this.keyEpoch,
         namespaceRevisionId,
         parentNamespaceRevisionIds: head ? [head.revisionId] : [],
         createdAt,
@@ -699,6 +739,7 @@ export class SyncEngine {
       }
       updates.push({
         namespace,
+        keyEpoch: this.keyEpoch,
         baseNamespaceRevisionId: head?.revisionId ?? null,
         namespaceRevisionId,
         manifestObjectId,
@@ -710,7 +751,7 @@ export class SyncEngine {
         pathClaims,
       });
       if (!appendMergedPaths.has(namespace) && namespaceStateEquals(finalState, localState)) {
-        nextApplied.set(namespace, { revisionId: namespaceRevisionId, digests });
+        nextApplied.set(namespace, { revisionId: namespaceRevisionId, digests, keyEpoch: this.keyEpoch });
       }
     }
     if (updates.length === 0) {
@@ -795,6 +836,7 @@ export class SyncEngine {
     const conflicts: VaultManifestV1["conflicts"] = [];
     const sessionCapsules = new Map<string, SessionCapsuleV1>();
     const appliedRevisions = new Map<string, string>();
+    const appliedKeyEpochs = new Map<string, number>();
     let manifestObjects = 0;
 
     for (const [namespace, revisionId] of pins) {
@@ -810,6 +852,7 @@ export class SyncEngine {
       const resolved = await this.#resolveNamespaceManifest(head);
       manifestObjects += resolved.manifestObjects;
       appliedRevisions.set(namespace, head.revisionId);
+      appliedKeyEpochs.set(namespace, head.keyEpoch ?? 1);
       entries.push(...resolved.manifest.entries);
       tombstones.push(...resolved.manifest.tombstones);
       conflicts.push(...resolved.manifest.conflicts);
@@ -844,6 +887,7 @@ export class SyncEngine {
         if (!revisionId) throw new Error(`pinned namespace revision is unavailable: ${namespace}`);
         return revisionId;
       },
+      (namespace) => appliedKeyEpochs.get(namespace) ?? 1,
     );
   }
 
@@ -871,7 +915,8 @@ export class SyncEngine {
     if (manifest.revisionId !== head.revisionId) throw new Error("remote head and manifest revision do not match");
     return this.#materializeManifest(config, dryRun, head.revisionId, manifest, selected, 1,
       (_namespace, objectId) => this.client.getObject(this.vaultId, objectId),
-      () => head.revisionId!);
+      () => head.revisionId!,
+      () => 1);
   }
 
   async restoreInPlace(
@@ -947,6 +992,7 @@ export class SyncEngine {
         1,
         (namespace, objectId) => this.client.getNamespaceObject(this.vaultId, namespace, objectId),
         () => historicalHead.revisionId,
+        () => historicalHead.keyEpoch ?? 1,
         {
           allowLocalOverwrite: true,
           ...(workspaceId ? {
@@ -984,16 +1030,17 @@ export class SyncEngine {
         if (actualPaths.size !== desiredPaths.size || [...desiredPaths].some((path) => !actualPaths.has(path))) {
           throw new Error("restored namespace failed adapter validation");
         }
-        const keys = await this.#scopeKeys(mapping.namespace);
         if (workspaceId) {
           const byPath = new Map(validated.map((entry) => [entry.logicalPath, entry]));
           for (const entry of target.entries) {
+            const keys = await this.#scopeKeys(mapping.namespace, entry.keyEpoch ?? 1);
             const actual = byPath.get(entry.logicalPath);
             if (!actual?.bytes || await computeObjectId(keys.dedupKey, actual.bytes) !== entry.contentDigest) {
               throw new Error("restored workspace failed capsule validation");
             }
           }
         } else {
+          const keys = await this.#scopeKeys(mapping.namespace, historicalHead.keyEpoch ?? 1);
           for (const entry of target.entries) {
             const expected = workingConfig.applied[mapping.namespace]?.digests[entry.logicalPath];
             const actual = await optionalFileDigest(sessionDestination(mapping, entry.logicalPath, workingConfig), keys);
@@ -1012,6 +1059,8 @@ export class SyncEngine {
       const createdAt = new Date().toISOString();
       const createdByDeviceId = workingConfig.deviceId ?? (workingConfig.deviceName ? safeIdentifier(workingConfig.deviceName, "device") : "device_unknown");
       const keys = await this.#scopeKeys(mapping.namespace);
+      const restoredEntries = [];
+      for (const entry of target.entries) restoredEntries.push(await this.#rekeyEntry(entry));
       const currentPaths = new Set(current.entries.map((entry) => entry.logicalPath));
       const pathClaims = [
         ...target.entries.map((entry) => ({
@@ -1026,13 +1075,14 @@ export class SyncEngine {
         schemaVersion: 1,
         vaultId: this.vaultId,
         namespace: mapping.namespace,
+        keyEpoch: this.keyEpoch,
         namespaceRevisionId,
         parentNamespaceRevisionIds: [currentHead.revisionId],
         createdAt,
         createdByDeviceId,
         operationId,
         mode: "snapshot",
-        entries: target.entries,
+        entries: restoredEntries,
         tombstones: combined.tombstones,
         conflicts: [],
         sessionCapsules: target.sessionCapsules ?? [],
@@ -1047,13 +1097,20 @@ export class SyncEngine {
         context: { vaultId: this.vaultId, scopeId: mapping.namespace, compression: "none" },
       });
       await this.client.putNamespaceObject(this.vaultId, mapping.namespace, manifestObjectId, manifestEnvelope);
-      const requiredObjectIds = [...new Set(target.entries.flatMap((entry) => entry.objectIds))];
+      const requiredObjectIds = [...new Set(restoredEntries.flatMap((entry) => entry.objectIds))];
+      if (!workspaceId) {
+        for (const entry of restoredEntries) {
+          workingConfig.applied[mapping.namespace]!.digests[entry.logicalPath] =
+            (await optionalFileDigest(sessionDestination(mapping, entry.logicalPath, workingConfig), keys))!;
+        }
+      }
       const committed = await this.client.commitNamespaces(this.vaultId, {
         protocolVersion: "1.1",
         operationId,
         vaultRevisionId,
         updates: [{
           namespace: mapping.namespace,
+          keyEpoch: this.keyEpoch,
           baseNamespaceRevisionId: currentHead.revisionId,
           namespaceRevisionId,
           manifestObjectId,
@@ -1066,6 +1123,7 @@ export class SyncEngine {
         }],
       });
       workingConfig.applied[mapping.namespace]!.revisionId = namespaceRevisionId;
+      workingConfig.applied[mapping.namespace]!.keyEpoch = this.keyEpoch;
       config.applied[mapping.namespace] = workingConfig.applied[mapping.namespace]!;
       config.sessionBindings = workingConfig.sessionBindings;
       return {
@@ -1099,6 +1157,7 @@ export class SyncEngine {
     manifestObjectCount: number,
     getObject: (namespace: string, objectId: string) => Promise<Uint8Array>,
     appliedRevision: (namespace: string) => string,
+    appliedKeyEpoch: (namespace: string) => number,
     options: MaterializationOptions = {},
   ): Promise<SyncResult> {
     const byNamespace = new Map(selected.map((mapping) => [mapping.namespace, mapping]));
@@ -1114,7 +1173,7 @@ export class SyncEngine {
       const mapping = byNamespace.get(entry.namespace);
       if (!mapping) continue;
       assertRemotePathAllowed(mapping, entry.logicalPath);
-      const keys = await this.#scopeKeys(entry.namespace);
+      const keys = await this.#scopeKeys(entry.namespace, entry.keyEpoch ?? 1);
       const portable = portableSession(entry.logicalPath);
       const streamedSession = mapping.kind !== "drop" && (portable !== undefined || entry.chunking?.strategy === "jsonl-records");
       if (streamedSession) {
@@ -1248,7 +1307,8 @@ export class SyncEngine {
     for (const item of materialized) {
       if (item.sourcePath !== undefined) {
         const remoteSourcePath = item.sourcePath;
-        const currentDigest = await optionalFileDigest(item.path, await this.#scopeKeys(item.mapping.namespace));
+        const appliedKeyEpoch = config.applied[item.mapping.namespace]?.keyEpoch ?? 1;
+        const currentDigest = await optionalFileDigest(item.path, await this.#scopeKeys(item.mapping.namespace, appliedKeyEpoch));
         if (!currentDigest || currentDigest === item.digest) continue;
         const prior = config.applied[item.mapping.namespace]?.digests[item.logicalPath];
         const safeSessionMerge = await isCompleteJsonlFileRecordSupersequence(item.path, remoteSourcePath);
@@ -1257,7 +1317,8 @@ export class SyncEngine {
       }
       const current = await optionalFile(item.path);
       if (!current || bytesEqual(current, item.bytes)) continue;
-      const keys = await this.#scopeKeys(item.mapping.namespace);
+      const appliedKeyEpoch = config.applied[item.mapping.namespace]?.keyEpoch ?? 1;
+      const keys = await this.#scopeKeys(item.mapping.namespace, appliedKeyEpoch);
       const currentDigest = await computeObjectId(keys.dedupKey, current);
       const prior = config.applied[item.mapping.namespace]?.digests[item.logicalPath];
       const safeSessionMerge = item.mapping.kind !== "drop" && portableSession(item.logicalPath) !== undefined && isCompleteJsonlRecordSupersequence(current, item.bytes);
@@ -1268,7 +1329,8 @@ export class SyncEngine {
     for (const item of deletions) {
       const current = await optionalFile(item.path);
       if (!current) continue;
-      const keys = await this.#scopeKeys(item.mapping.namespace);
+      const appliedKeyEpoch = config.applied[item.mapping.namespace]?.keyEpoch ?? 1;
+      const keys = await this.#scopeKeys(item.mapping.namespace, appliedKeyEpoch);
       const currentDigest = await computeObjectId(keys.dedupKey, current);
       const prior = config.applied[item.mapping.namespace]?.digests[item.logicalPath];
       if (!prior || currentDigest !== prior) conflicts.push(item.path);
@@ -1303,7 +1365,11 @@ export class SyncEngine {
       for (const item of materialized.filter((candidate) => candidate.mapping.namespace === mapping.namespace)) {
         digests[item.logicalPath] = item.digest;
       }
-      config.applied[mapping.namespace] = { revisionId: appliedRevision(mapping.namespace), digests };
+      config.applied[mapping.namespace] = {
+        revisionId: appliedRevision(mapping.namespace),
+        digests,
+        keyEpoch: appliedKeyEpoch(mapping.namespace),
+      };
     }
     recordMaterializedSessionBindings(config, materialized, deletions);
     return { outcome: "pulled", revisionId: remoteRevisionId, files: materialized.length + deletions.length + workspaceFiles, objects: objectCount, bytes: byteCount };
@@ -1359,7 +1425,8 @@ export class SyncEngine {
     };
     return this.#materializeManifest(config, dryRun, revisionId, combined, selected, manifestObjectCount,
       (namespace, objectId) => this.client.getNamespaceObject(this.vaultId, namespace, objectId),
-      (namespace) => heads.get(namespace)!.revisionId);
+      (namespace) => heads.get(namespace)!.revisionId,
+      (namespace) => heads.get(namespace)!.keyEpoch ?? 1);
   }
 
   async #downloadScopedVaultManifest(
@@ -1387,14 +1454,15 @@ export class SyncEngine {
     };
   }
 
-  async #resolveNamespaceManifest(head: { namespace: string; revisionId: string; manifestObjectId: string }): Promise<{ manifest: NamespaceManifestV1; manifestObjects: number }> {
+  async #resolveNamespaceManifest(head: { namespace: string; revisionId: string; manifestObjectId: string; keyEpoch?: number }): Promise<{ manifest: NamespaceManifestV1; manifestObjects: number }> {
     const chain: NamespaceManifestV1[] = [];
     const seen = new Set<string>();
     let pointer = { ...head, previousRevisionId: null as string | null };
     for (let depth = 0; depth < 256; depth += 1) {
       if (seen.has(pointer.revisionId)) throw new Error("namespace manifest chain contains a cycle");
       seen.add(pointer.revisionId);
-      const keys = await this.#scopeKeys(pointer.namespace);
+      const pointerKeyEpoch = pointer.keyEpoch ?? 1;
+      const keys = await this.#scopeKeys(pointer.namespace, pointerKeyEpoch);
       const envelope = await this.client.getNamespaceObject(this.vaultId, pointer.namespace, pointer.manifestObjectId);
       const plaintext = await decryptEnvelope({
         envelope,
@@ -1402,7 +1470,13 @@ export class SyncEngine {
         dedupKey: keys.dedupKey,
         expected: { vaultId: this.vaultId, scopeId: pointer.namespace, compression: "none" },
       });
-      const manifest = namespaceManifestSchema.parse(JSON.parse(new TextDecoder("utf8", { fatal: true, ignoreBOM: false }).decode(plaintext)));
+      const parsedManifest = namespaceManifestSchema.parse(JSON.parse(new TextDecoder("utf8", { fatal: true, ignoreBOM: false }).decode(plaintext)));
+      if ((parsedManifest.keyEpoch ?? 1) !== pointerKeyEpoch) throw new Error("namespace key epoch does not match its pointer");
+      const manifest: NamespaceManifestV1 = {
+        ...parsedManifest,
+        keyEpoch: pointerKeyEpoch,
+        entries: parsedManifest.entries.map((entry) => ({ ...entry, keyEpoch: entry.keyEpoch ?? pointerKeyEpoch })),
+      };
       if (manifest.vaultId !== this.vaultId || manifest.namespace !== pointer.namespace || manifest.namespaceRevisionId !== pointer.revisionId) {
         throw new Error("namespace revision and encrypted manifest do not match");
       }
@@ -1508,7 +1582,7 @@ export class SyncEngine {
         totalSize: baseEntry.totalSize,
         contentDigest: baseEntry.contentDigest,
         maximumSize: MAX_STREAMED_SESSION_BYTES,
-        keys,
+        keys: await this.#scopeKeys(baseEntry.namespace, baseEntry.keyEpoch ?? 1),
         vaultId: this.vaultId,
         namespace: baseEntry.namespace,
         getObject: (objectId) => this.client.getNamespaceObject(this.vaultId, baseEntry.namespace, objectId),
@@ -1519,7 +1593,7 @@ export class SyncEngine {
         totalSize: remoteEntry.totalSize,
         contentDigest: remoteEntry.contentDigest,
         maximumSize: MAX_STREAMED_SESSION_BYTES,
-        keys,
+        keys: await this.#scopeKeys(remoteEntry.namespace, remoteEntry.keyEpoch ?? 1),
         vaultId: this.vaultId,
         namespace: remoteEntry.namespace,
         getObject: (objectId) => this.client.getNamespaceObject(this.vaultId, remoteEntry.namespace, objectId),
@@ -1544,9 +1618,76 @@ export class SyncEngine {
     }
   }
 
+  async #entryAtCurrentDigest(entry: NamespaceManifestV1["entries"][number]): Promise<NamespaceManifestV1["entries"][number]> {
+    if ((entry.keyEpoch ?? 1) === this.keyEpoch) return entry;
+    const oldKeys = await this.#scopeKeys(entry.namespace, entry.keyEpoch ?? 1);
+    const keys = await this.#scopeKeys(entry.namespace);
+    try {
+      const staged = await downloadVerifiedEntry({
+        ...entry,
+        maximumSize: entry.chunking?.strategy === "jsonl-records" ? MAX_STREAMED_SESSION_BYTES : MAX_FILE_BYTES,
+        keys: oldKeys,
+        vaultId: this.vaultId,
+        getObject: (objectId) => this.client.getNamespaceObject(this.vaultId, entry.namespace, objectId),
+      });
+      try {
+        return { ...entry, contentDigest: await computeObjectIdStream(keys.dedupKey, createReadStream(staged.path)) };
+      } finally {
+        await staged.dispose();
+      }
+    } finally {
+      for (const key of [...Object.values(oldKeys), ...Object.values(keys)]) key.fill(0);
+    }
+  }
+
+  async #rekeyEntry(entry: NamespaceManifestV1["entries"][number], dryRun = false): Promise<NamespaceManifestV1["entries"][number]> {
+    if ((entry.keyEpoch ?? 1) === this.keyEpoch) return entry;
+    const oldKeys = await this.#scopeKeys(entry.namespace, entry.keyEpoch ?? 1);
+    const keys = await this.#scopeKeys(entry.namespace);
+    const streamed = entry.chunking?.strategy === "jsonl-records";
+    const staged = await downloadVerifiedEntry({
+      ...entry,
+      maximumSize: streamed ? MAX_STREAMED_SESSION_BYTES : MAX_FILE_BYTES,
+      keys: oldKeys,
+      vaultId: this.vaultId,
+      getObject: (objectId) => this.client.getNamespaceObject(this.vaultId, entry.namespace, objectId),
+    });
+    try {
+      const objectIds: string[] = [];
+      const source = createReadStream(staged.path, { highWaterMark: JSONL_CHUNK_POLICY.maxSize });
+      const chunks = streamed ? chunkJsonlStream(source, JSONL_CHUNK_POLICY) : source;
+      for await (const plaintext of chunks) {
+        const objectId = await computeObjectId(keys.dedupKey, plaintext);
+        const envelope = await encryptEnvelope({
+          plaintext,
+          key: keys.encryptionKey,
+          dedupKey: keys.dedupKey,
+          context: { vaultId: this.vaultId, scopeId: entry.namespace, compression: "none" },
+        });
+        if (!dryRun) await this.client.putNamespaceObject(this.vaultId, entry.namespace, objectId, envelope);
+        objectIds.push(objectId);
+      }
+      return {
+        ...entry,
+        keyEpoch: this.keyEpoch,
+        objectIds,
+        contentDigest: await computeObjectIdStream(keys.dedupKey, createReadStream(staged.path)),
+        chunking: streamed
+          ? { strategy: "jsonl-records", ...JSONL_CHUNK_POLICY }
+          : { strategy: "fixed", size: JSONL_CHUNK_POLICY.maxSize },
+      };
+    } finally {
+      await staged.dispose();
+      oldKeys.encryptionKey.fill(0);
+      oldKeys.dedupKey.fill(0);
+      keys.encryptionKey.fill(0);
+      keys.dedupKey.fill(0);
+    }
+  }
+
   async #downloadManifest(objectId: string): Promise<VaultManifestV1> {
     const envelope = await this.client.getObject(this.vaultId, objectId);
-    const keys = await this.#scopeKeys("manifest");
+    const keys = await this.#scopeKeys("manifest", 1);
     const plaintext = await decryptEnvelope({
       envelope,
       key: keys.encryptionKey,
@@ -1568,7 +1709,9 @@ export class SyncEngine {
       const current = heads.get(namespace);
       if (current) continue;
       const keys = await this.#scopeKeys(namespace);
-      const entries = manifest.entries.filter((entry) => entry.namespace === namespace);
+      const entries = manifest.entries
+        .filter((entry) => entry.namespace === namespace)
+        .map((entry) => ({ ...entry, keyEpoch: entry.keyEpoch ?? this.keyEpoch }));
       const tombstones = manifest.tombstones.filter((entry) => entry.namespace === namespace);
       const conflicts = manifest.conflicts.filter((entry) => entry.namespace === namespace);
       const claims = [];
@@ -1588,6 +1731,7 @@ export class SyncEngine {
         schemaVersion: 1,
         vaultId: this.vaultId,
         namespace,
+        keyEpoch: this.keyEpoch,
         namespaceRevisionId,
         parentNamespaceRevisionIds: [],
         createdAt: manifest.createdAt,
@@ -1619,6 +1763,7 @@ export class SyncEngine {
       await this.client.putNamespaceObject(this.vaultId, namespace, manifestObjectId, envelope);
       updates.push({
         namespace,
+        keyEpoch: this.keyEpoch,
         baseNamespaceRevisionId: null,
         namespaceRevisionId,
         manifestObjectId,
@@ -1647,21 +1792,29 @@ export class SyncEngine {
       for (const file of scanned.filter((candidate) => candidate.namespace === mapping.namespace)) {
         digests[file.logicalPath] = await computeScannedDigest(keys.dedupKey, file);
       }
-      config.applied[mapping.namespace] = { revisionId, digests };
+      config.applied[mapping.namespace] = { revisionId, digests, keyEpoch: this.keyEpoch };
     }
   }
 
   async #markNamespaceRevisions(config: LocalConfig, mappings: RootMapping[]): Promise<void> {
     if (mappings.length === 0) return;
-    const heads = new Map((await this.client.namespaceHeads(this.vaultId)).namespaces.map((head) => [head.namespace, head.revisionId]));
+    const heads = new Map((await this.client.namespaceHeads(this.vaultId)).namespaces.map((head) => [head.namespace, head]));
     for (const mapping of mappings) {
-      const revisionId = heads.get(mapping.namespace);
-      if (revisionId && config.applied[mapping.namespace]) config.applied[mapping.namespace]!.revisionId = revisionId;
+      const head = heads.get(mapping.namespace);
+      if (head && config.applied[mapping.namespace]) {
+        config.applied[mapping.namespace]!.revisionId = head.revisionId;
+        config.applied[mapping.namespace]!.keyEpoch = head.keyEpoch ?? 1;
+      }
     }
   }
 
-  async #scopeKeys(scope: string): Promise<{ encryptionKey: Uint8Array; dedupKey: Uint8Array }> {
-    if (this.vaultKey) return deriveScopeKey(this.vaultKey, scope);
+  async #scopeKeys(scope: string, keyEpoch = this.keyEpoch): Promise<{ encryptionKey: Uint8Array; dedupKey: Uint8Array }> {
+    if (this.vaultKeyring) {
+      const vaultKey = this.vaultKeyring.keys[keyEpoch];
+      if (!vaultKey) throw new Error(`vault key epoch ${keyEpoch} is unavailable on this device`);
+      return deriveScopeKey(vaultKey, scope);
+    }
+    if (keyEpoch !== this.keyEpoch) throw new Error(`capability does not authorize key epoch ${keyEpoch}`);
     const encoded = this.scopedAccess?.namespaceKeys[scope];
     if (!encoded) throw new Error(`capability does not authorize namespace ${scope}`);
     const encryptionKey = Buffer.from(encoded.encryptionKey, "base64url");

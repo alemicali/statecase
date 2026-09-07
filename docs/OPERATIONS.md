@@ -21,6 +21,56 @@ health endpoint advertises scoped protocol `1.1` and legacy migration protocol
 The Worker secret `BETTER_AUTH_SECRET` is managed by Cloudflare and is not in
 the repository. Private signup is allowlisted by `STATECASE_ALLOWED_EMAILS`.
 
+## Lost-device revocation and key rotation
+
+Device revocation is an access-control action; complete the cryptographic part
+for every vault the device could access. From a remaining owner installation:
+
+```bash
+statecase --json device list
+statecase --json device revoke <lost-device-id> --yes
+read -rsp 'New recovery passphrase: ' STATECASE_RECOVERY_PASSPHRASE && export STATECASE_RECOVERY_PASSPHRASE
+printf '\n'
+statecase --json vault key rotate --recovery-file /secure/new.statecase-recovery.json --yes
+statecase --json sync
+unset STATECASE_RECOVERY_PASSPHRASE
+```
+
+`device revoke` reports `keyRotationRequired: true`. Rotation must return the
+next `keyEpoch`, `rotated: true`, and a `recoveryFile`; `rekeyPending: true`
+means configured namespaces still need the following trusted sync. Do not
+overwrite a recovery artifact. Do not delete the previous kit until an active
+peer has ingested the new envelope and a clean replacement has recovered with
+the new kit. Keep all recovery files outside synchronized roots and ordinary
+cloud drives.
+
+An active pre-exchange-key installation blocks rotation rather than being
+silently omitted. Run `statecase login` again on that installation to publish
+its exchange public key, or explicitly revoke it if it is no longer trusted.
+A replacement device must use the current kit; a stale kit exits with integrity
+code `6`, does not add vault membership, and does not become local key authority.
+
+If the POST response is lost, the CLI reads the authoritative epoch and opens
+its own envelope. A matching candidate key completes the command with
+`reconciled: true`. If that proof is unavailable, the command exits `7`, keeps
+the candidate recovery kit at the reported path, and leaves local credentials
+at the prior epoch. Do not rotate again blindly: restore connectivity and run
+`statecase --json sync`; it retrieves the committed envelope if the rotation
+won. Existing scoped capability grants and redeemed sessions are revoked by the
+same D1 transaction and must be reissued only after namespace rekeying.
+
+The coordinator durably fences the old write epoch before sending D1 a
+rotation. If D1 has not completed it (for example, membership changed after
+preflight), commits remain blocked even after a service restart. Once the
+recipient set is corrected and connectivity restored, an authorized owner
+can complete a rotation to that same next epoch using a fresh recovery-file
+path. Do not erase the previous candidate kit while its outcome is unknown,
+and never lower or manually delete the coordinator's epoch floor.
+
+The limitation is explicit: rotation prevents the revoked device from
+decrypting data first written under the new epoch, but cannot erase plaintext,
+old keys, or ciphertext it already copied.
+
 ## Local verification
 
 ```bash
@@ -103,7 +153,8 @@ statecase --json emergency rollback <emergency-snapshot-path> --yes
 
 This emergency rollback is local and offline. Do not hand-edit the snapshot;
 all file backups are verified before any rollback mutation. Workspace in-place
-restore is not yet supported.
+restore additionally preserves Git HEAD/ref identity, the raw index, and the
+affected worktree paths; initialized submodule worktrees fail closed.
 
 The deployment and retention qualification record is
 [2026-09-07 Cloudflare retention UAT](uat/2026-09-07-cloudflare-retention.md).

@@ -119,7 +119,7 @@ On the first persistent device:
 
 ```bash
 statecase login
-statecase vault create personal
+statecase vault create personal --recovery-file /secure/personal.statecase-recovery.json
 statecase setup --harness codex,claude
 statecase daemon install
 statecase sync
@@ -141,13 +141,18 @@ On an additional persistent device:
 
 ```bash
 statecase login --device-name vps-01
-statecase setup --vault personal --harness codex,claude
-statecase sync --pull
+statecase vault join <vault-id> --recovery-file /secure/personal.statecase-recovery.json
+statecase setup --harness codex,claude
+statecase pull
 statecase daemon install
 ```
 
-The device is approved through a browser/device-code flow, another trusted
-device, or recovery material. The user does not copy a raw vault key.
+The device login is approved through the browser/device-code flow; encrypted
+recovery material enrolls it into the vault. The user does not copy a raw vault
+key. After a lost-device revocation, a remaining owner rotates each affected
+vault to a fresh key epoch, synchronizes current namespaces, and replaces the
+recovery kit. Active devices obtain their own sealed envelope; revoked devices
+receive none.
 
 ## Experience: steady state
 
@@ -236,14 +241,19 @@ native discovery mechanisms rather than injecting prompt text. See the
 - R2 for encrypted immutable chunks and manifests;
 - D1 for accounts, devices, vault catalogue, tokens, audit summaries, and the
   optional control panel index;
-- optional web control panel after the CLI protocol is stable.
+- a minimal web onboarding shell for account sign-in/sign-up and explicit
+  device-code approval;
+- optional management dashboard after the CLI protocol is stable.
 
 ### Optional control panel
 
-The control panel is not required for initial-release correctness. When added, it manages
-devices, bootstrap tokens, workspaces, sync health, retained snapshots, audit
-events, and revocation. It must not display decrypted session contents unless
-an explicitly designed client-side decryption experience is approved.
+The existing onboarding page is required only for the interactive account and
+device-approval flow; its API contract, not that particular HTML, is the
+security boundary. A broader control panel is not required for initial-release
+sync correctness. When added, it manages devices, bootstrap tokens, workspaces,
+sync health, retained snapshots, audit events, revocation, and key-rotation
+status. It must not display decrypted session contents unless an explicitly
+designed client-side decryption experience is approved.
 
 ## Scope
 
@@ -475,7 +485,7 @@ is not part of the initial release.
 | Native formats change | versioned adapters, fixture corpus, canary discovery |
 | Live files are inconsistent | stable reads, append boundaries, WAL exclusion |
 | Concurrent writers diverge | base revisions, leases, merge rules, preserved forks |
-| Key loss | recovery material and multi-device key wrapping |
+| Key loss or revoked device | encrypted multi-epoch recovery kit, fresh-root rotation, exact active-device sealed envelopes |
 | Token theft in sandbox | short TTL, one use, workspace/category scope, revocation |
 | Silent sync deletion | tombstones, retained manifests, delayed garbage collection |
 | Worker/request limits | small streamed chunks; later direct R2 uploads |

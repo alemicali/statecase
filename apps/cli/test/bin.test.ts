@@ -155,6 +155,126 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
     expect(output.join("\n")).not.toContain("injected-token-value");
   });
 
+  it("revokes a device, rotates the selected vault, and recovers through the encrypted keyring kit (CR-009, CR-010, AU-008)", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-cli-rotation-"));
+    temporary.push(base);
+    const machineA = join(base, "machine-a");
+    const machineB = join(base, "machine-b");
+    const machineC = join(base, "machine-c");
+    const machineD = join(base, "machine-d");
+    const source = join(base, "source");
+    const revokedTarget = join(base, "revoked-target");
+    const recoveredTarget = join(base, "recovered-target");
+    const peerTarget = join(base, "peer-target");
+    const initialRecovery = join(base, "recovery", "initial.json");
+    const rotatedRecovery = join(base, "recovery", "rotated.json");
+    await Promise.all([mkdir(source), mkdir(revokedTarget), mkdir(recoveredTarget), mkdir(peerTarget)]);
+    await writeFile(join(source, "context.txt"), "before rotation\n");
+    const remote = new CliRemote();
+    const output: string[] = [];
+    const errors: string[] = [];
+    const io: CliIO = { stdout: (value) => output.push(value), stderr: (value) => errors.push(value), fetch: remote.fetch };
+    process.env.STATECASE_API_URL = "https://remote.test";
+    process.env.STATECASE_TOKEN = "rotation-token";
+    process.env.STATECASE_RECOVERY_PASSPHRASE = "correct horse battery staple";
+
+    process.env.STATECASE_HOME = machineA;
+    expect(await command(io, "--json", "login", "--non-interactive", "--device-name", "active")).toBe(0);
+    const activeConfig = JSON.parse(await readFile(join(machineA, "config.json"), "utf8")) as { deviceId: string };
+    const activeSecrets = JSON.parse(await readFile(join(machineA, "credentials.json"), "utf8")) as { deviceExchange?: { publicKey: string; privateKey: string } };
+    expect(activeSecrets.deviceExchange).toMatchObject({
+      publicKey: expect.stringMatching(/^stc_x25519_public_v1\./u),
+      privateKey: expect.stringMatching(/^stc_x25519_private_v1\./u),
+    });
+    expect(remote.devices.get(activeConfig.deviceId)?.publicExchangeKey).toBe(activeSecrets.deviceExchange!.publicKey);
+    expect(await command(io, "--json", "vault", "create", "personal", "--recovery-file", initialRecovery)).toBe(0);
+    const existingRecoveryBytes = await readFile(initialRecovery);
+    expect(await command(io, "--json", "vault", "key", "rotate", "--recovery-file", initialRecovery, "--yes")).not.toBe(0);
+    expect(await readFile(initialRecovery)).toEqual(existingRecoveryBytes);
+    expect(remote.keyEpoch).toBe(1);
+    expect(await command(io, "--json", "drop", "add", source, "--name", "context")).toBe(0);
+    const drop = JSON.parse(output.at(-1)!) as { id: string };
+    expect(await command(io, "--json", "push")).toBe(0);
+
+    process.env.STATECASE_HOME = machineB;
+    expect(await command(io, "--json", "login", "--non-interactive", "--device-name", "lost")).toBe(0);
+    const lostConfig = JSON.parse(await readFile(join(machineB, "config.json"), "utf8")) as { deviceId: string };
+    expect(await command(io, "--json", "vault", "join", "vlt_test", "--recovery-file", initialRecovery)).toBe(0);
+    expect(await command(io, "--json", "drop", "map", drop.id, revokedTarget, "--name", "context")).toBe(0);
+    expect(await command(io, "--json", "pull")).toBe(0);
+
+    process.env.STATECASE_HOME = machineD;
+    expect(await command(io, "--json", "login", "--non-interactive", "--device-name", "active peer")).toBe(0);
+    expect(await command(io, "--json", "vault", "join", "vlt_test", "--recovery-file", initialRecovery)).toBe(0);
+    expect(await command(io, "--json", "drop", "map", drop.id, peerTarget, "--name", "context")).toBe(0);
+    expect(await command(io, "--json", "pull")).toBe(0);
+
+    process.env.STATECASE_HOME = machineA;
+    expect(await command(io, "--json", "device", "revoke", lostConfig.deviceId, "--yes")).toBe(0);
+    expect(JSON.parse(output.at(-1)!)).toMatchObject({ revoked: true, keyRotationRequired: true });
+    remote.loseNextRotationResponse = true;
+    expect(await command(io, "--json", "vault", "key", "rotate", "--recovery-file", rotatedRecovery, "--yes")).toBe(0);
+    expect(JSON.parse(output.at(-1)!)).toMatchObject({ keyEpoch: 2, rotated: true, reconciled: true, recoveryFile: rotatedRecovery });
+    expect(await stat(rotatedRecovery)).toMatchObject({ mode: expect.any(Number) });
+    expect(remote.keyEpoch).toBe(2);
+    expect(remote.keyEnvelopes.has(activeConfig.deviceId)).toBe(true);
+    expect(remote.keyEnvelopes.has(lostConfig.deviceId)).toBe(false);
+    await writeFile(join(source, "context.txt"), "after rotation\n");
+    expect(await command(io, "--json", "push")).toBe(0);
+
+    process.env.STATECASE_HOME = machineD;
+    expect(await command(io, "--json", "pull")).toBe(0);
+    expect(await readFile(join(peerTarget, "context.txt"), "utf8")).toBe("after rotation\n");
+
+    process.env.STATECASE_HOME = machineB;
+    expect(await command(io, "--json", "pull")).not.toBe(0);
+    expect(await readFile(join(revokedTarget, "context.txt"), "utf8")).toBe("before rotation\n");
+
+    process.env.STATECASE_HOME = machineC;
+    expect(await command(io, "--json", "login", "--non-interactive", "--device-name", "replacement")).toBe(0);
+    expect(await command(io, "--json", "vault", "join", "vlt_test", "--recovery-file", initialRecovery)).toBe(6);
+    expect(errors.at(-1)).toContain("recovery kit does not contain the current vault key epoch");
+    expect(await command(io, "--json", "vault", "join", "vlt_test", "--recovery-file", rotatedRecovery)).toBe(0);
+    expect(await command(io, "--json", "drop", "map", drop.id, recoveredTarget, "--name", "context")).toBe(0);
+    expect(await command(io, "--json", "pull")).toBe(0);
+    expect(await readFile(join(recoveredTarget, "context.txt"), "utf8")).toBe("after rotation\n");
+    const replacementSecrets = JSON.parse(await readFile(join(machineC, "credentials.json"), "utf8")) as {
+      vaultKeyrings?: Record<string, { currentEpoch: number; keys: Record<string, string> }>;
+    };
+    expect(replacementSecrets.vaultKeyrings?.vlt_test).toMatchObject({ currentEpoch: 2, keys: { 1: expect.any(String), 2: expect.any(String) } });
+    expect(errors.join("\n")).not.toContain("correct horse battery staple");
+  });
+
+  it("preserves the recovery kit when a committed rotation cannot be reconciled after connection loss (CR-010)", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-cli-rotation-unknown-"));
+    temporary.push(base);
+    const home = join(base, "machine");
+    const initialRecovery = join(base, "recovery", "initial.json");
+    const rotatedRecovery = join(base, "recovery", "rotated.json");
+    const remote = new CliRemote();
+    const output: string[] = [];
+    const errors: string[] = [];
+    const io: CliIO = { stdout: (value) => output.push(value), stderr: (value) => errors.push(value), fetch: remote.fetch };
+    process.env.STATECASE_API_URL = "https://remote.test";
+    process.env.STATECASE_TOKEN = "rotation-token";
+    process.env.STATECASE_RECOVERY_PASSPHRASE = "correct horse battery staple";
+    process.env.STATECASE_HOME = home;
+
+    expect(await command(io, "--json", "login", "--non-interactive", "--device-name", "only device")).toBe(0);
+    expect(await command(io, "--json", "vault", "create", "personal", "--recovery-file", initialRecovery)).toBe(0);
+    remote.loseNextRotationResponse = true;
+    remote.failRotationReconciliation = true;
+
+    expect(await command(io, "--json", "vault", "key", "rotate", "--recovery-file", rotatedRecovery, "--yes")).toBe(7);
+    expect(remote.keyEpoch).toBe(2);
+    expect((await stat(rotatedRecovery)).mode & 0o777).toBe(0o600);
+    const secrets = JSON.parse(await readFile(join(home, "credentials.json"), "utf8")) as {
+      vaultKeyrings: Record<string, { currentEpoch: number }>;
+    };
+    expect(secrets.vaultKeyrings.vlt_test.currentEpoch).toBe(1);
+    expect(errors.at(-1)).toContain("recovery kit preserved");
+  });
+
   it("drives an approved Git workspace restore through the packaged CLI surface (BK-009, WS-030)", async () => {
     const base = await mkdtemp(join(tmpdir(), "statecase-cli-workspace-restore-"));
     temporary.push(base);
@@ -551,10 +671,15 @@ class CliRemote {
   revisionId: string | null = null;
   scopedRevisionId: string | null = null;
   manifestObjectId: string | null = null;
-  readonly devices = new Map<string, { id: string; name: string; status: "active" | "revoked" }>();
+  readonly devices = new Map<string, { id: string; name: string; status: "active" | "revoked"; publicExchangeKey?: string }>();
+  keyEpoch = 1;
+  readonly keyEnvelopes = new Map<string, string>();
+  readonly homeDevices = new Map<string, string>();
+  loseNextRotationResponse = false;
+  failRotationReconciliation = false;
   readonly snapshots = new Map<string, { id: string; name: string; revisionId: string; manifestObjectId?: string; protocolVersion?: "1.1"; protected: true; createdAt: number }>();
   readonly revisions = new Map<string, { revisionId: string; manifestObjectId: string; previousRevisionId: string | null }>();
-  readonly capabilities = new Map<string, { id: string; vaultId: string; tokenHash: string; namespaces: string[]; actions: Array<"read" | "append">; expiresAt: number; keyEnvelope: string; createdAt: number; redeemedAt?: number; revokedAt?: number }>();
+  readonly capabilities = new Map<string, { id: string; vaultId: string; keyEpoch: number; tokenHash: string; namespaces: string[]; actions: Array<"read" | "append">; expiresAt: number; keyEnvelope: string; createdAt: number; redeemedAt?: number; revokedAt?: number }>();
   readonly garbageCollectionRuns: boolean[] = [];
 
   fetch: typeof fetch = async (input, init) => {
@@ -599,10 +724,13 @@ class CliRemote {
     }
     if (url.pathname.endsWith("/namespaces")) return Response.json({ revisionId: this.scopedRevisionId, namespaces: [...this.namespaceHeads.values()] });
     if (url.pathname.endsWith("/namespace-commits")) {
-      const request = JSON.parse(String(init?.body)) as { vaultRevisionId: string; updates: Array<{ namespace: string; baseNamespaceRevisionId: string | null; namespaceRevisionId: string; manifestObjectId: string }> };
+      const request = JSON.parse(String(init?.body)) as { vaultRevisionId: string; updates: Array<{ namespace: string; keyEpoch?: number; baseNamespaceRevisionId: string | null; namespaceRevisionId: string; manifestObjectId: string }> };
+      if (request.updates.some((update) => (update.keyEpoch ?? 1) !== this.keyEpoch)) {
+        return Response.json({ error: { code: "KEY_EPOCH_CONFLICT", message: "vault key epoch advanced" } }, { status: 409 });
+      }
       for (const update of request.updates) {
         const previousRevisionId = this.namespaceHeads.get(update.namespace)?.revisionId ?? null;
-        const head = { namespace: update.namespace, revisionId: update.namespaceRevisionId, manifestObjectId: update.manifestObjectId };
+        const head = { namespace: update.namespace, revisionId: update.namespaceRevisionId, manifestObjectId: update.manifestObjectId, keyEpoch: update.keyEpoch ?? 1 };
         this.namespaceHeads.set(update.namespace, head);
         this.namespaceRevisions.set(`${update.namespace}\0${update.namespaceRevisionId}`, { ...head, previousRevisionId });
       }
@@ -612,9 +740,10 @@ class CliRemote {
       return Response.json({ outcome: "committed", revisionId: request.vaultRevisionId });
     }
     if (url.pathname === "/v1/devices/current") {
-      const input = JSON.parse(String(init?.body)) as { id: string; name: string };
-      const device = { id: input.id, name: input.name, status: "active" as const };
+      const input = JSON.parse(String(init?.body)) as { id: string; name: string; publicExchangeKey?: string };
+      const device = { id: input.id, name: input.name, status: "active" as const, publicExchangeKey: input.publicExchangeKey };
       this.devices.set(device.id, device);
+      if (process.env.STATECASE_HOME) this.homeDevices.set(process.env.STATECASE_HOME, device.id);
       return Response.json({ accountId: "acct_test", deviceId: device.id, name: device.name });
     }
     if (url.pathname === "/v1/tokens" && method === "POST") {
@@ -644,7 +773,8 @@ class CliRemote {
     if (url.pathname === "/v1/devices" && method === "GET") return Response.json({ devices: [...this.devices.values()] });
     const device = /^\/v1\/devices\/([^/]+)$/u.exec(url.pathname);
     if (device && method === "DELETE") {
-      this.devices.set(device[1], { id: device[1], name: device[1], status: "revoked" });
+      const prior = this.devices.get(device[1]);
+      this.devices.set(device[1], { id: device[1], name: prior?.name ?? device[1], status: "revoked", publicExchangeKey: prior?.publicExchangeKey });
       return new Response(null, { status: 204 });
     }
     if (url.pathname === "/v1/vaults" && method === "POST") {
@@ -653,7 +783,50 @@ class CliRemote {
       return Response.json(vault, { status: 201 });
     }
     if (url.pathname === "/v1/vaults" && method === "GET") return Response.json({ vaults: this.vaults });
-    if (url.pathname.endsWith("/join")) return Response.json({ id: "vlt_test", name: "personal", role: "writer" });
+    if (url.pathname === "/v1/vaults/vlt_test/key-recipients" && method === "GET") {
+      if (this.failRotationReconciliation && this.keyEpoch > 1) throw new TypeError("simulated reconciliation outage");
+      return Response.json({ keyEpoch: this.keyEpoch, devices: [...this.devices.values()]
+        .filter((candidate) => candidate.status === "active" && candidate.publicExchangeKey)
+        .map((candidate) => ({ id: candidate.id, publicExchangeKey: candidate.publicExchangeKey! }))
+        .sort((left, right) => left.id.localeCompare(right.id, "en")) });
+    }
+    if (url.pathname === "/v1/vaults/vlt_test/key-envelope" && method === "GET") {
+      const deviceId = process.env.STATECASE_HOME ? this.homeDevices.get(process.env.STATECASE_HOME) : undefined;
+      const current = deviceId ? this.devices.get(deviceId) : undefined;
+      return current?.status === "active" && this.keyEnvelopes.has(current.id)
+        ? Response.json({ keyEpoch: this.keyEpoch, envelope: this.keyEnvelopes.get(current.id)! })
+        : Response.json({ error: { code: "KEY_ENVELOPE_UNAVAILABLE" } }, { status: 409 });
+    }
+    if (url.pathname === "/v1/vaults/vlt_test/key-envelopes" && method === "GET") {
+      const afterEpoch = Number(url.searchParams.get("afterEpoch") ?? "0");
+      const deviceId = process.env.STATECASE_HOME ? this.homeDevices.get(process.env.STATECASE_HOME) : undefined;
+      const device = deviceId ? this.devices.get(deviceId) : undefined;
+      if (device?.status === "revoked") return Response.json({ error: { code: "NOT_FOUND" } }, { status: 404 });
+      const envelope = this.keyEpoch > afterEpoch && deviceId ? this.keyEnvelopes.get(deviceId) : undefined;
+      return Response.json({ keyEpoch: this.keyEpoch, envelopes: envelope ? [{ keyEpoch: this.keyEpoch, envelope }] : [] });
+    }
+    if (url.pathname === "/v1/vaults/vlt_test/key-rotations" && method === "POST") {
+      const input = JSON.parse(String(init?.body)) as { expectedEpoch: number; newEpoch: number; envelopes: Array<{ deviceId: string; envelope: string }> };
+      const active = [...this.devices.values()].filter((candidate) => candidate.status === "active" && candidate.publicExchangeKey).map((candidate) => candidate.id).sort();
+      const recipients = input.envelopes.map((item) => item.deviceId).sort();
+      if (input.expectedEpoch !== this.keyEpoch || input.newEpoch !== this.keyEpoch + 1) {
+        return Response.json({ error: { code: "KEY_EPOCH_CONFLICT" } }, { status: 409 });
+      }
+      if (active.join("\0") !== recipients.join("\0")) return Response.json({ error: { code: "KEY_RECIPIENT_MISMATCH" } }, { status: 409 });
+      this.keyEpoch = input.newEpoch;
+      this.keyEnvelopes.clear();
+      for (const envelope of input.envelopes) this.keyEnvelopes.set(envelope.deviceId, envelope.envelope);
+      if (this.loseNextRotationResponse) {
+        this.loseNextRotationResponse = false;
+        throw new TypeError("simulated connection loss after committed rotation");
+      }
+      return Response.json({ keyEpoch: this.keyEpoch, rotated: true }, { status: 201 });
+    }
+    if (url.pathname.endsWith("/join")) {
+      const input = init?.body ? JSON.parse(String(init.body)) as { keyEpoch?: number } : {};
+      if ((input.keyEpoch ?? 1) !== this.keyEpoch) return Response.json({ error: { code: "KEY_EPOCH_CONFLICT" } }, { status: 409 });
+      return Response.json({ id: "vlt_test", name: "personal", role: "writer" });
+    }
     if (url.pathname.endsWith("/head")) return Response.json({ revisionId: this.revisionId, manifestObjectId: this.manifestObjectId });
     const revision = /\/revisions\/([^/]+)$/u.exec(url.pathname);
     if (revision) {

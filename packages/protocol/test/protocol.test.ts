@@ -170,6 +170,14 @@ describe("wire schemas (PR-001, PR-014)", () => {
       ...request,
       updates: [{ ...request.updates[0], mode: "append", pathClaims: [{ pathId: "pth_01", mutation: "update" }] }],
     })).toThrow();
+    expect(scopedCommitRequestSchema.parse({
+      ...request,
+      updates: [{ ...request.updates[0], keyEpoch: 2 }],
+    }).updates[0]!.keyEpoch).toBe(2);
+    expect(() => scopedCommitRequestSchema.parse({
+      ...request,
+      updates: [{ ...request.updates[0], keyEpoch: 0 }],
+    })).toThrow();
   });
 
   it("carries bounded opaque Session Capsule retention roots without breaking older writers (BK-004)", () => {

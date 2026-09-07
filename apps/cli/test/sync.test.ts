@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { StatecaseClient } from "../src/client.js";
 import { sessionBindingKey, type LocalConfig, type RootMapping } from "../src/config.js";
 import { createEmergencySnapshot, restoreEmergencySnapshot } from "../src/emergency.js";
-import { SyncConflict, SyncEngine } from "../src/sync.js";
+import { SyncConflict, SyncEngine, type VaultKeyring } from "../src/sync.js";
 
 const temporary: string[] = [];
 const runFile = promisify(execFile);
@@ -64,6 +64,110 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     await expect(readFile(join(second, ".env"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readFile(join(second, "link.txt"))).rejects.toMatchObject({ code: "ENOENT" });
     expect((await b.pull(configB)).outcome).toBe("unchanged");
+  });
+
+  it.each([false, true])("re-encrypts old namespaces (implicit legacy epoch: %s) and denies the old key future content (CR-010)", async (legacyEpoch) => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-key-epoch-"));
+    temporary.push(base);
+    const source = join(base, "source");
+    const activeTarget = join(base, "active-target");
+    const revokedTarget = join(base, "revoked-target");
+    await Promise.all([mkdir(source), mkdir(activeTarget), mkdir(revokedTarget)]);
+    await writeFile(join(source, "context.txt"), "before rotation\n");
+    const remote = new MemoryRemote();
+    const oldKey = await randomKey();
+    const newKey = await randomKey();
+    const client = new StatecaseClient("https://remote.test", "device", remote.fetch);
+    const sourceConfig = config(source);
+    const activeConfig = config(activeTarget);
+
+    await new SyncEngine(client, "vlt_test", { currentEpoch: 1, keys: { 1: oldKey } }).push(sourceConfig);
+    expect(remote.namespaceHeads.get("drop:drop_shared")).toMatchObject({ keyEpoch: 1 });
+    if (legacyEpoch) {
+      const head = remote.namespaceHeads.get("drop:drop_shared")!;
+      const manifest = await readTestNamespaceManifest(remote, oldKey, head);
+      delete manifest.keyEpoch;
+      for (const entry of manifest.entries) delete entry.keyEpoch;
+      const legacyHead = { namespace: head.namespace, revisionId: head.revisionId,
+        manifestObjectId: await storeNamespaceManifest(remote, oldKey, manifest) };
+      remote.namespaceHeads.set(head.namespace, legacyHead);
+      remote.namespaceRevisions.set(`${head.namespace}\0${head.revisionId}`, { ...legacyHead, previousRevisionId: null });
+      const checkpoint = remote.scopedRevisions.get(remote.scopedRevisionId!)!;
+      checkpoint.namespaces = [legacyHead];
+    }
+    await new SyncEngine(client, "vlt_test", { currentEpoch: 2, keys: { 1: oldKey, 2: newKey } }).pull(activeConfig);
+    expect(activeConfig.applied["drop:drop_shared"]).toMatchObject({ keyEpoch: 1 });
+
+    await writeFile(join(source, "context.txt"), "after rotation\n");
+    await new SyncEngine(client, "vlt_test", { currentEpoch: 2, keys: { 1: oldKey, 2: newKey } }).push(sourceConfig);
+    expect(remote.namespaceHeads.get("drop:drop_shared")).toMatchObject({ keyEpoch: 2 });
+    await expect(new SyncEngine(client, "vlt_test", oldKey).pull(config(revokedTarget)))
+      .rejects.toThrow("vault key epoch 2 is unavailable");
+
+    await expect(new SyncEngine(client, "vlt_test", { currentEpoch: 2, keys: { 1: oldKey, 2: newKey } }).pull(activeConfig))
+      .resolves.toMatchObject({ outcome: "pulled" });
+    expect(await readFile(join(activeTarget, "context.txt"), "utf8")).toBe("after rotation\n");
+    expect(activeConfig.applied["drop:drop_shared"]).toMatchObject({ keyEpoch: 2 });
+  });
+
+  it("merges offline disjoint edits across a root-key rotation and keeps dry-run non-mutating (CR-010, SY-002)", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-offline-rotation-"));
+    temporary.push(base);
+    const aRoot = join(base, "a");
+    const bRoot = join(base, "b");
+    await Promise.all([mkdir(aRoot), mkdir(bRoot)]);
+    await writeFile(join(aRoot, "first.txt"), "first\n");
+    await writeFile(join(aRoot, "second.txt"), "second\n");
+    const aConfig = config(aRoot);
+    const bConfig = config(bRoot);
+    const remote = new MemoryRemote();
+    const client = new StatecaseClient("https://remote.test", "device", remote.fetch);
+    const oldKey = await randomKey();
+    const oldEngine = new SyncEngine(client, "vlt_test", oldKey);
+    await oldEngine.push(aConfig);
+    await oldEngine.pull(bConfig);
+    const keys = { currentEpoch: 2, keys: { 1: oldKey, 2: await randomKey() } };
+    const engine = new SyncEngine(client, "vlt_test", keys);
+    await writeFile(join(aRoot, "first.txt"), "owner changed first\n");
+    const beforeOwnerPreview = remote.namespaceObjects.size;
+    await expect(engine.push(aConfig, true)).resolves.toMatchObject({ outcome: "pushed" });
+    expect(remote.namespaceObjects.size).toBe(beforeOwnerPreview);
+    await engine.push(aConfig);
+    await writeFile(join(bRoot, "second.txt"), "offline changed second\n");
+    const beforeDryRun = remote.namespaceObjects.size;
+    const beforeHead = remote.scopedRevisionId;
+    await expect(engine.push(bConfig, true)).resolves.toMatchObject({ outcome: "pushed" });
+    expect(remote.namespaceObjects.size).toBe(beforeDryRun);
+    expect(remote.scopedRevisionId).toBe(beforeHead);
+    await expect(engine.push(bConfig)).resolves.toMatchObject({ outcome: "pushed" });
+    await engine.pull(bConfig);
+    await engine.pull(aConfig);
+    for (const root of [aRoot, bRoot]) {
+      expect(await readFile(join(root, "first.txt"), "utf8")).toBe("owner changed first\n");
+      expect(await readFile(join(root, "second.txt"), "utf8")).toBe("offline changed second\n");
+    }
+  });
+
+  it("rekeys a deleted namespace without resurrecting files or emitting repeated no-op revisions (CR-010, SY-010)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "statecase-empty-rotation-"));
+    temporary.push(root);
+    const remote = new MemoryRemote();
+    const client = new StatecaseClient("https://remote.test", "device", remote.fetch);
+    const key = await randomKey();
+    const local = config(root);
+    const before = new SyncEngine(client, "vlt_test", key);
+    await writeFile(join(root, "deleted.txt"), "delete before rotation\n");
+    await before.push(local);
+    await rm(join(root, "deleted.txt"));
+    await before.push(local);
+    const oldHead = remote.scopedRevisionId;
+    const after = new SyncEngine(client, "vlt_test", { currentEpoch: 2, keys: { 1: key, 2: await randomKey() } });
+    await expect(after.push(local, true)).resolves.toMatchObject({ outcome: "pushed" });
+    expect(remote.scopedRevisionId).toBe(oldHead);
+    await expect(after.push(local)).resolves.toMatchObject({ outcome: "pushed" });
+    expect(remote.namespaceHeads.get("drop:drop_shared")).toMatchObject({ keyEpoch: 2 });
+    await expect(after.push(local)).resolves.toMatchObject({ outcome: "unchanged" });
+    await expect(readFile(join(root, "deleted.txt"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("materializes an authorized namespace without a vault root key or legacy object access", async () => {
@@ -923,7 +1027,7 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     expect(await readFile(join(scopedStaging, "context.txt"), "utf8")).toBe("version two\n");
   });
 
-  it("restores a historical Drop exactly in place, rolls back a failed fork, and publishes a new revision (BK-007, BK-009, BK-011)", async () => {
+  it.each([1, 2])("restores a historical Drop at key epoch %i, rolls back a failed fork, and publishes a new revision (BK-007, BK-009, BK-011, CR-010)", async (epoch) => {
     const base = await mkdtemp(join(tmpdir(), "statecase-in-place-"));
     temporary.push(base);
     const root = join(base, "drop");
@@ -933,9 +1037,16 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     await writeFile(join(root, "nested", "historical.txt"), "nested historical\n");
     const remote = new MemoryRemote();
     const key = await randomKey();
-    const engine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    const client = new StatecaseClient("https://remote.test", "token", remote.fetch);
+    let engine = new SyncEngine(client, "vlt_test", key);
     const local = config(root);
     const historical = await engine.push(local);
+    await writeFile(join(root, "post-history.txt"), "created after the selected snapshot\n");
+    await engine.push(local);
+    await rm(join(root, "post-history.txt"));
+    const keys: VaultKeyring = { currentEpoch: epoch, keys: { 1: key } };
+    if (epoch === 2) keys.keys[2] = await randomKey();
+    engine = new SyncEngine(client, "vlt_test", keys);
     await writeFile(join(root, "context.txt"), "version two\n");
     await rm(join(root, "resurrect.txt"));
     await rm(join(root, "nested"), { recursive: true });
@@ -979,14 +1090,17 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
 
     const observerRoot = join(base, "observer");
     await mkdir(observerRoot);
-    await new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key).pull(config(observerRoot));
+    await new SyncEngine(client, "vlt_test", keys).pull(config(observerRoot));
+    expect(remote.namespaceHeads.get("drop:drop_shared")?.keyEpoch).toBe(epoch);
+    const restoredManifest = await readTestNamespaceManifest(remote, keys.keys[epoch]!, remote.namespaceHeads.get("drop:drop_shared")!);
+    expect(restoredManifest.tombstones).toEqual(expect.arrayContaining([expect.objectContaining({ logicalPath: "post-history.txt" })]));
     expect(await readFile(join(observerRoot, "context.txt"), "utf8")).toBe("version one\n");
     expect(await readFile(join(observerRoot, "resurrect.txt"), "utf8")).toBe("historical\n");
     expect(await readFile(join(observerRoot, "nested", "historical.txt"), "utf8")).toBe("nested historical\n");
     await expect(readFile(join(observerRoot, "newer.txt"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("restores a historical Git workspace in place and rolls HEAD, index, and files back on a failed fork (BK-009, WS-030)", async () => {
+  it.each([1, 2])("restores a historical Git workspace at epoch %i with exact rollback on a failed fork (BK-009, WS-030, CR-010)", async (epoch) => {
     const base = await mkdtemp(join(tmpdir(), "statecase-workspace-in-place-"));
     temporary.push(base);
     const root = join(base, "workspace");
@@ -1001,11 +1115,14 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
 
     const remote = new MemoryRemote();
     const key = await randomKey();
-    const engine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    const client = new StatecaseClient("https://remote.test", "token", remote.fetch);
+    let engine = new SyncEngine(client, "vlt_test", key);
     const local = workspaceConfig(root);
     local.workspaces[0]!.gitFetch = "auto";
     const mapping = workspaceMapping(local);
     const historical = await engine.push(local);
+    const keyring = { currentEpoch: epoch, keys: { 1: key, [epoch]: epoch === 1 ? key : await randomKey() } };
+    engine = new SyncEngine(client, "vlt_test", keyring);
 
     await runFile("git", ["-C", root, "reset", "--hard", "-q", "HEAD"]);
     await writeFile(join(root, "tracked.txt"), "later committed\n");
@@ -1065,7 +1182,7 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     const observer = join(base, "observer");
     await runFile("git", ["clone", "-q", root, observer]);
     const observerConfig = workspaceConfig(observer);
-    await new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key).pull(observerConfig);
+    await new SyncEngine(client, "vlt_test", keyring).pull(observerConfig);
     expect((await runFile("git", ["-C", observer, "status", "--porcelain=v1", "-z"])).stdout).toBe(historicalStatus);
     expect(await readFile(join(observer, "tracked.txt"), "utf8")).toBe("historical worktree\n");
   });
@@ -1143,7 +1260,7 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     expect(prepared).toBe(false);
   });
 
-  it("preserves the historical Session Capsule pins when forking a harness restore (BK-010, WS-024)", async () => {
+  it.each([1, 2])("preserves historical Session Capsule pins when restoring a harness at epoch %i (BK-010, WS-024, CR-010)", async (epoch) => {
     const base = await mkdtemp(join(tmpdir(), "statecase-in-place-session-"));
     temporary.push(base);
     const harness = join(base, "codex");
@@ -1154,12 +1271,15 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     await writeFile(session, `${firstRecord}\n`);
     const remote = new MemoryRemote();
     const key = await randomKey();
-    const engine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    const client = new StatecaseClient("https://remote.test", "token", remote.fetch);
+    let engine = new SyncEngine(client, "vlt_test", key);
     const local = harnessConfig(harness, workspace);
     const historical = await engine.push(local);
     const historicalHead = remote.scopedRevisions.get(historical.revisionId!)!.namespaces
       .find((head) => head.namespace === "harness:codex:default")!;
     const historicalManifest = await readTestNamespaceManifest(remote, key, historicalHead);
+    const currentKey = epoch === 1 ? key : await randomKey();
+    engine = new SyncEngine(client, "vlt_test", { currentEpoch: epoch, keys: { 1: key, [epoch]: currentKey } });
     await writeFile(session, `${firstRecord}\n${JSON.stringify({ type: "response_item", payload: { value: 2 } })}\n`);
     await engine.push(local);
 
@@ -1178,7 +1298,7 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
       },
     });
     const restoredHead = remote.namespaceHeads.get("harness:codex:default")!;
-    const restoredManifest = await readTestNamespaceManifest(remote, key, restoredHead);
+    const restoredManifest = await readTestNamespaceManifest(remote, currentKey, restoredHead);
     expect(restoredManifest.sessionCapsules).toEqual(historicalManifest.sessionCapsules);
     expect(restoredManifest.sessionCapsules?.[0]?.harnessRevisionId).toBe(historical.revisionId);
     expect(restored.revisionId).not.toBe(historical.revisionId);
@@ -1218,7 +1338,7 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     expect(await readFile(join(observerRoot, "from-second.txt"), "utf8")).toBe("second\n");
   });
 
-  it("merges concurrent complete-record appends, preserves dependency activity, and restores each native session path (ID-012, SY-004, SY-005)", async () => {
+  it.each([1, 2])("merges concurrent complete-record appends across epoch %i and restores each native path (ID-012, SY-004, SY-005, CR-010)", async (epoch) => {
     const base = await mkdtemp(join(tmpdir(), "statecase-session-append-merge-"));
     temporary.push(base);
     const firstHarness = join(base, "first-codex");
@@ -1244,8 +1364,9 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
 
     const remote = new MemoryRemote();
     const key = await randomKey();
-    const firstEngine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
-    const secondEngine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    const client = new StatecaseClient("https://remote.test", "token", remote.fetch);
+    let firstEngine = new SyncEngine(client, "vlt_test", key);
+    let secondEngine = new SyncEngine(client, "vlt_test", key);
     const firstConfig = harnessConfig(firstHarness, firstWorkspace);
     const secondConfig = harnessConfig(secondHarness, secondWorkspace);
     await firstEngine.push(firstConfig);
@@ -1255,6 +1376,11 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     const commonRevision = secondConfig.applied["harness:codex:default"]!.revisionId;
     const secondSession = join(secondHarness, "sessions", "statecase", "ws_test", "session.jsonl");
     expect(secondConfig.sessionBindings?.[bindingKey]).toBe("sessions/statecase/ws_test/session.jsonl");
+
+    const currentKey = epoch === 1 ? key : await randomKey();
+    const keyring = { currentEpoch: epoch, keys: { 1: key, [epoch]: currentKey } };
+    firstEngine = new SyncEngine(client, "vlt_test", keyring);
+    secondEngine = new SyncEngine(client, "vlt_test", keyring);
 
     await writeFile(sourceSession, `${[baseRecord, ...firstAppend].map((record) => JSON.stringify(record)).join("\n")}\n`);
     const localizedBase = { type: "session_meta", payload: { cwd: secondWorkspace } };
@@ -1939,9 +2065,9 @@ async function initializeRepository(path: string): Promise<void> {
 class MemoryRemote {
   readonly objects = new Map<string, Uint8Array>();
   readonly namespaceObjects = new Map<string, Uint8Array>();
-  readonly namespaceHeads = new Map<string, { namespace: string; revisionId: string; manifestObjectId: string }>();
-  readonly namespaceRevisions = new Map<string, { namespace: string; revisionId: string; manifestObjectId: string; previousRevisionId: string | null }>();
-  readonly scopedRevisions = new Map<string, { revisionId: string; previousRevisionId: string | null; namespaces: Array<{ namespace: string; revisionId: string; manifestObjectId: string }> }>();
+  readonly namespaceHeads = new Map<string, { namespace: string; revisionId: string; manifestObjectId: string; keyEpoch?: number }>();
+  readonly namespaceRevisions = new Map<string, { namespace: string; revisionId: string; manifestObjectId: string; keyEpoch?: number; previousRevisionId: string | null }>();
+  readonly scopedRevisions = new Map<string, { revisionId: string; previousRevisionId: string | null; namespaces: Array<{ namespace: string; revisionId: string; manifestObjectId: string; keyEpoch?: number }> }>();
   readonly revisions = new Map<string, { revisionId: string; manifestObjectId: string; previousRevisionId: string | null }>();
   revisionId: string | null = null;
   scopedRevisionId: string | null = null;
@@ -1955,6 +2081,7 @@ class MemoryRemote {
       baseNamespaceRevisionId: string | null;
       namespaceRevisionId: string;
       manifestObjectId: string;
+      keyEpoch?: number;
       retainedVaultRevisionIds?: string[];
     }>;
   }> = [];
@@ -2000,7 +2127,7 @@ class MemoryRemote {
       if (stale.length > 0) return Response.json({ error: { code: "STALE_BASE", message: "advanced" } }, { status: 409 });
       for (const update of request.updates) {
         const previousRevisionId = this.namespaceHeads.get(update.namespace)?.revisionId ?? null;
-        const head = { namespace: update.namespace, revisionId: update.namespaceRevisionId, manifestObjectId: update.manifestObjectId };
+        const head = { namespace: update.namespace, revisionId: update.namespaceRevisionId, manifestObjectId: update.manifestObjectId, keyEpoch: update.keyEpoch ?? 1 };
         this.namespaceHeads.set(update.namespace, head);
         this.namespaceRevisions.set(`${update.namespace}\0${update.namespaceRevisionId}`, { ...head, previousRevisionId });
       }

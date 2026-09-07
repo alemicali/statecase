@@ -46,6 +46,38 @@ shows the harness namespace behind, run `statecase --json pull` before resume;
 this is intentional because the merged remote stream contains records from the
 other branch. A scoped capability never performs this trusted same-path merge.
 
+## Lost device and key rotation
+
+Use `statecase --json device list` to identify the exact installation. Revoking
+a device and rotating keys are separate destructive/security mutations: do not
+run either without explicit operator authorization. After
+`statecase --json device revoke <id> --yes` reports
+`keyRotationRequired: true`, select each affected vault and run:
+
+```bash
+statecase --json vault key rotate --recovery-file <new-protected-path> --yes
+statecase --json sync
+```
+
+The recovery path must not already exist or lie inside a synchronized root.
+Supply `STATECASE_RECOVERY_PASSPHRASE` through the operator or secret manager;
+never request, print, or inspect it. Rotation creates a new root, excludes the
+revoked device, invalidates existing scoped capabilities, and returns
+`rekeyPending` until configured namespaces are published under the new epoch.
+If an active device predates exchange keys, ask the operator to log in again on
+that device or explicitly revoke it; never omit it silently.
+
+When exit `7` says the outcome is unknown, preserve the reported recovery kit
+and do not retry rotation. Restore connectivity and run `statecase --json sync`;
+the CLI will ingest the committed device envelope if the rotation succeeded.
+Only retire the old recovery kit after an active peer has synchronized and a
+clean replacement-device recovery has succeeded with the new kit. A stale kit
+fails with integrity exit `6`; do not work around it by copying raw keys.
+
+Explain the boundary accurately: revocation plus rotation protects content
+first written under the new epoch, but cannot erase plaintext, old keys, or
+historical ciphertext already copied by the lost device.
+
 ## Resume a session
 
 Before resuming on a different machine, run `statecase --json workspace dependencies` and select the intended `sessionCapsuleId`. Hydrate that immutable closure with:

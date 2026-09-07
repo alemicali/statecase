@@ -10,6 +10,7 @@ describe("ephemeral bootstrap capability (AU-003..AU-007)", () => {
     const expiresAt = Date.now() + 60_000;
     const created = await createBootstrapCapability({
       vaultId: "vlt_test",
+      keyEpoch: 2,
       vaultKey: rootKey,
       namespaces: ["workspace:ws_01", "harness:codex:default"],
       actions: ["read", "append"],
@@ -31,12 +32,13 @@ describe("ephemeral bootstrap capability (AU-003..AU-007)", () => {
     });
     expect(Object.keys(opened.namespaceKeys)).toEqual(["harness:codex:default", "workspace:ws_01"]);
     expect(opened).not.toHaveProperty("vaultKey");
+    expect(opened.keyEpoch).toBe(2);
     expect(opened.expiresAt).toBe(expiresAt);
   });
 
   it("rejects a wrong secret, response scope escalation, and secret namespaces", async () => {
     const rootKey = await randomKey();
-    const input = { vaultId: "vlt_test", vaultKey: rootKey, namespaces: ["workspace:ws_01"], actions: ["read" as const], expiresAt: Date.now() + 60_000 };
+    const input = { vaultId: "vlt_test", keyEpoch: 1, vaultKey: rootKey, namespaces: ["workspace:ws_01"], actions: ["read" as const], expiresAt: Date.now() + 60_000 };
     const created = await createBootstrapCapability(input);
     await expect(openBootstrapCapability({
       bootstrapToken: `stc_boot_${"a".repeat(43)}`,
