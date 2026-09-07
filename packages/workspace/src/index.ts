@@ -270,6 +270,8 @@ export async function applyWorkspaceTransaction(
     }
     for (const [index, workspace] of prepared.entries()) {
       const change = baselineChanges[index]!;
+      if (change.originalCommit === workspace.captured.capsule.baseCommit &&
+          change.originalRef === workspace.captured.capsule.headRef) continue;
       change.changed = true;
       await setWorkspaceHead(workspace.root, workspace.captured.capsule.baseCommit, workspace.captured.capsule.headRef);
     }
