@@ -218,10 +218,13 @@ and a persistent local emergency snapshot, excludes daemon/harness writers,
 rejects SQLite-family targets, validates materialized adapter state, rolls back
 failed commits, and publishes a new forward revision rather than rewinding the
 shared head. Workspace in-place restore remains deliberately disabled until
-its Git transaction is qualified.
+its Git transaction is qualified. The packaged Drop flow passed a two-device
+Daytona run against the live Cloudflare stack, including offline emergency
+rollback and complete cleanup; see the
+[in-place restore UAT](uat/2026-09-07-in-place-restore-daytona.md).
 
 Automated background steady state is not yet claimed. Real-OS daemon/service
-UAT, live harness/Drop restore UAT, workspace in-place restore,
+UAT, real-version harness restore UAT, workspace in-place restore,
 post-revocation key rewrap, and real harness-version compatibility remain
 blocking work for a public or unattended release.
 

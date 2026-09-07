@@ -530,8 +530,11 @@ restore the exact pre-restore local bytes while offline.
 Automated status: Drop and harness namespace tests cover dry-run, create/
 replace/delete planning, SQLite refusal, Session Capsule preservation,
 third-client convergence, failed-commit automatic rollback, and explicit
-offline emergency rollback. Real Cloudflare/Daytona execution and workspace
-in-place restore remain required before the public recovery claim.
+offline emergency rollback. The packaged Drop flow passed the real
+Cloudflare/Daytona drill; see
+[the executed report](uat/2026-09-07-in-place-restore-daytona.md). Real-version
+harness execution and workspace in-place restore remain required before the
+public recovery claim.
 
 ### UAT-09 Lost device and recovery
 

@@ -69,7 +69,8 @@ contract; workspace restore remains available to staging.
 Users can protect a known-good head, inspect historical content in staging, and
 recover Drops or stopped harness state without trusting the current local
 bytes. Scheduled retention and reachability garbage collection are defined by
-ADR-0017. Workspace in-place restore and live restore UAT remain release gates.
+ADR-0017. Workspace in-place restore and real-version harness UAT remain
+release gates; the live Drop path is qualified in the Daytona/Cloudflare UAT.
 
 ## Security and privacy impact
 

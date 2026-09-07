@@ -49,7 +49,7 @@ qualified 2-GiB transfer and concurrent append merge. Daily reachability GC now
 applies 24 hourly, 30 daily, and 12 monthly UTC checkpoints plus protected
 snapshots, Session Capsule pins, and a 30-day grace period. Remaining release
 gates include real-OS service UAT, initialized-submodule hydration, workspace
-in-place restore plus live harness/Drop restore UAT, post-revocation key
+in-place restore plus real-version harness restore UAT, post-revocation key
 rewrapping, key rotation, and real-version Codex/Claude fixture certification.
 This is not yet a public-production release.
 
@@ -64,6 +64,7 @@ The approved direction lives in:
 - [Operations](docs/OPERATIONS.md)
 - [Daytona and Cloudflare product UAT](docs/uat/2026-09-06-daytona-cloud.md)
 - [Daytona Git-baseline acquisition UAT](docs/uat/2026-09-07-git-baseline-daytona.md)
+- [Daytona and Cloudflare in-place restore UAT](docs/uat/2026-09-07-in-place-restore-daytona.md)
 
 ## Repository shape
 

@@ -11,7 +11,8 @@ All notable changes to Statecase will be documented here.
   adapter state, rolls back on optimistic-commit failure, and publishes a new
   revision without rewinding shared history. An explicit offline `emergency
   rollback` command restores the pre-restore local state; workspace in-place
-  restore remains deliberately unsupported.
+  restore remains deliberately unsupported. The packaged Drop path passed a
+  two-device Daytona drill against the live Cloudflare stack.
 - Qualified bounded multi-gigabyte session portability against the live
   Cloudflare service in Daytona: a 2,147,483,737-byte Codex JSONL round trip,
   two bounded tail uploads, deterministic concurrent append merge, and

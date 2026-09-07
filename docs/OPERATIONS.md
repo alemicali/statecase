@@ -107,3 +107,5 @@ restore is not yet supported.
 
 The deployment and retention qualification record is
 [2026-09-07 Cloudflare retention UAT](uat/2026-09-07-cloudflare-retention.md).
+The packaged Drop recovery path is qualified in the
+[2026-09-07 Daytona and Cloudflare in-place restore UAT](uat/2026-09-07-in-place-restore-daytona.md).
