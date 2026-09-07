@@ -45,9 +45,11 @@ changed tail chunks. Concurrent append merge also streams and verifies the
 common history while retaining only bounded branch suffixes, and the accepting
 pull verifies record order as a stream. Staging preflights temporary-disk space
 and retains a safety reserve before copying plaintext. A real Daytona run has
-qualified 2-GiB transfer and concurrent append merge. Remaining release gates
-include real-OS service UAT, initialized-submodule hydration, automatic
-retention/in-place restore, post-revocation key
+qualified 2-GiB transfer and concurrent append merge. Daily reachability GC now
+applies 24 hourly, 30 daily, and 12 monthly UTC checkpoints plus protected
+snapshots, Session Capsule pins, and a 30-day grace period. Remaining release
+gates include real-OS service UAT, initialized-submodule hydration, in-place
+restore, post-revocation key
 rewrapping, key rotation, and real-version Codex/Claude fixture certification.
 This is not yet a public-production release.
 
@@ -121,6 +123,8 @@ unset STATECASE_RECOVERY_PASSPHRASE
 ./apps/cli/dist/bin.js shim verify claude
 ./apps/cli/dist/bin.js push --dry-run
 ./apps/cli/dist/bin.js push
+# Optional owner inspection; scheduled retention already runs daily.
+./apps/cli/dist/bin.js --json retention plan
 ```
 
 On a second machine, login, join the vault with the encrypted recovery kit,

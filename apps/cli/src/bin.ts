@@ -258,6 +258,21 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
     emit(io, program, { id: snapshotId, deleted: true }, `Deleted protected snapshot ${snapshotId}`);
   });
 
+  const retention = program.command("retention").description("preview and run encrypted-object retention");
+  retention.command("plan").description("preview objects eligible after checkpoint and grace rules").action(async () => {
+    const { config, secrets, client } = await requireSession(store, io.fetch);
+    const result = await client.garbageCollect(selectedVault(config, secrets), true);
+    emit(io, program, result, `Would collect ${result.candidateObjects} objects (${result.deleteBytes} encrypted bytes)`);
+  });
+  retention.command("collect").description("delete only unreachable encrypted objects after the grace period")
+    .option("--yes", "confirm garbage collection")
+    .action(async (options: { yes?: boolean }) => {
+      if (!options.yes) throw new StatecaseUsageError("garbage collection requires --yes", 2);
+      const { config, secrets, client } = await requireSession(store, io.fetch);
+      const result = await client.garbageCollect(selectedVault(config, secrets), false);
+      emit(io, program, result, `Collected ${result.deletedObjects} objects (${result.deleteBytes} encrypted bytes)`);
+    });
+
   program.command("restore")
     .description("materialize one namespace from an immutable historical revision into a staging target")
     .requiredOption("--revision <revisionId>")

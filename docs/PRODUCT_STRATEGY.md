@@ -323,7 +323,7 @@ remote uniqueness or collision decisions.
 
 Every accepted sync creates an immutable manifest revision. File deletions
 advance the current head through tombstones but do not immediately erase old
-objects. The default proposed retention is:
+objects. The default retention policy is:
 
 - 24 hourly checkpoints;
 - 30 daily checkpoints;

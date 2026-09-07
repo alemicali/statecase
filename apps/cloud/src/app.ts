@@ -2,6 +2,8 @@ import { Hono, type Context } from "hono";
 import { secureHeaders } from "hono/secure-headers";
 import { z } from "zod";
 
+import { DEFAULT_RETENTION_POLICY, type GarbageCollectionPlanResult } from "@statecase/sync-core";
+
 import {
   commitRequestSchema,
   PROTOCOL_VERSION,
@@ -20,6 +22,7 @@ import type {
   ScopedVaultHead,
   ScopedVaultRevision,
   VaultHead,
+  VaultCoordinatorCore,
   VaultRevision,
   VaultSnapshot,
 } from "@statecase/sync-core";
@@ -83,6 +86,8 @@ export interface ObjectStore {
   ): Promise<{ created: boolean; size: number }>;
   get(vaultId: string, objectId: string, namespace?: string): Promise<Uint8Array | ReadableStream<Uint8Array> | null>;
   exists(vaultId: string, objectId: string, namespace?: string): Promise<boolean>;
+  list(vaultId: string): Promise<Array<{ namespace: string | null; objectId: string; uploadedAt: number; size: number }>>;
+  delete(vaultId: string, objects: ReadonlyArray<{ namespace: string | null; objectId: string }>): Promise<void>;
 }
 
 export interface Coordinator {
@@ -97,6 +102,8 @@ export interface Coordinator {
   scopedHead(): Promise<ScopedVaultHead | null>;
   commitNamespaces(request: ScopedCommitRequest): Promise<ScopedCommitResult>;
   scopedRevision(revisionId: string): Promise<ScopedVaultRevision | null>;
+  planGarbageCollection(input: Parameters<VaultCoordinatorCore["planGarbageCollection"]>[0]): Promise<GarbageCollectionPlanResult>;
+  finalizeGarbageCollection(planId: string): Promise<boolean>;
 }
 
 export interface VaultSummary {
@@ -123,6 +130,7 @@ export interface ControlPlane {
   createVault(principal: Principal, input: { name: string }): Promise<VaultSummary>;
   listVaults(principal: Principal): Promise<VaultSummary[]>;
   joinVault(principal: Principal, vaultId: string): Promise<VaultSummary>;
+  listActiveVaultIds(): Promise<string[]>;
 }
 
 export interface CloudServices {
@@ -133,6 +141,7 @@ export interface CloudServices {
   coordinator(vaultId: string): Coordinator;
   control: ControlPlane;
   capabilities: CapabilityService;
+  garbageCollectionGracePeriodMs?: number;
 }
 
 type AppEnvironment = { Variables: { principal: Principal } };
@@ -240,6 +249,21 @@ export function createCloudApp(services: CloudServices): Hono<AppEnvironment> {
     if (!(await allowed(services, context, vaultId, "admin"))) return notFound(context);
     if (!(await services.coordinator(vaultId).deleteSnapshot(snapshotId))) return notFound(context);
     return context.body(null, 204);
+  });
+
+  app.post("/v1/vaults/:vaultId/garbage-collection", async (context) => {
+    const vaultId = requireIdentifier(context.req.param("vaultId"));
+    if (!(await allowed(services, context, vaultId, "admin"))) return notFound(context);
+    const body = await parseBody(context, z.object({ dryRun: z.boolean().optional() }).strict());
+    if (!body.success) return body.response;
+    const result = await runVaultGarbageCollection(services, vaultId, {
+      dryRun: body.data.dryRun ?? true,
+      now: Date.now(),
+    });
+    if (result.outcome === "busy") {
+      return context.json({ error: { code: "GC_BUSY", message: "garbage collection is already running", retryAfterMs: result.retryAfterMs } }, 409);
+    }
+    return context.json(result);
   });
 
   app.post("/v1/devices/current", async (context) => {
@@ -394,6 +418,12 @@ export function createCloudApp(services: CloudServices): Hono<AppEnvironment> {
     if (result.outcome === "idempotency-conflict") {
       return jsonError(context, "IDEMPOTENCY_CONFLICT", "operation ID was already used for another payload", 409);
     }
+    if (result.outcome === "revision-conflict") {
+      return jsonError(context, "IDEMPOTENCY_CONFLICT", "revision ID was already used", 409);
+    }
+    if (result.outcome === "gc-busy") {
+      return context.json({ error: { code: "GC_BUSY", message: "garbage collection is running", retryAfterMs: result.retryAfterMs } }, 409);
+    }
     if (result.outcome === "stale-base") {
       return context.json(
         { error: { code: "STALE_BASE", currentRevisionId: result.currentRevisionId, message: "vault head advanced" } },
@@ -418,6 +448,10 @@ export function createCloudApp(services: CloudServices): Hono<AppEnvironment> {
     }
     const result = await services.coordinator(vaultId).commitNamespaces(body.data);
     if (result.outcome === "idempotency-conflict") return jsonError(context, "IDEMPOTENCY_CONFLICT", "operation ID was already used for another payload", 409);
+    if (result.outcome === "revision-conflict") return jsonError(context, "IDEMPOTENCY_CONFLICT", "revision ID was already used", 409);
+    if (result.outcome === "gc-busy") {
+      return context.json({ error: { code: "GC_BUSY", message: "garbage collection is running", retryAfterMs: result.retryAfterMs } }, 409);
+    }
     if (result.outcome === "stale-namespace") {
       return context.json({ error: { code: "STALE_BASE", namespaces: result.namespaces, message: "one or more namespace heads advanced" } }, 409);
     }
@@ -440,6 +474,68 @@ export function createCloudApp(services: CloudServices): Hono<AppEnvironment> {
     return jsonError(context, "INVALID_REQUEST", "request failed safely", 500);
   });
   return app;
+}
+
+const DEFAULT_GC_GRACE_PERIOD_MS = 30 * 24 * 60 * 60 * 1000;
+
+export async function runVaultGarbageCollection(
+  services: CloudServices,
+  vaultId: string,
+  options: { dryRun: boolean; now: number },
+): Promise<
+  | { outcome: "completed"; id: string; dryRun: boolean; candidateObjects: number; deletedObjects: number; deleteBytes: number; checkpoints: number; conservativeScopes: string[]; trackedSince: number | null }
+  | { outcome: "busy"; planId: string; retryAfterMs: number }
+> {
+  const id = `gc_${crypto.randomUUID().replaceAll("-", "")}`;
+  const candidates = await services.objects.list(vaultId);
+  const planned = await services.coordinator(vaultId).planGarbageCollection({
+    id,
+    now: options.now,
+    gracePeriodMs: services.garbageCollectionGracePeriodMs ?? DEFAULT_GC_GRACE_PERIOD_MS,
+    policy: DEFAULT_RETENTION_POLICY,
+    candidates,
+    dryRun: options.dryRun,
+  });
+  if (planned.outcome === "busy") return planned;
+  const plan = planned.plan;
+  if (!options.dryRun) {
+    try {
+      await services.objects.delete(vaultId, plan.deleteObjects);
+    } finally {
+      await services.coordinator(vaultId).finalizeGarbageCollection(plan.id);
+    }
+  }
+  return {
+    outcome: "completed",
+    id: plan.id,
+    dryRun: options.dryRun,
+    candidateObjects: plan.deleteObjects.length,
+    deletedObjects: options.dryRun ? 0 : plan.deleteObjects.length,
+    deleteBytes: plan.deleteBytes,
+    checkpoints: plan.checkpoints.length,
+    conservativeScopes: plan.conservativeScopes,
+    trackedSince: plan.trackedSince,
+  };
+}
+
+export async function runScheduledGarbageCollection(
+  services: CloudServices,
+  now: number,
+): Promise<{ vaults: number; completed: number; busy: number; failed: number }> {
+  const vaultIds = await services.control.listActiveVaultIds();
+  let completed = 0;
+  let busy = 0;
+  let failed = 0;
+  for (const vaultId of vaultIds) {
+    try {
+      const result = await runVaultGarbageCollection(services, vaultId, { dryRun: false, now });
+      if (result.outcome === "busy") busy += 1;
+      else completed += 1;
+    } catch {
+      failed += 1;
+    }
+  }
+  return { vaults: vaultIds.length, completed, busy, failed };
 }
 
 async function allowed(

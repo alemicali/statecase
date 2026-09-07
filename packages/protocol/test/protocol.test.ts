@@ -172,6 +172,35 @@ describe("wire schemas (PR-001, PR-014)", () => {
     })).toThrow();
   });
 
+  it("carries bounded opaque Session Capsule retention roots without breaking older writers (BK-004)", () => {
+    const legacyUpdate = {
+      namespace: "harness:codex:default",
+      baseNamespaceRevisionId: null,
+      namespaceRevisionId: "nrev_01",
+      manifestObjectId: "obj_manifest_01",
+      requiredObjectIds: ["obj_chunk_01"],
+      mode: "replace" as const,
+      pathClaims: [{ pathId: "pth_01", mutation: "add" as const }],
+    };
+    const request = {
+      protocolVersion: "1.1" as const,
+      operationId: "op_retention",
+      vaultRevisionId: "srev_current",
+      updates: [{
+        ...legacyUpdate,
+        retainedVaultRevisionIds: ["srev_current", "srev_workspace", "srev_drop"],
+      }],
+    };
+
+    expect(scopedCommitRequestSchema.parse(request)).toEqual(request);
+    expect(scopedCommitRequestSchema.parse({ ...request, updates: [legacyUpdate] }).updates[0]!.retainedVaultRevisionIds)
+      .toBeUndefined();
+    expect(() => scopedCommitRequestSchema.parse({
+      ...request,
+      updates: [{ ...request.updates[0], retainedVaultRevisionIds: ["srev_same", "srev_same"] }],
+    })).toThrow("duplicate retained vault revision");
+  });
+
   it("accepts a namespace-scoped manifest and rejects cross-namespace content", () => {
     const scoped = {
       schemaVersion: 1,

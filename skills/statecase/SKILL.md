@@ -59,6 +59,10 @@ Use `strict` for unattended work. In an interactive workflow, `warn` may materia
 
 Treat the capsule as the authority even when its harness, workspace, and Drops pin different revision IDs. The CLI authenticates and atomically composes those historical namespace states; never replace a pinned revision with the current head.
 
+## Retention maintenance
+
+Use `statecase --json retention plan` to inspect encrypted object and byte counts without mutation. Run `statecase --json retention collect --yes` only after explicit operator approval; normal installations already receive the same retention policy from the daily cloud schedule. Never remove R2 objects directly. Treat `GC_BUSY` as bounded contention and retry after the reported lease interval.
+
 ## Error policy
 
 - Exit `3`: authentication or enrollment is required; ask the operator to complete it outside chat.

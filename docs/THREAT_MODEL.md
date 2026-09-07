@@ -137,7 +137,13 @@ Controls:
 
 - optimistic base revision and preserved forks/conflicts;
 - tombstones instead of immediate deletion;
-- protected snapshots, retention, grace period, reachability GC;
+- protected snapshots, deterministic UTC retention, grace period, and opaque
+  reachability GC rooted through Session Capsules and append parents;
+- per-vault GC lease excludes commits during exact-key R2 deletion; an expired
+  lease remains a write barrier until a collector takeover finalizes the prior
+  roots and completes a newly calculated deletion pass;
+- pre-tracking, legacy, missing-metadata, and oversized graphs fail conservative
+  without deleting encrypted objects;
 - rate/anomaly limits on bulk mutation and optional re-authorization threshold;
 - append-only sandbox permission;
 - dry-run and emergency local restore snapshot;
@@ -247,7 +253,7 @@ authorization, materialization, deletion/GC, and bootstrap threat surfaces.
 | Risk | Current treatment |
 | --- | --- |
 | Compromised authorized endpoint | disclosed limitation; least scope/revocation |
-| Cloud metadata leakage | minimize, document, define retention before beta |
+| Cloud metadata leakage | opaque revision/object relationships only; identifiers and lifecycle documented in ADR-0017 |
 | Unavailable Git baseline | explicit ask/auto/never policy; bounded system-Git fetch; redacted failure; atomic rollback |
 | Git LFS pointer mistaken for content | baseline pointer scan; explicit auto policy; device-local cache/origin/credentials; size and SHA-256 verification; redacted failure and rollback |
 | Uncatchable sandbox kill | periodic push; bounded but non-zero loss window |

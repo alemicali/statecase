@@ -304,6 +304,91 @@ describe("Statecase in workerd (PR-001, PR-005, PR-010, PR-011, AU-001)", () => 
     expect(await firstStub.listSnapshots()).toEqual([]);
   });
 
+  it("lists and deletes only unreachable scoped R2 objects through the real owner GC route (BK-003..BK-005)", async () => {
+    const signup = await exports.default.fetch("http://statecase.test/api/auth/sign-up/email", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "gc@statecase.test", name: "GC Operator", password: "a-strong-gc-runtime-password" }),
+    });
+    expect(signup.status).toBe(200);
+    const token = signup.headers.get("set-auth-token");
+    const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+    await exports.default.fetch("http://statecase.test/v1/devices/current", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ id: "dev_gc_runtime", name: "GC workerd" }),
+    });
+    const created = await exports.default.fetch("http://statecase.test/v1/vaults", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ name: "GC vault" }),
+    });
+    const { id: vaultId } = await created.json() as { id: string };
+    const namespace = "drop:gc-runtime";
+    const base = `http://statecase.test/v1/vaults/${vaultId}/namespaces/${encodeURIComponent(namespace)}/objects`;
+    for (const [objectId, byte] of [["obj_gc_manifest", 1], ["obj_gc_chunk", 2]] as const) {
+      expect((await exports.default.fetch(`${base}/${objectId}`, {
+        method: "PUT",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/octet-stream" },
+        body: Uint8Array.of(byte),
+      })).status).toBe(201);
+    }
+    const committed = await exports.default.fetch(`http://statecase.test/v1/vaults/${vaultId}/namespace-commits`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        protocolVersion: "1.1",
+        operationId: "op_gc_runtime",
+        vaultRevisionId: "srev_gc_runtime",
+        updates: [{
+          namespace,
+          baseNamespaceRevisionId: null,
+          namespaceRevisionId: "nrev_gc_runtime",
+          manifestObjectId: "obj_gc_manifest",
+          requiredObjectIds: ["obj_gc_chunk"],
+          retainedVaultRevisionIds: ["srev_gc_runtime"],
+          mode: "replace",
+          pathClaims: [{ pathId: "pth_gc_runtime", mutation: "add" }],
+        }],
+      }),
+    });
+    expect(committed.status, await committed.clone().text()).toBe(200);
+    expect((await exports.default.fetch(`${base}/obj_gc_orphan`, {
+      method: "PUT",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/octet-stream" },
+      body: Uint8Array.of(3, 4, 5),
+    })).status).toBe(201);
+    const malformedShadowKey = `v1/vaults/${vaultId}/namespaces/${namespace}/objects/wrong-prefix/obj_gc_orphan`;
+    await env.BLOBS.put(malformedShadowKey, Uint8Array.of(6));
+    expect((await exports.default.fetch(`http://statecase.test/v1/vaults/${vaultId}/objects/obj_gc_legacy`, {
+      method: "PUT",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/octet-stream" },
+      body: Uint8Array.of(9),
+    })).status).toBe(201);
+
+    const preview = await exports.default.fetch(`http://statecase.test/v1/vaults/${vaultId}/garbage-collection`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ dryRun: true }),
+    });
+    expect(preview.status).toBe(200);
+    expect(await preview.json()).toMatchObject({ dryRun: true, candidateObjects: 1, deletedObjects: 0, deleteBytes: 3 });
+    expect((await exports.default.fetch(`${base}/obj_gc_orphan`, { headers })).status).toBe(200);
+
+    const collected = await exports.default.fetch(`http://statecase.test/v1/vaults/${vaultId}/garbage-collection`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ dryRun: false }),
+    });
+    expect(collected.status, await collected.clone().text()).toBe(200);
+    expect(await collected.json()).toMatchObject({ dryRun: false, candidateObjects: 1, deletedObjects: 1, deleteBytes: 3 });
+    expect((await exports.default.fetch(`${base}/obj_gc_orphan`, { headers })).status).toBe(404);
+    expect(await env.BLOBS.head(malformedShadowKey)).not.toBeNull();
+    expect((await exports.default.fetch(`${base}/obj_gc_manifest`, { headers })).status).toBe(200);
+    expect((await exports.default.fetch(`${base}/obj_gc_chunk`, { headers })).status).toBe(200);
+    expect((await exports.default.fetch(`http://statecase.test/v1/vaults/${vaultId}/objects/obj_gc_legacy`, { headers })).status).toBe(200);
+  });
+
   it("provides an isolated R2 binding for opaque bytes", async () => {
     await env.BLOBS.put("v1/test/object", Uint8Array.of(7, 8, 9));
     const object = await env.BLOBS.get("v1/test/object");

@@ -147,6 +147,7 @@ export const namespaceUpdateSchema = z.object({
   namespaceRevisionId: identifier,
   manifestObjectId: identifier,
   requiredObjectIds: z.array(identifier).max(10_000),
+  retainedVaultRevisionIds: z.array(identifier).max(10_000).optional(),
   mode: z.enum(["replace", "append"]),
   pathClaims: z.array(pathClaimSchema).max(100_000),
 }).strict().superRefine((update, context) => {
@@ -157,6 +158,13 @@ export const namespaceUpdateSchema = z.object({
     if (update.mode === "append" && claim.mutation !== "add") {
       context.addIssue({ code: "custom", message: "append updates may only add paths", path: ["pathClaims", index, "mutation"] });
     }
+  }
+  const retainedRevisionIds = new Set<string>();
+  for (const [index, revisionId] of (update.retainedVaultRevisionIds ?? []).entries()) {
+    if (retainedRevisionIds.has(revisionId)) {
+      context.addIssue({ code: "custom", message: "duplicate retained vault revision", path: ["retainedVaultRevisionIds", index] });
+    }
+    retainedRevisionIds.add(revisionId);
   }
 });
 
@@ -230,6 +238,7 @@ export type ProtocolErrorCode =
   | "IDEMPOTENCY_CONFLICT"
   | "STALE_BASE"
   | "APPEND_VIOLATION"
+  | "GC_BUSY"
   | "OBJECT_MISSING"
   | "UNSUPPORTED_PROTOCOL";
 

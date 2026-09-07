@@ -621,7 +621,10 @@ export class SyncEngine {
         sessionCapsules: sessionCapsules.filter((capsule) => capsule.harness.namespace === namespace),
         pathClaims,
       });
-      const requiredObjectIds = [...new Set(manifest.entries.flatMap((entry) => entry.objectIds))];
+      const requiredObjectIds = [...new Set([
+        ...manifest.entries.flatMap((entry) => entry.objectIds),
+        ...manifest.conflicts.flatMap((conflict) => conflict.variantObjectIds),
+      ])];
       const pendingObjectIds = new Set(requiredObjectIds.filter((objectId) => !remoteObjectIds.has(objectId)));
       for (const objectId of pendingObjectIds) {
         const plaintext = plaintextChunks.get(objectId);
@@ -676,6 +679,9 @@ export class SyncEngine {
         namespaceRevisionId,
         manifestObjectId,
         requiredObjectIds,
+        ...(manifest.sessionCapsules?.length
+          ? { retainedVaultRevisionIds: capsuleRetentionRoots(manifest.sessionCapsules) }
+          : {}),
         mode: appendOnly ? "append" as const : "replace" as const,
         pathClaims,
       });
@@ -1337,7 +1343,10 @@ export class SyncEngine {
         sessionCapsules: (manifest.sessionCapsules ?? []).filter((capsule) => capsule.harness.namespace === namespace),
         pathClaims: claims,
       });
-      const requiredObjectIds = [...new Set(entries.flatMap((entry) => entry.objectIds))];
+      const requiredObjectIds = [...new Set([
+        ...entries.flatMap((entry) => entry.objectIds),
+        ...conflicts.flatMap((conflict) => conflict.variantObjectIds),
+      ])];
       for (const objectId of requiredObjectIds) {
         const envelope = knownEnvelopes?.get(objectId) ?? await this.client.getObject(this.vaultId, objectId);
         await this.client.putNamespaceObject(this.vaultId, namespace, objectId, envelope);
@@ -1357,6 +1366,9 @@ export class SyncEngine {
         namespaceRevisionId,
         manifestObjectId,
         requiredObjectIds,
+        ...(namespaceManifest.sessionCapsules?.length
+          ? { retainedVaultRevisionIds: capsuleRetentionRoots(namespaceManifest.sessionCapsules) }
+          : {}),
         mode: "replace" as const,
         pathClaims: claims,
       });
@@ -1464,6 +1476,14 @@ async function buildSessionCapsules(input: {
     else capsules.push(capsule);
   }
   return capsules.sort((left, right) => left.sessionKey.localeCompare(right.sessionKey, "en"));
+}
+
+function capsuleRetentionRoots(capsules: readonly SessionCapsuleV1[]): string[] {
+  return [...new Set(capsules.flatMap((capsule) => [
+    capsule.harnessRevisionId,
+    capsule.workspace.capsuleRevisionId,
+    ...capsule.drops.map((drop) => drop.revisionId),
+  ]))].sort((left, right) => left.localeCompare(right, "en"));
 }
 
 function workspaceCaptureFromScan(scanned: readonly ScannedEntry[], workspaceId: string): CapturedWorkspace | undefined {

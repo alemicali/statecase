@@ -93,6 +93,18 @@ export interface RemoteSnapshot {
   createdAt: number;
 }
 
+export interface RemoteGarbageCollection {
+  outcome: "completed";
+  id: string;
+  dryRun: boolean;
+  candidateObjects: number;
+  deletedObjects: number;
+  deleteBytes: number;
+  checkpoints: number;
+  conservativeScopes: string[];
+  trackedSince: number | null;
+}
+
 export interface DeviceRecord {
   id: string;
   name: string;
@@ -187,6 +199,13 @@ export class StatecaseClient {
 
   async deleteSnapshot(vaultId: string, snapshotId: string): Promise<void> {
     await this.#request(`/v1/vaults/${encodeURIComponent(vaultId)}/snapshots/${encodeURIComponent(snapshotId)}`, { method: "DELETE" });
+  }
+
+  garbageCollect(vaultId: string, dryRun: boolean): Promise<RemoteGarbageCollection> {
+    return this.#json(`/v1/vaults/${encodeURIComponent(vaultId)}/garbage-collection`, {
+      method: "POST",
+      body: JSON.stringify({ dryRun }),
+    });
   }
 
   async putObject(vaultId: string, objectId: string, bytes: Uint8Array): Promise<void> {

@@ -10,7 +10,7 @@ plan. The
 [2026-09-07 Git-baseline Daytona UAT](uat/2026-09-07-git-baseline-daytona.md)
 also qualifies explicit ask/auto policy and shallow-clone acquisition against
 the live service. Native macOS/Linux service-manager, ARM64, WSL2, large-scale performance,
-retention/GC, and destructive recovery drills remain open release gates.
+live retention/GC, and destructive recovery drills remain open release gates.
 Last updated: 2026-09-07
 Related: [Implementation specification](./IMPLEMENTATION_SPEC.md)
 
@@ -319,6 +319,10 @@ deployed Worker test environment.
 - `BK-011`: restoring a tombstone creates a new revision.
 - `BK-012`: total cloud loss can be recovered from a separately exported,
   documented recovery artifact when that feature is enabled.
+- `BK-013`: legacy, pre-tracking, incomplete-metadata, and over-limit graphs
+  fail conservative without deleting objects.
+- `BK-014`: a Worker failure during deletion cannot admit a racing commit or
+  select already-pruned history after lease expiry.
 
 ## 11. Product-isolation tests
 

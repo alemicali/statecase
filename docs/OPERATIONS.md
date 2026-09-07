@@ -63,5 +63,22 @@ Durable Object revisions are immutable/append-only in the current release. If a 
 unhealthy, roll back the Worker version first, freeze new writes if necessary,
 and preserve D1/R2 evidence.
 
-The current release has no garbage collector, so an aborted upload may
-leave unreachable encrypted objects but cannot delete reachable content.
+The Worker runs reachability garbage collection daily at 03:17 UTC. The
+production grace period is configured as 30 days. Inspect the same plan without
+mutation before an operator-triggered run:
+
+```bash
+statecase --json retention plan
+statecase --json retention collect --yes
+```
+
+Collection preserves current heads, 24 hourly/30 daily/12 monthly UTC
+checkpoints, protected snapshots, recursive Session Capsule revision pins, and
+append-delta parents. It skips legacy objects, objects uploaded before tracking
+began, and any namespace with incomplete historical metadata. `GC_BUSY` is a
+bounded retry condition while R2 deletion holds the vault lease. If it persists
+after the reported lease interval, rerun `retention collect --yes`: collector
+takeover is the only operation allowed to clear an expired lease, so a possibly
+still-running deletion can never race a commit. Never delete the R2 vault
+prefix manually; doing so bypasses reachability, grace, and the commit exclusion
+lease.

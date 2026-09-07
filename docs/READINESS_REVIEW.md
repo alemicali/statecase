@@ -190,6 +190,13 @@ Session hydration now also resolves harness, workspace, and Drop namespaces
 from independently pinned vault checkpoints and applies their authenticated
 state in one filesystem/Git transaction. Multi-revision dry-run and a missing
 pinned object are verified non-mutating.
+Automatic retention now selects deterministic UTC hourly/daily/monthly
+checkpoints and runs a daily owner-policy collector. Opaque reachability keeps
+the current head, protected snapshots, Session Capsule pins, append parents,
+and grace-period uploads. A Durable Object lease excludes concurrent commits;
+unknown pre-tracking/legacy history is retained conservatively. Core, Hono, and
+real workerd R2/DO tests cover preview, deletion, contention, expiry, and
+crash-recovery metadata finalization. Live-service destructive UAT remains.
 Bounded-memory push/pull is now implemented for both workspace-bound and
 unbound harness JSONL. It stages records securely, hashes incrementally,
 encrypts/decrypts one 4 MiB object at a time, installs from a verified staged
@@ -206,7 +213,7 @@ Daytona object-backed temporary mount exposed and now has regression coverage
 for an empty temporary root disappearing between sync commands.
 
 Automated background steady state is not yet claimed. Real-OS daemon/service
-UAT, automatic retention/in-place restore, post-revocation key rewrap, and
+UAT, in-place restore, post-revocation key rewrap, and
 real harness-version compatibility remain blocking work for a public or
 unattended release.
 

@@ -94,6 +94,12 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
     expect(JSON.parse(output.at(-1)!)).toMatchObject({ snapshots: [{ id: snapshot.id, protected: true }] });
     expect(await command(io, "--json", "snapshot", "delete", snapshot.id)).toBe(2);
     expect(await command(io, "--json", "snapshot", "delete", snapshot.id, "--yes")).toBe(0);
+    expect(await command(io, "--json", "retention", "plan")).toBe(0);
+    expect(JSON.parse(output.at(-1)!)).toMatchObject({ dryRun: true, candidateObjects: 2, deletedObjects: 0 });
+    expect(await command(io, "--json", "retention", "collect")).toBe(2);
+    expect(await command(io, "--json", "retention", "collect", "--yes")).toBe(0);
+    expect(JSON.parse(output.at(-1)!)).toMatchObject({ dryRun: false, candidateObjects: 2, deletedObjects: 2 });
+    expect(remote.garbageCollectionRuns).toEqual([true, false]);
     const restoreTarget = join(base, "historical-restore");
     expect(await command(io, "--json", "restore", "--revision", initialRevisionId, "--mapping", drop.id, "--target", restoreTarget, "--dry-run")).toBe(0);
     await expect(readFile(join(restoreTarget, "context.txt"))).rejects.toMatchObject({ code: "ENOENT" });
@@ -471,10 +477,26 @@ class CliRemote {
   readonly snapshots = new Map<string, { id: string; name: string; revisionId: string; manifestObjectId?: string; protocolVersion?: "1.1"; protected: true; createdAt: number }>();
   readonly revisions = new Map<string, { revisionId: string; manifestObjectId: string; previousRevisionId: string | null }>();
   readonly capabilities = new Map<string, { id: string; vaultId: string; tokenHash: string; namespaces: string[]; actions: Array<"read" | "append">; expiresAt: number; keyEnvelope: string; createdAt: number; redeemedAt?: number; revokedAt?: number }>();
+  readonly garbageCollectionRuns: boolean[] = [];
 
   fetch: typeof fetch = async (input, init) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
     const method = init?.method ?? "GET";
+    if (url.pathname === "/v1/vaults/vlt_test/garbage-collection" && method === "POST") {
+      const { dryRun } = JSON.parse(String(init?.body)) as { dryRun: boolean };
+      this.garbageCollectionRuns.push(dryRun);
+      return Response.json({
+        outcome: "completed",
+        id: `gc_${this.garbageCollectionRuns.length}`,
+        dryRun,
+        candidateObjects: 2,
+        deletedObjects: dryRun ? 0 : 2,
+        deleteBytes: 42,
+        checkpoints: 3,
+        conservativeScopes: ["legacy"],
+        trackedSince: 1,
+      });
+    }
     const scopedRevision = /^\/v1\/vaults\/vlt_test\/scoped-revisions\/([^/]+)$/u.exec(url.pathname);
     if (scopedRevision) {
       const value = this.scopedRevisions.get(scopedRevision[1]);

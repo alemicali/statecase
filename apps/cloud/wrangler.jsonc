@@ -5,9 +5,13 @@
   "compatibility_date": "2026-09-01",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
+  "triggers": {
+    "crons": ["17 3 * * *"]
+  },
   "vars": {
     "STATECASE_ENV": "production",
     "STATECASE_ALLOWED_EMAILS": "hi@lumea.dev",
+    "STATECASE_GC_GRACE_DAYS": "30",
     "BETTER_AUTH_URL": "https://statecase-api.hi-0e6.workers.dev"
   },
   "d1_databases": [

@@ -42,9 +42,9 @@ dry-run decrypts and validates the recovery plan without materializing files.
 ## Consequences
 
 Users can protect a known-good head and recover historical content to staging
-without trusting the current local state. Revision metadata grows until the
-retention/GC policy is implemented. In-place restore, scheduled retention tiers,
-and garbage collection remain separate release gates.
+without trusting the current local state. Scheduled retention and reachability
+garbage collection are now defined by ADR-0017. In-place restore remains a
+separate release gate.
 
 ## Security and privacy impact
 

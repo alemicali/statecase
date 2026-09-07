@@ -504,6 +504,9 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     const pushed = await engine.push(local);
     const reports = await engine.dependencies();
 
+    expect(remote.namespaceCommitRequests[0]!.updates.find((update) => update.namespace === "harness:codex:default")?.retainedVaultRevisionIds)
+      .toEqual([pushed.revisionId]);
+
     expect(reports).toHaveLength(1);
     expect(reports[0]).toMatchObject({
       sessionKey: "vlt_test:codex:default:ws_project:native-01",
@@ -1648,6 +1651,16 @@ class MemoryRemote {
   manifestObjectId: string | null = null;
   plaintext = "";
   readonly namespaceObjectWrites: string[] = [];
+  readonly namespaceCommitRequests: Array<{
+    vaultRevisionId: string;
+    updates: Array<{
+      namespace: string;
+      baseNamespaceRevisionId: string | null;
+      namespaceRevisionId: string;
+      manifestObjectId: string;
+      retainedVaultRevisionIds?: string[];
+    }>;
+  }> = [];
   allowLegacyReads = true;
 
   fetch: typeof fetch = async (input, init) => {
@@ -1679,7 +1692,8 @@ class MemoryRemote {
     }
     if (url.pathname.endsWith("/namespaces")) return Response.json({ revisionId: this.scopedRevisionId, namespaces: [...this.namespaceHeads.values()] });
     if (url.pathname.endsWith("/namespace-commits")) {
-      const request = JSON.parse(String(init?.body)) as { vaultRevisionId: string; updates: Array<{ namespace: string; baseNamespaceRevisionId: string | null; namespaceRevisionId: string; manifestObjectId: string }> };
+      const request = JSON.parse(String(init?.body)) as (typeof this.namespaceCommitRequests)[number];
+      this.namespaceCommitRequests.push(structuredClone(request));
       const stale = request.updates.filter((update) => (this.namespaceHeads.get(update.namespace)?.revisionId ?? null) !== update.baseNamespaceRevisionId);
       if (stale.length > 0) return Response.json({ error: { code: "STALE_BASE", message: "advanced" } }, { status: 409 });
       for (const update of request.updates) {

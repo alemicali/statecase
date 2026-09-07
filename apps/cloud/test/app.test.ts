@@ -1,10 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { InMemoryCoordinatorStorage, VaultCoordinatorCore } from "@statecase/sync-core";
 
 import {
   ControlPlaneError,
   createCloudApp,
+  runScheduledGarbageCollection,
   type AuthService,
   type CapabilityService,
   type CloudServices,
@@ -22,6 +23,7 @@ function fixture(options: { authenticated?: boolean; authorized?: boolean; admin
     handle: async () => new Response("auth-route", { status: 207 }),
     authenticate: async () => options.authenticated === false ? null : principal,
   };
+  const control = new MemoryControl();
   const services: CloudServices = {
     auth,
     objects,
@@ -36,10 +38,10 @@ function fixture(options: { authenticated?: boolean; authorized?: boolean; admin
       }
       return coordinator;
     },
-    control: new MemoryControl(),
+    control,
     capabilities: new MemoryCapabilities(),
   };
-  return { app: createCloudApp(services), objects };
+  return { app: createCloudApp(services), objects, services, control };
 }
 
 describe("Cloud API contract (PR-001..PR-015)", () => {
@@ -380,6 +382,105 @@ describe("Cloud API contract (PR-001..PR-015)", () => {
     expect(duplicate.status).toBe(409);
     expect(await duplicate.json()).toMatchObject({ error: { code: "APPEND_VIOLATION" } });
   });
+
+  it("previews and executes owner-only reachability GC after the 30-day grace period (BK-003..BK-005)", async () => {
+    vi.useFakeTimers();
+    try {
+      const firstUpload = Date.parse("2026-06-01T00:00:00.000Z");
+      vi.setSystemTime(firstUpload);
+      const { app } = fixture();
+      const base = "/v1/vaults/vlt_01/namespaces/drop%3Adocs/objects";
+      await app.request(`${base}/obj_manifest`, { method: "PUT", body: Uint8Array.of(1) });
+      await app.request(`${base}/obj_chunk`, { method: "PUT", body: Uint8Array.of(2) });
+      expect((await app.request("/v1/vaults/vlt_01/namespace-commits", {
+        method: "POST",
+        body: JSON.stringify(scopedCommit("op_gc", "srev_gc", "drop:docs", null, "nrev_gc", "replace", "pth_gc")),
+      })).status).toBe(200);
+      vi.setSystemTime(firstUpload + 1);
+      await app.request(`${base}/obj_orphan`, { method: "PUT", body: Uint8Array.of(3, 4, 5) });
+      vi.setSystemTime(firstUpload + 31 * 24 * 60 * 60 * 1000);
+
+      const preview = await app.request("/v1/vaults/vlt_01/garbage-collection", {
+        method: "POST",
+        body: JSON.stringify({ dryRun: true }),
+      });
+      expect(preview.status).toBe(200);
+      expect(await preview.json()).toMatchObject({
+        outcome: "completed",
+        dryRun: true,
+        candidateObjects: 1,
+        deletedObjects: 0,
+        deleteBytes: 3,
+        conservativeScopes: ["legacy"],
+      });
+      expect((await app.request(`${base}/obj_orphan`)).status).toBe(200);
+
+      const collected = await app.request("/v1/vaults/vlt_01/garbage-collection", {
+        method: "POST",
+        body: JSON.stringify({ dryRun: false }),
+      });
+      expect(collected.status).toBe(200);
+      expect(await collected.json()).toMatchObject({ outcome: "completed", deletedObjects: 1, deleteBytes: 3 });
+      expect((await app.request(`${base}/obj_orphan`)).status).toBe(404);
+      expect((await app.request(`${base}/obj_manifest`)).status).toBe(200);
+      expect((await app.request(`${base}/obj_chunk`)).status).toBe(200);
+
+      expect((await fixture({ adminAuthorized: false }).app.request("/v1/vaults/vlt_01/garbage-collection", {
+        method: "POST",
+        body: JSON.stringify({ dryRun: true }),
+      })).status).toBe(404);
+      expect((await app.request("/v1/vaults/vlt_01/garbage-collection", { method: "POST", body: "{}" })).status).toBe(200);
+      expect((await app.request("/v1/vaults/vlt_01/garbage-collection", { method: "POST", body: JSON.stringify({ dryRun: "yes" }) })).status).toBe(400);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("surfaces the GC lease as retryable and runs scheduled retention across active vaults", async () => {
+    const { app, services } = fixture();
+    for (const objectId of ["obj_manifest", "obj_chunk", "obj_manifest_next", "obj_chunk_next"]) {
+      await app.request(`/v1/vaults/vlt_01/namespaces/drop%3Adocs/objects/${objectId}`, { method: "PUT", body: Uint8Array.of(1) });
+    }
+    await app.request("/v1/vaults/vlt_01/namespace-commits", {
+      method: "POST",
+      body: JSON.stringify(scopedCommit("op_initial_gc_lock", "srev_initial_gc_lock", "drop:docs", null, "nrev_initial_gc_lock", "replace", "pth_initial")),
+    });
+    const now = Date.now();
+    const lock = await services.coordinator("vlt_01").planGarbageCollection({
+      id: "gc_locked",
+      now,
+      gracePeriodMs: 0,
+      leaseMs: 60_000,
+      policy: { hourly: 0, daily: 0, monthly: 0 },
+      candidates: [],
+      dryRun: false,
+    });
+    expect(lock.outcome).toBe("planned");
+    const blockedCommit = await app.request("/v1/vaults/vlt_01/namespace-commits", {
+      method: "POST",
+      body: JSON.stringify({
+        ...scopedCommit("op_blocked_gc_lock", "srev_blocked_gc_lock", "drop:docs", "nrev_initial_gc_lock", "nrev_blocked_gc_lock", "replace", "pth_next"),
+        updates: [{
+          ...scopedCommit("op_blocked_gc_lock", "srev_blocked_gc_lock", "drop:docs", "nrev_initial_gc_lock", "nrev_blocked_gc_lock", "replace", "pth_next").updates[0],
+          manifestObjectId: "obj_manifest_next",
+          requiredObjectIds: ["obj_chunk_next"],
+        }],
+      }),
+    });
+    expect(blockedCommit.status).toBe(409);
+    expect(await blockedCommit.json()).toMatchObject({ error: { code: "GC_BUSY", retryAfterMs: expect.any(Number) } });
+    const blockedGc = await app.request("/v1/vaults/vlt_01/garbage-collection", {
+      method: "POST",
+      body: JSON.stringify({ dryRun: false }),
+    });
+    expect(blockedGc.status).toBe(409);
+    expect(await blockedGc.json()).toMatchObject({ error: { code: "GC_BUSY" } });
+    await services.coordinator("vlt_01").finalizeGarbageCollection("gc_locked");
+
+    await app.request("/v1/devices/current", { method: "POST", body: JSON.stringify({ id: "dev_01", name: "Scheduled owner" }) });
+    await app.request("/v1/vaults", { method: "POST", body: JSON.stringify({ name: "Scheduled vault" }) });
+    expect(await runScheduledGarbageCollection(services, Date.now())).toEqual({ vaults: 1, completed: 1, busy: 0, failed: 0 });
+  });
 });
 
 function commit(operationId: string, baseRevisionId: string | null, revisionId: string, manifestObjectId: string, requiredObjectIds: string[]) {
@@ -412,27 +513,41 @@ function scopedCommit(
 }
 
 class MemoryObjects implements ObjectStore {
-  readonly #values = new Map<string, Uint8Array>();
+  readonly #values = new Map<string, { bytes: Uint8Array; uploadedAt: number }>();
 
   async putIfAbsent(vaultId: string, objectId: string, body: ReadableStream<Uint8Array> | Uint8Array, namespace?: string): Promise<{ created: boolean; size: number }> {
     const key = `${vaultId}/${namespace ?? "$legacy"}/${objectId}`;
     const existing = this.#values.get(key);
-    if (existing) return { created: false, size: existing.byteLength };
+    if (existing) return { created: false, size: existing.bytes.byteLength };
     const bytes = body instanceof Uint8Array ? body : new Uint8Array(await new Response(body).arrayBuffer());
-    this.#values.set(key, bytes);
+    this.#values.set(key, { bytes, uploadedAt: Date.now() });
     return { created: true, size: bytes.byteLength };
   }
 
   async get(vaultId: string, objectId: string, namespace?: string): Promise<Uint8Array | null> {
-    return this.#values.get(`${vaultId}/${namespace ?? "$legacy"}/${objectId}`) ?? null;
+    return this.#values.get(`${vaultId}/${namespace ?? "$legacy"}/${objectId}`)?.bytes ?? null;
   }
 
   async exists(vaultId: string, objectId: string, namespace?: string): Promise<boolean> {
     return this.#values.has(`${vaultId}/${namespace ?? "$legacy"}/${objectId}`);
   }
 
+  async list(vaultId: string): Promise<Array<{ namespace: string | null; objectId: string; uploadedAt: number; size: number }>> {
+    const output: Array<{ namespace: string | null; objectId: string; uploadedAt: number; size: number }> = [];
+    for (const [key, value] of this.#values) {
+      const [candidateVault, scope, objectId] = key.split("/");
+      if (candidateVault !== vaultId || !scope || !objectId) continue;
+      output.push({ namespace: scope === "$legacy" ? null : scope, objectId, uploadedAt: value.uploadedAt, size: value.bytes.byteLength });
+    }
+    return output;
+  }
+
+  async delete(vaultId: string, objects: ReadonlyArray<{ namespace: string | null; objectId: string }>): Promise<void> {
+    for (const object of objects) this.#values.delete(`${vaultId}/${object.namespace ?? "$legacy"}/${object.objectId}`);
+  }
+
   bytes(vaultId: string, objectId: string): Uint8Array | undefined {
-    return this.#values.get(`${vaultId}/$legacy/${objectId}`);
+    return this.#values.get(`${vaultId}/$legacy/${objectId}`)?.bytes;
   }
 }
 
@@ -469,6 +584,10 @@ class MemoryControl implements ControlPlane {
 
   async joinVault(_principalValue: Principal, vaultId: string): Promise<{ id: string; role: "owner" }> {
     return { id: vaultId, role: "owner" };
+  }
+
+  async listActiveVaultIds(): Promise<string[]> {
+    return this.#vaults.map((vault) => vault.id).sort((left, right) => left.localeCompare(right, "en"));
   }
 }
 

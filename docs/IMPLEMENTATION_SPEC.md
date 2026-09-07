@@ -26,8 +26,10 @@ single-use scoped capability grants, client-encrypted scope-key bootstrap, and
 rootless read+append synchronization. Full-key clients now deterministically
 merge bounded, complete-record same-session JSONL appends and rebuild their
 Session Capsule activity closure; rewrites and incompatible order fail closed.
-Sections covering scaled multi-gigabyte acceptance, safe parsed text merge,
-retention pruning, in-place restore, and
+UTC hourly/daily/monthly retention and namespace-object reachability GC are
+implemented with protected-snapshot, Session Capsule, append-parent, grace,
+and conservative migration roots. Sections covering safe parsed text merge,
+in-place restore, and
 initialized submodule hydration remain target requirements, not current claims.
 
 Persistent device identities, auth-session binding, device enumeration, and
@@ -167,6 +169,7 @@ type Env = {
   BLOBS: R2Bucket;
   VAULTS: DurableObjectNamespace<VaultCoordinator>;
   DB: D1Database;
+  STATECASE_GC_GRACE_DAYS: string;
 }
 ```
 
@@ -716,7 +719,7 @@ marker; it does not delete local files or the encrypted remote namespace.
    summaries, and object IDs.
 4. Upload only missing encrypted objects using conditional PUTs.
 5. Upload the encrypted manifest candidate.
-6. Call `POST /v1/vaults/:vaultId/commit` with base revision and manifest
+6. Call `POST /v1/vaults/:vaultId/commits` with base revision and manifest
    reference.
 7. The Durable Object accepts, reports idempotent prior success, or returns a
    structured conflict/rebase requirement.
@@ -819,7 +822,7 @@ GET    /v1/vaults/:vaultId/objects/:objectId
 PUT    /v1/vaults/:vaultId/manifests/:revisionId
 GET    /v1/vaults/:vaultId/manifests/:revisionId
 GET    /v1/vaults/:vaultId/head
-POST   /v1/vaults/:vaultId/commit
+POST   /v1/vaults/:vaultId/commits
 GET    /v1/vaults/:vaultId/namespaces
 PUT    /v1/vaults/:vaultId/namespaces/:namespace/objects/:objectId
 GET    /v1/vaults/:vaultId/namespaces/:namespace/objects/:objectId
@@ -831,6 +834,7 @@ DELETE /v1/vaults/:vaultId/sessions/:sessionId/lease
 GET    /v1/vaults/:vaultId/snapshots
 POST   /v1/vaults/:vaultId/snapshots
 DELETE /v1/vaults/:vaultId/snapshots/:snapshotId
+POST   /v1/vaults/:vaultId/garbage-collection
 GET    /v1/vaults/:vaultId/workspaces
 GET    /v1/vaults/:vaultId/drops
 ```
@@ -906,11 +910,39 @@ trigger prompts.
 
 ## 14. Backup, snapshot, retention, and restore
 
-Every successful commit is a revision. The coordinator periodically marks
-retention checkpoints. A manual protected snapshot is an immutable named
-reference with audit metadata. Garbage collection computes reachability from
-the current head, retained checkpoints, protected snapshots, and unresolved
-conflicts, then waits the grace period before deleting an object.
+Every successful commit is a revision. Protocol 1.1 namespace commits include
+opaque reachability metadata: the manifest object, every required entry and
+conflict object, append parent mode, and the vault revision IDs pinned by
+Session Capsules. This metadata contains identifiers only; the Worker never
+decrypts manifests, paths, prompts, sessions, or dependency names.
+
+The coordinator selects the newest server-ordered revision in each of 24 UTC
+hourly, 30 UTC daily, and 12 UTC monthly buckets. A manual protected snapshot
+is an immutable named reference with audit metadata. The current scoped head,
+checkpoints, protected snapshots, recursively resolved Session Capsule pins,
+and append-delta parents form the reachability roots. Namespace objects outside
+that graph become eligible only after the configured 30-day production grace
+period. Legacy objects, objects uploaded before tracking began, and namespaces
+with missing historical reachability metadata fail conservative and are not
+automatically deleted.
+
+The Worker inventories only the target vault's R2 prefix. A per-vault Durable
+Object lease excludes commits while an executable plan is deleting exact R2
+keys; racing commits receive retryable `GC_BUSY`. Snapshot creation may proceed
+because it can only pin the already-rooted current head. Finalization
+recalculates reachability from the leased roots, persists checkpoints, and
+prunes obsolete coordinator metadata. After lease expiry, writes remain
+blocked: the next scheduled or owner-invoked collector takes over, finalizes
+the same retained roots, recalculates deletion against R2, and completes a new
+lease before admitting another commit. A commit cannot clear an expired lease,
+because the prior Worker might still be deleting. Inventory and graph traversal
+are each bounded to 100,000 records and fail without deletion when exceeded.
+
+Cloudflare invokes this path daily at 03:17 UTC. The owner-only endpoint
+defaults to dry-run and returns aggregate encrypted-object counts and bytes,
+not raw object identifiers. `statecase retention collect --yes` is the explicit
+operator path; direct R2 prefix deletion is never supported. See
+[ADR-0017](adr/0017-retention-and-reachability-gc.md).
 
 Restore modes:
 

@@ -12,6 +12,12 @@ All notable changes to Statecase will be documented here.
   Drop namespaces are resolved from their independently pinned encrypted
   revision chains, validated before mutation, and applied in one atomic local
   transaction; dry-run and missing-object failure remain non-mutating.
+- Added production retention and reachability garbage collection for protocol
+  1.1 namespace objects: deterministic 24-hour/30-day/12-month UTC checkpoints,
+  protected snapshots, recursive Session Capsule pins, append-chain traversal,
+  a 30-day grace period, conservative legacy migration, Durable Object commit
+  exclusion, owner CLI preview/collection, daily Cloudflare cron execution,
+  and real workerd R2 list/delete verification.
 - Added bounded-memory session transfer for Codex and Claude JSONL: secure
   record-by-record staging, incremental keyed digests, deterministic 4 MiB
   record-aware chunks, manifest chunking descriptors, one-envelope-at-a-time

@@ -32,6 +32,7 @@ import { createBetterAuthService } from "./auth.js";
 export interface StatecaseEnvironment extends Env {
   BETTER_AUTH_SECRET: string;
   STATECASE_ALLOWED_EMAILS: string;
+  STATECASE_GC_GRACE_DAYS: string;
   VAULTS: DurableObjectNamespace<VaultCoordinator>;
 }
 
@@ -88,6 +89,14 @@ export class VaultCoordinator extends DurableObject<StatecaseEnvironment> {
   async commitNamespaces(request: ScopedCommitRequest): Promise<ScopedCommitResult> {
     return this.#core.commitNamespaces(request);
   }
+
+  async planGarbageCollection(input: Parameters<VaultCoordinatorCore["planGarbageCollection"]>[0]) {
+    return this.#core.planGarbageCollection(input);
+  }
+
+  async finalizeGarbageCollection(planId: string): Promise<boolean> {
+    return this.#core.finalizeGarbageCollection(planId);
+  }
 }
 
 export function createCloudServices(environment: StatecaseEnvironment): CloudServices {
@@ -104,7 +113,15 @@ export function createCloudServices(environment: StatecaseEnvironment): CloudSer
     coordinator: (vaultId): Coordinator => environment.VAULTS.getByName(vaultId),
     control: new D1ControlPlane(environment.DB),
     capabilities: new D1CapabilityService(environment.DB),
+    garbageCollectionGracePeriodMs: garbageCollectionGracePeriod(environment.STATECASE_GC_GRACE_DAYS),
   };
+}
+
+function garbageCollectionGracePeriod(encodedDays: string | undefined): number {
+  if (encodedDays === undefined) return 30 * 24 * 60 * 60 * 1000;
+  const days = Number(encodedDays);
+  if (!Number.isSafeInteger(days) || days < 0 || days > 365) throw new Error("STATECASE_GC_GRACE_DAYS must be an integer from 0 to 365");
+  return days * 24 * 60 * 60 * 1000;
 }
 
 function cachedAuthService(environment: StatecaseEnvironment): AuthService {
@@ -126,8 +143,31 @@ class DurableStorage implements CoordinatorStorage {
     return this.#storage.get<T>(key);
   }
 
+  async list<T>(prefix: string, limit: number): Promise<Map<string, T>> {
+    const output = new Map<string, T>();
+    let startAfter: string | undefined;
+    while (output.size < limit) {
+      const remaining = limit - output.size;
+      const page = await this.#storage.list<T>({ prefix, startAfter, limit: Math.min(1_000, remaining + 1) });
+      if (page.size === 0) return output;
+      for (const [key, value] of page) {
+        if (output.size >= limit) throw new Error("coordinator storage listing exceeds the safety limit");
+        output.set(key, value);
+        startAfter = key;
+      }
+      if (page.size < Math.min(1_000, remaining + 1)) return output;
+    }
+    const overflow = await this.#storage.list<T>({ prefix, startAfter, limit: 1 });
+    if (overflow.size > 0) throw new Error("coordinator storage listing exceeds the safety limit");
+    return output;
+  }
+
   async putMany(entries: Readonly<Record<string, unknown>>): Promise<void> {
     await this.#storage.put(entries);
+  }
+
+  async deleteMany(keys: readonly string[]): Promise<void> {
+    for (let index = 0; index < keys.length; index += 128) await this.#storage.delete(keys.slice(index, index + 128));
   }
 }
 
@@ -163,6 +203,27 @@ class R2ObjectStore implements ObjectStore {
 
   async exists(vaultId: string, objectId: string, namespace?: string): Promise<boolean> {
     return (await this.#bucket.head(objectKey(vaultId, objectId, namespace))) !== null;
+  }
+
+  async list(vaultId: string): Promise<Array<{ namespace: string | null; objectId: string; uploadedAt: number; size: number }>> {
+    const prefix = `v1/vaults/${vaultId}/`;
+    const output: Array<{ namespace: string | null; objectId: string; uploadedAt: number; size: number }> = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.#bucket.list({ prefix, cursor, limit: 1_000 });
+      for (const object of page.objects) {
+        const reference = parseObjectKey(vaultId, object.key);
+        if (reference) output.push({ ...reference, uploadedAt: object.uploaded.getTime(), size: object.size });
+      }
+      if (output.length > 100_000) throw new Error("garbage-collection candidate limit exceeded");
+      cursor = page.truncated ? page.cursor : undefined;
+    } while (cursor);
+    return output;
+  }
+
+  async delete(vaultId: string, objects: ReadonlyArray<{ namespace: string | null; objectId: string }>): Promise<void> {
+    const keys = objects.map((object) => objectKey(vaultId, object.objectId, object.namespace ?? undefined));
+    for (let index = 0; index < keys.length; index += 1_000) await this.#bucket.delete(keys.slice(index, index + 1_000));
   }
 }
 
@@ -330,6 +391,13 @@ class D1ControlPlane implements ControlPlane {
       auditStatement(this.#database, principal, "vault.join", "vault", vaultId, now),
     ]);
     return { ...vault, role: "writer" };
+  }
+
+  async listActiveVaultIds(): Promise<string[]> {
+    const rows = await this.#database.prepare(`
+      SELECT id FROM vaults WHERE status = 'active' ORDER BY id
+    `).all<{ id: string }>();
+    return rows.results.map((row) => row.id);
   }
 
   async #requireDevice(principal: Principal): Promise<void> {
@@ -543,4 +611,18 @@ async function authorizeVault(
 function objectKey(vaultId: string, objectId: string, namespace?: string): string {
   const scope = namespace ? `/namespaces/${namespace}` : "";
   return `v1/vaults/${vaultId}${scope}/objects/${objectId.slice(0, 12)}/${objectId}`;
+}
+
+function parseObjectKey(vaultId: string, key: string): { namespace: string | null; objectId: string } | undefined {
+  const escapedVault = escapeRegularExpression(vaultId);
+  const legacy = new RegExp(`^v1/vaults/${escapedVault}/objects/([^/]+)/([A-Za-z0-9][A-Za-z0-9._:-]{0,255})$`, "u").exec(key);
+  if (legacy) return legacy[1] === legacy[2]!.slice(0, 12) ? { namespace: null, objectId: legacy[2]! } : undefined;
+  const scoped = new RegExp(`^v1/vaults/${escapedVault}/namespaces/([A-Za-z0-9][A-Za-z0-9._:-]{0,255})/objects/([^/]+)/([A-Za-z0-9][A-Za-z0-9._:-]{0,255})$`, "u").exec(key);
+  return scoped && scoped[2] === scoped[3]!.slice(0, 12)
+    ? { namespace: scoped[1]!, objectId: scoped[3]! }
+    : undefined;
+}
+
+function escapeRegularExpression(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
