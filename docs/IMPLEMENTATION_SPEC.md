@@ -23,7 +23,10 @@ cannot mutate prior paths. Immutable Session Capsules and historical closure
 hydration are implemented. Protocol 1.1 provides namespace-isolated R2
 objects, immutable per-namespace revision chains, atomic namespace heads,
 single-use scoped capability grants, client-encrypted scope-key bootstrap, and
-rootless read+append synchronization. Sections covering append-aware same-session merge, safe parsed text
+rootless read+append synchronization. Full-key clients now deterministically
+merge bounded, complete-record same-session JSONL appends and rebuild their
+Session Capsule activity closure; rewrites and incompatible order fail closed.
+Sections covering multi-gigabyte streaming append merge, safe parsed text
 merge, retention pruning, in-place restore, and
 initialized submodule hydration remain target requirements, not current claims.
 
@@ -722,6 +725,19 @@ Every commit includes `baseRevisionId`. If it differs from the current head:
 - the same session with different rewrites becomes preserved forks;
 - unknown/binary conflicts preserve both versions and require resolution.
 
+For a recognized portable session, a full-key client performs the append merge
+only when the last locally applied base is a byte-identical, complete JSONL
+prefix of both local and remote branches. Canonical JSON plus occurrence ordinal
+identifies records; a deterministic topological order preserves both branch
+orders and deduplicates only shared occurrences. Invalid UTF-8, malformed or
+partial records, prefix rewrites, and order cycles fail closed. The Worker sees
+only encrypted objects and authenticated manifest metadata. Scoped capability
+clients never use this same-path merge path. A merged publisher deliberately
+keeps its prior applied marker until a subsequent pull proves that the remote
+record stream retains every local occurrence in order. The current client
+implementation is bounded to 256 MiB and 100,000 records per merge input;
+constant-memory multi-gigabyte operation remains required by section 16.
+
 No last-writer-wins rule is allowed for user content. Same-key R2 behavior is
 irrelevant to correctness because objects are immutable and the Durable Object
 orders head changes.
@@ -959,10 +975,12 @@ Each step begins with failing tests identified in the accompanying test plan.
 
 ## 20. Release blockers
 
-- unresolved cryptographic algorithm/library ADR;
+- independent review of the accepted cryptographic integration;
 - no recovery drill on clean machines;
 - any silent last-writer-wins content path;
 - any plaintext content observed in Worker/R2/D1/log captures;
 - inability to bypass or uninstall shims safely;
 - unbounded first-sync memory or request sizes;
+- lack of constant-memory, incremental transfer and append merge for
+  multi-gigabyte sessions;
 - critical test or UAT scenario not automated/documented.

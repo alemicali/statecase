@@ -33,6 +33,7 @@ import {
 import type { LocalConfig, RootMapping } from "./config.js";
 import type { ScopedVaultKeys } from "./capability.js";
 import type { StatecaseClient } from "./client.js";
+import { isCompleteJsonlRecordSupersequence, mergeJsonlAppends } from "./append-merge.js";
 import { applyFileTransaction } from "./materialize.js";
 
 const encoder = new TextEncoder();
@@ -428,6 +429,70 @@ export class SyncEngine {
       const head = heads.get(mapping.namespace);
       if (head) remoteManifests.set(mapping.namespace, (await this.#resolveNamespaceManifest(head)).manifest);
     }
+    const baseManifests = new Map<string, NamespaceManifestV1 | undefined>();
+    for (const mapping of writable) {
+      const namespace = mapping.namespace;
+      const head = heads.get(namespace);
+      const remoteManifest = remoteManifests.get(namespace);
+      const appliedRevisionId = config.applied[namespace]?.revisionId;
+      let baseManifest = remoteManifest;
+      if (!options.resolveLocalNamespaces?.has(namespace) && head && appliedRevisionId !== head.revisionId) {
+        if (!appliedRevisionId) throw new SyncConflict([`${namespace}:remote-head-not-applied`]);
+        try {
+          const pointer = await this.client.namespaceRevision(this.vaultId, namespace, appliedRevisionId);
+          baseManifest = (await this.#resolveNamespaceManifest(pointer)).manifest;
+        } catch {
+          throw new SyncConflict([`${namespace}:base-revision-unavailable`]);
+        }
+      }
+      baseManifests.set(namespace, baseManifest);
+    }
+
+    const appendMergedPaths = new Map<string, Set<string>>();
+    if (!this.scopedAccess) {
+      for (const file of scanned.filter((candidate) => candidate.session)) {
+        const namespace = file.namespace;
+        const baseManifest = baseManifests.get(namespace);
+        const remoteManifest = remoteManifests.get(namespace);
+        const encoded = encodedByNamespace.get(namespace);
+        const keys = keysByNamespace.get(namespace);
+        if (!baseManifest || !remoteManifest || !encoded || !keys) continue;
+        const baseEntry = baseManifest.entries.find((entry) => entry.logicalPath === file.logicalPath && entry.entryType === "file");
+        const remoteEntry = remoteManifest.entries.find((entry) => entry.logicalPath === file.logicalPath && entry.entryType === "file");
+        const localIndex = encoded.entries.findIndex((entry) => entry.logicalPath === file.logicalPath && entry.entryType === "file");
+        const localEntry = encoded.entries[localIndex];
+        if (!baseEntry || !remoteEntry || !localEntry ||
+            baseEntry.contentDigest === remoteEntry.contentDigest ||
+            baseEntry.contentDigest === localEntry.contentDigest ||
+            remoteEntry.contentDigest === localEntry.contentDigest) continue;
+        const [baseBytes, remoteBytes] = await Promise.all([
+          this.#downloadNamespaceEntry(baseEntry, keys),
+          this.#downloadNamespaceEntry(remoteEntry, keys),
+        ]);
+        const merged = mergeJsonlAppends(baseBytes, remoteBytes, file.bytes);
+        if (merged.outcome !== "merged") continue;
+        file.bytes = merged.bytes;
+        const workspace = file.session?.workspaceId
+          ? config.workspaces.find((candidate) => candidate.id === file.session!.workspaceId)
+          : undefined;
+        if (file.session && workspace) {
+          const localized = localizeSession(file.bytes, workspace.id, resolve(workspace.path));
+          file.session.activity = extractActivityReferences(scanCompleteJsonl(localized).records);
+        }
+        const objectIds: string[] = [];
+        for (const chunk of chunkBytes(file.bytes, CHUNK_POLICY)) {
+          const objectId = await computeObjectId(keys.dedupKey, chunk);
+          objectIds.push(objectId);
+          if (!encoded.plaintextChunks.has(objectId)) encoded.plaintextChunks.set(objectId, chunk);
+        }
+        const contentDigest = await computeObjectId(keys.dedupKey, file.bytes);
+        encoded.entries[localIndex] = { ...localEntry, objectIds, totalSize: file.bytes.byteLength, contentDigest };
+        encoded.digests[file.logicalPath] = contentDigest;
+        const paths = appendMergedPaths.get(namespace) ?? new Set<string>();
+        paths.add(file.logicalPath);
+        appendMergedPaths.set(namespace, paths);
+      }
+    }
     const previousManifest: VaultManifestV1 | undefined = remoteManifests.size === 0 ? undefined : {
       schemaVersion: 1,
       vaultId: this.vaultId,
@@ -457,17 +522,7 @@ export class SyncEngine {
       const namespace = mapping.namespace;
       const head = heads.get(namespace);
       const remoteManifest = remoteManifests.get(namespace);
-      const appliedRevisionId = config.applied[namespace]?.revisionId;
-      let baseManifest = remoteManifest;
-      if (!options.resolveLocalNamespaces?.has(namespace) && head && appliedRevisionId !== head.revisionId) {
-        if (!appliedRevisionId) throw new SyncConflict([`${namespace}:remote-head-not-applied`]);
-        try {
-          const pointer = await this.client.namespaceRevision(this.vaultId, namespace, appliedRevisionId);
-          baseManifest = (await this.#resolveNamespaceManifest(pointer)).manifest;
-        } catch {
-          throw new SyncConflict([`${namespace}:base-revision-unavailable`]);
-        }
-      }
+      const baseManifest = baseManifests.get(namespace);
       const baseEntries = new Map((baseManifest?.entries ?? []).map((entry) => [entry.logicalPath, entry]));
       const encoded = encodedByNamespace.get(namespace)!;
       const localEntries = encoded.entries;
@@ -485,7 +540,8 @@ export class SyncEngine {
         const violations = appendOnlyViolations(baseState, localState);
         if (violations.length > 0) throw new SyncConflict(violations.map((path) => `${namespace}:${path}:append-only`));
       }
-      const merged = mergeNamespace(baseState, remoteState, localState, { atomic: namespace.startsWith("workspace:") });
+      const mergeRemoteState = maskMergedAppendPaths(remoteState, baseState, appendMergedPaths.get(namespace));
+      const merged = mergeNamespace(baseState, mergeRemoteState, localState, { atomic: namespace.startsWith("workspace:") });
       if (merged.outcome === "conflict") throw new SyncConflict(merged.paths.map((path) => `${namespace}:${path}`));
       const finalState = merged.state;
       const remoteEntries = new Map(remoteState.entries.map((entry) => [entry.logicalPath, entry]));
@@ -563,7 +619,9 @@ export class SyncEngine {
         mode: appendOnly ? "append" as const : "replace" as const,
         pathClaims,
       });
-      if (namespaceStateEquals(finalState, localState)) nextApplied.set(namespace, { revisionId: namespaceRevisionId, digests });
+      if (!appendMergedPaths.has(namespace) && namespaceStateEquals(finalState, localState)) {
+        nextApplied.set(namespace, { revisionId: namespaceRevisionId, digests });
+      }
     }
     if (updates.length === 0) return { outcome: "unchanged", revisionId: remote.revisionId, files: 0, objects: 0, bytes: 0 };
     if (!dryRun) {
@@ -654,7 +712,7 @@ export class SyncEngine {
     appliedRevision: (namespace: string) => string,
   ): Promise<SyncResult> {
     const byNamespace = new Map(selected.map((mapping) => [mapping.namespace, mapping]));
-    const materialized: Array<{ mapping: RootMapping; path: string; bytes: Uint8Array; digest: string }> = [];
+    const materialized: Array<{ mapping: RootMapping; logicalPath: string; path: string; bytes: Uint8Array; digest: string }> = [];
     const deletions: Array<{ mapping: RootMapping; path: string; logicalPath: string }> = [];
     const workspacePayloads = new Map<string, { mapping: RootMapping; capsule?: CapturedWorkspace["capsule"]; blobs: WorkspaceBlob[] }>();
     let objectCount = manifestObjectCount;
@@ -662,18 +720,23 @@ export class SyncEngine {
     for (const entry of manifest.entries) {
       const mapping = byNamespace.get(entry.namespace);
       if (!mapping) continue;
+      if (entry.totalSize > MAX_FILE_BYTES) throw new Error(`remote file exceeds the local safety limit: ${entry.logicalPath}`);
       const keys = await this.#scopeKeys(entry.namespace);
       const chunks: Uint8Array[] = [];
+      let plaintextBytes = 0;
       for (const objectId of entry.objectIds) {
         const envelope = await getObject(entry.namespace, objectId);
         byteCount += envelope.byteLength;
         objectCount += 1;
-        chunks.push(await decryptEnvelope({
+        const chunk = await decryptEnvelope({
           envelope,
           key: keys.encryptionKey,
           dedupKey: keys.dedupKey,
           expected: { vaultId: this.vaultId, scopeId: entry.namespace, compression: "none" },
-        }));
+        });
+        plaintextBytes += chunk.byteLength;
+        if (plaintextBytes > MAX_FILE_BYTES || plaintextBytes > entry.totalSize) throw new Error("downloaded file exceeds its declared size");
+        chunks.push(chunk);
       }
       let bytes = concatChunks(chunks);
       if (bytes.byteLength !== entry.totalSize || await computeObjectId(keys.dedupKey, bytes) !== entry.contentDigest) {
@@ -707,6 +770,7 @@ export class SyncEngine {
       const localDigest = await computeObjectId(keys.dedupKey, bytes);
       materialized.push({
         mapping,
+        logicalPath: entry.logicalPath,
         path: sessionDestination(mapping, entry.logicalPath, config.workspaces),
         bytes,
         digest: localDigest,
@@ -745,7 +809,8 @@ export class SyncEngine {
       const keys = await this.#scopeKeys(item.mapping.namespace);
       const currentDigest = await computeObjectId(keys.dedupKey, current);
       const prior = config.applied[item.mapping.namespace]?.digests[item.path.slice(resolve(item.mapping.path).length + 1).split(sep).join("/")];
-      if (currentDigest !== prior && !(item.mapping.id.startsWith("workspace_") && !prior && await cleanGitDestination(item.mapping.path, item.path))) {
+      const safeSessionMerge = item.mapping.kind !== "drop" && portableSession(item.logicalPath) !== undefined && isCompleteJsonlRecordSupersequence(current, item.bytes);
+      if (currentDigest !== prior && !safeSessionMerge && !(item.mapping.id.startsWith("workspace_") && !prior && await cleanGitDestination(item.mapping.path, item.path))) {
         conflicts.push(item.path);
       }
     }
@@ -949,6 +1014,31 @@ export class SyncEngine {
       coveredPaths.add(candidate.logicalPath);
     }
     if (coveredPaths.size !== manifest.entries.length + manifest.tombstones.length) throw new Error("namespace manifest path claims do not cover its content");
+  }
+
+  async #downloadNamespaceEntry(
+    entry: NamespaceManifestV1["entries"][number],
+    keys: { encryptionKey: Uint8Array; dedupKey: Uint8Array },
+  ): Promise<Uint8Array> {
+    if (entry.totalSize > MAX_FILE_BYTES) throw new Error("remote append candidate exceeds the local safety limit");
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (const objectId of entry.objectIds) {
+      const chunk = await decryptEnvelope({
+        envelope: await this.client.getNamespaceObject(this.vaultId, entry.namespace, objectId),
+        key: keys.encryptionKey,
+        dedupKey: keys.dedupKey,
+        expected: { vaultId: this.vaultId, scopeId: entry.namespace, compression: "none" },
+      });
+      total += chunk.byteLength;
+      if (total > MAX_FILE_BYTES || total > entry.totalSize) throw new Error("remote append candidate exceeds its declared size");
+      chunks.push(chunk);
+    }
+    const bytes = concatChunks(chunks);
+    if (bytes.byteLength !== entry.totalSize || await computeObjectId(keys.dedupKey, bytes) !== entry.contentDigest) {
+      throw new Error("downloaded append base failed content verification");
+    }
+    return bytes;
   }
 
   async #downloadManifest(objectId: string): Promise<VaultManifestV1> {
@@ -1284,6 +1374,20 @@ function manifestNamespaceState(manifest: VaultManifestV1 | undefined, namespace
   return {
     entries: manifest?.entries.filter((entry) => entry.namespace === namespace) ?? [],
     tombstones: manifest?.tombstones.filter((tombstone) => tombstone.namespace === namespace) ?? [],
+  };
+}
+
+function maskMergedAppendPaths(remote: NamespaceState, base: NamespaceState, paths?: ReadonlySet<string>): NamespaceState {
+  if (!paths || paths.size === 0) return remote;
+  return {
+    entries: [
+      ...remote.entries.filter((entry) => !paths.has(entry.logicalPath)),
+      ...base.entries.filter((entry) => paths.has(entry.logicalPath)),
+    ],
+    tombstones: [
+      ...remote.tombstones.filter((entry) => !paths.has(entry.logicalPath)),
+      ...base.tombstones.filter((entry) => paths.has(entry.logicalPath)),
+    ],
   };
 }
 

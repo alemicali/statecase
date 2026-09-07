@@ -3,7 +3,7 @@
 Status: accepted
 Date: 2026-09-06
 Owners: Statecase maintainers
-Test IDs: SY-002, SY-003, SY-006, SY-007, AU-006, UAT-05
+Test IDs: SY-002, SY-003, SY-004, SY-005, SY-006, SY-007, AU-006, UAT-05
 
 ## Context
 
@@ -46,8 +46,9 @@ movement aborts resolution instead of exposing a race window.
 Different files and different session artifacts converge without coordination.
 Conflicting same-path variants remain available at the remote head and local
 filesystem; staging restore provides inspection before resolution. Concurrent
-appends to the same native JSONL and parser-safe text merges remain separate
-features rather than unsafe concatenation.
+complete-record appends to the same native JSONL are handled by the bounded,
+full-key client algorithm in ADR-0015. Parser-safe text merge remains a
+separate feature rather than unsafe concatenation.
 
 ## Security and privacy impact
 

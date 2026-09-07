@@ -567,6 +567,71 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     expect(await readFile(join(observerRoot, "from-second.txt"), "utf8")).toBe("second\n");
   });
 
+  it("merges concurrent complete-record appends to the same portable session and preserves dependency activity (SY-004, SY-005)", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-session-append-merge-"));
+    temporary.push(base);
+    const firstHarness = join(base, "first-codex");
+    const secondHarness = join(base, "second-codex");
+    const firstWorkspace = join(base, "first-workspace");
+    const secondWorkspace = join(base, "second-workspace");
+    await Promise.all([
+      mkdir(join(firstHarness, "sessions", "2026"), { recursive: true }),
+      mkdir(firstWorkspace),
+      mkdir(secondWorkspace),
+    ]);
+    const baseRecord = { type: "session_meta", payload: { cwd: firstWorkspace } };
+    const firstAppend = [
+      { type: "tool_call", id: "remote-1", name: "read_file", arguments: { path: "remote.md" } },
+      { type: "assistant", id: "remote-2", message: "first branch" },
+    ];
+    const secondAppend = [
+      { type: "tool_call", id: "local-1", name: "read_file", arguments: { path: "local.md" } },
+      { type: "assistant", id: "local-2", message: "second branch" },
+    ];
+    const sourceSession = join(firstHarness, "sessions", "2026", "session.jsonl");
+    await writeFile(sourceSession, `${JSON.stringify(baseRecord)}\n`);
+
+    const remote = new MemoryRemote();
+    const key = await randomKey();
+    const firstEngine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    const secondEngine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    const firstConfig = harnessConfig(firstHarness, firstWorkspace);
+    const secondConfig = harnessConfig(secondHarness, secondWorkspace);
+    await firstEngine.push(firstConfig);
+    await secondEngine.pull(secondConfig);
+    const commonRevision = secondConfig.applied["harness:codex:default"]!.revisionId;
+    const secondSession = join(secondHarness, "sessions", "statecase", "ws_test", "session.jsonl");
+
+    await writeFile(sourceSession, `${[baseRecord, ...firstAppend].map((record) => JSON.stringify(record)).join("\n")}\n`);
+    const localizedBase = { type: "session_meta", payload: { cwd: secondWorkspace } };
+    await firstEngine.push(firstConfig);
+    const remoteHeadBeforeRejectedRewrite = remote.namespaceHeads.get("harness:codex:default")!.revisionId;
+    await writeFile(secondSession, `${[{ ...localizedBase, rewritten: true }, ...secondAppend].map((record) => JSON.stringify(record)).join("\n")}\n`);
+    await expect(secondEngine.push(secondConfig)).rejects.toMatchObject({
+      paths: ["harness:codex:default:portable-sessions/ws_test/session.jsonl"],
+    });
+    expect(remote.namespaceHeads.get("harness:codex:default")!.revisionId).toBe(remoteHeadBeforeRejectedRewrite);
+
+    await writeFile(secondSession, `${[localizedBase, ...secondAppend].map((record) => JSON.stringify(record)).join("\n")}\n`);
+    await expect(secondEngine.push(secondConfig)).resolves.toMatchObject({ outcome: "pushed" });
+    expect(secondConfig.applied["harness:codex:default"]!.revisionId).toBe(commonRevision);
+
+    const dependencies = (await secondEngine.dependencies()).find((report) => report.sessionKey.endsWith(":session"))!;
+    expect(dependencies.dependencies).toEqual(expect.arrayContaining([
+      expect.objectContaining({ logicalPath: "remote.md" }),
+      expect.objectContaining({ logicalPath: "local.md" }),
+    ]));
+
+    await expect(secondEngine.pull(secondConfig)).resolves.toMatchObject({ outcome: "pulled" });
+    const mergedRecords = (await readFile(secondSession, "utf8")).trimEnd().split("\n").map((line) => JSON.parse(line) as { id?: string });
+    const ids = mergedRecords.flatMap((record) => record.id ? [record.id] : []);
+    expect(ids).toHaveLength(4);
+    expect(new Set(ids)).toEqual(new Set(["remote-1", "remote-2", "local-1", "local-2"]));
+    expect(ids.indexOf("remote-1")).toBeLessThan(ids.indexOf("remote-2"));
+    expect(ids.indexOf("local-1")).toBeLessThan(ids.indexOf("local-2"));
+    expect(secondConfig.applied["harness:codex:default"]!.revisionId).toBe(remote.namespaceHeads.get("harness:codex:default")!.revisionId);
+  });
+
   it("preserves an explicit conflict when two offline devices modify the same path (SY-006, SY-007)", async () => {
     const base = await mkdtemp(join(tmpdir(), "statecase-three-way-conflict-"));
     temporary.push(base);
@@ -692,7 +757,7 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     expect(await emptyEngine.push(config(emptyRootPath))).toMatchObject({ outcome: "pushed" });
   });
 
-  it("rejects mismatched, branching, and cyclic encrypted namespace histories", async () => {
+  it("rejects mismatched, oversized, branching, and cyclic encrypted namespace histories (PR-006)", async () => {
     const base = await mkdtemp(join(tmpdir(), "statecase-scoped-history-"));
     temporary.push(base);
     const rootKey = await randomKey();
@@ -720,6 +785,28 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     unboundClaims.namespaceHeads.set(unboundManifest.namespace, { namespace: unboundManifest.namespace, revisionId: unboundManifest.namespaceRevisionId, manifestObjectId: unboundObject });
     unboundClaims.scopedRevisionId = "srev_unbound";
     await expect(clientFor(unboundClaims).pull(config(join(base, "unbound")))).rejects.toThrow("path claims do not cover");
+
+    const oversized = new MemoryRemote();
+    const oversizedManifest = namespaceManifest("nrev_oversized", "snapshot", []);
+    oversizedManifest.entries.push({
+      namespace: oversizedManifest.namespace,
+      logicalPath: "oversized.jsonl",
+      entryType: "file",
+      objectIds: ["obj_must_not_be_fetched"],
+      totalSize: 256 * 1024 * 1024 + 1,
+      contentDigest: "digest_oversized",
+    });
+    const oversizedKeys = await deriveScopeKey(rootKey, oversizedManifest.namespace);
+    oversizedManifest.pathClaims.push({ pathId: await testPathId(oversizedKeys.dedupKey, "oversized.jsonl"), mutation: "add" });
+    const oversizedObject = await storeNamespaceManifest(oversized, rootKey, oversizedManifest);
+    oversized.namespaceHeads.set(oversizedManifest.namespace, {
+      namespace: oversizedManifest.namespace,
+      revisionId: oversizedManifest.namespaceRevisionId,
+      manifestObjectId: oversizedObject,
+    });
+    oversized.scopedRevisionId = "srev_oversized";
+    await expect(clientFor(oversized).pull(config(join(base, "oversized"))))
+      .rejects.toThrow("remote file exceeds the local safety limit");
 
     const duplicateCoverage = new MemoryRemote();
     const duplicateManifest = namespaceManifest("nrev_duplicate_coverage", "snapshot", []);

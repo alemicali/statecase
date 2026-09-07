@@ -33,10 +33,14 @@ exit status. Protocol 1.1 gives ephemeral machines a one-time bootstrap into
 explicit encrypted namespaces: no vault root key is transferred, scoped
 clients cannot use legacy vault-wide routes, and read+append work is published
 as an immutable delta that persistent devices can reconcile.
+Full-key devices deterministically merge concurrent complete-record appends to
+the same recognized Codex or Claude JSONL session when both retain the exact
+accepted prefix. The merge preserves both branch orders and dependency
+activity; rewrites, invalid tails, and incompatible order remain conflicts.
 
 The persistent daemon can run with `statecase daemon foreground` or be installed
-as a systemd user service / macOS LaunchAgent. Real-OS service UAT, append-aware
-same-session merge, initialized-submodule
+as a systemd user service / macOS LaunchAgent. Real-OS service UAT,
+multi-gigabyte session streaming, initialized-submodule
 hydration, automatic retention/in-place
 restore, post-revocation key rewrapping,
 key rotation, and real-version Codex/Claude fixture certification remain
@@ -174,9 +178,12 @@ live head using `restore --revision <id> --mapping <id> --target <staging-dir>`.
 Statecase refuses a non-empty staging target unless `--yes` is explicit, and
 normal conflict checks still apply after confirmation.
 
-Offline edits to different files or session records merge automatically against
-the last revision each device actually applied. Same-path divergence fails with
-explicit paths. After inspecting the remote side through staging restore, an
+Offline edits to different files merge automatically against the last revision
+each device actually applied. Concurrent complete-record appends to the same
+portable session also merge on full-key clients; the publisher must pull the
+merged result before resume because its applied marker intentionally stays
+behind. Other same-path divergence fails with explicit paths. After inspecting
+the remote side through staging restore, an
 intentional local winner can be published with `conflicts resolve --mapping
 <id> --strategy local --yes`; Statecase first protects the exact remote head.
 

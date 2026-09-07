@@ -4,6 +4,12 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Added deterministic full-key client merge for concurrent complete-record
+  appends to the same portable Codex or Claude JSONL session. The merge requires
+  a byte-identical accepted prefix, preserves both branch orders, deduplicates
+  canonical record occurrences, rebuilds Session Capsule activity, and keeps
+  the publisher unapplied until a verified pull. Rewrites, malformed/incomplete
+  records, incompatible order, scoped clients, and oversized inputs fail closed.
 - Package the CLI as a self-contained npm tarball with its canonical
   agent skill and runtime SQLite dependency.
 

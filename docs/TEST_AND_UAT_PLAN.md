@@ -105,9 +105,11 @@ regression ID.
 - `SY-001`: canonical manifest serialization is byte-deterministic.
 - `SY-002`: disjoint edits commute regardless of commit arrival order.
 - `SY-003`: identical concurrent objects deduplicate.
-- `SY-004`: append streams with a valid common prefix merge once and preserve
-  record order.
-- `SY-005`: a rewritten accepted prefix creates a preserved fork.
+- `SY-004`: complete JSONL append streams with a byte-identical common prefix
+  converge deterministically, deduplicate shared occurrences, preserve each
+  branch order, and retain dependency activity from both branches.
+- `SY-005`: a rewritten accepted prefix or incompatible record order fails
+  closed while preserving the remote head and local branch as conflict sides.
 - `SY-006`: delete versus modify creates a conflict, not silent deletion.
 - `SY-007`: binary conflict preserves both variants.
 - `SY-008`: safe three-way text merge produces the same result on every client.

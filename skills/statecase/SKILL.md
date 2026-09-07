@@ -40,6 +40,12 @@ A scoped client has no vault root key. Treat an authorization error for an unlis
 9. Preview a risky transfer with `--dry-run`, then run `statecase --json sync`.
 10. Inspect exit codes and JSON. Do not scrape decorative human output.
 
+On a full-key device, Statecase may merge concurrent complete-record appends to
+the same portable Codex or Claude session. If a push succeeds but status still
+shows the harness namespace behind, run `statecase --json pull` before resume;
+this is intentional because the merged remote stream contains records from the
+other branch. A scoped capability never performs this trusted same-path merge.
+
 ## Resume a session
 
 Before resuming on a different machine, run `statecase --json workspace dependencies` and select the intended `sessionCapsuleId`. Hydrate that immutable closure with:
@@ -54,7 +60,9 @@ Use `strict` for unattended work. In an interactive workflow, `warn` may materia
 ## Error policy
 
 - Exit `3`: authentication or enrollment is required; ask the operator to complete it outside chat.
-- Exit `5`: preserve both sides and report the conflicting paths. Do not overwrite them.
+- Exit `5`: preserve both sides and report the conflicting paths. A rewritten
+  session prefix or incompatible event order is not a safe append; do not force
+  resolution automatically or concatenate the files.
 - `BASELINE_UNAVAILABLE` with exit `5`: if policy is `ask`, request approval to fetch with system Git or have the operator provision the commit. After approval, reattach the same ID/path with `--git-fetch auto` and retry. Never ask for Git credentials in chat and never change a `never` policy without explicit direction.
 - `GIT_LFS_CONTENT_UNAVAILABLE` with exit `5`: report the logical paths and reason. If the workspace policy is `ask`, request approval to reattach it with `--git-fetch auto`; Statecase will use only device-local Git LFS, its cache, and the existing origin. For `binary-missing`, ask the operator to install Git LFS; for `download-failed`, ask them to verify device-local credentials/network; for `integrity`, stop and preserve the rollback. Never request credentials, copy LFS storage, or silently switch to metadata-only mode.
 - Exit `6`: stop. Treat this as an integrity or cryptographic failure.

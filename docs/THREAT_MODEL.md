@@ -176,13 +176,19 @@ Controls:
 
 ### Native format and live-state corruption
 
-Threats: partial JSONL line, active SQLite/WAL copy, harness upgrade, restore
+Threats: partial JSONL line, invalid UTF-8, rewritten accepted history,
+duplicate/shared records, incompatible concurrent event order, maliciously
+oversized manifest entries, active SQLite/WAL copy, harness upgrade, restore
 while process writes, machine-specific configuration transported elsewhere.
 
 Controls:
 
 - adapter allowlists and versioned fixtures;
-- complete-record append readers and prefix verification;
+- byte-identical accepted-prefix verification and complete-record JSONL parsing;
+- deterministic canonical-occurrence merge only on full-key clients;
+- record-supersequence verification before replacing a locally changed session;
+- bounded merge inputs and pre-download declared-size rejection;
+- scoped append clients cannot invoke trusted same-path merge semantics;
 - exclude live DB/WAL/locks unless a consistent export exists;
 - portable-field filtering;
 - stopped-harness requirement for dangerous in-place restore;

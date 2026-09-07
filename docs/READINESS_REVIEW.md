@@ -169,8 +169,20 @@ memberships and all bound sessions; attempts to re-register through a revoked
 session fail. Cryptographic key rewrapping after revocation remains a separate
 release gate because already-decrypted data cannot be remotely withdrawn.
 
+Full-key devices now merge concurrent appends to the same recognized Codex or
+Claude JSONL session when both branches retain one byte-identical complete
+base. Canonical record occurrences deduplicate shared events, a deterministic
+topological merge preserves each branch order, and malformed, incomplete,
+rewritten, or order-incompatible histories fail closed without advancing the
+remote head. The merged Session Capsule re-extracts activity from both branches.
+The publisher keeps its old applied marker until a verified record-supersequence
+pull materializes the result. Scoped capability clients are excluded from this
+trusted same-path merge. Unit and in-memory two-device integration evidence is
+green; packaged cross-machine UAT and constant-memory multi-gigabyte handling
+remain outstanding.
+
 Automated background steady state is not yet claimed. Real-OS daemon/service
-UAT, append-aware same-session merge, automatic retention/in-place restore,
+UAT, multi-gigabyte incremental session streaming, automatic retention/in-place restore,
 post-revocation key rewrap,
 and complete historical Session Capsules remain blocking work for a public or
 unattended release.
