@@ -4,6 +4,14 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Added forward-forking in-place historical restore for full-key, two-way Drop
+  and stopped Codex/Claude mappings. Restore now excludes daemon/harness
+  writers, refuses SQLite/WAL/SHM targets, protects the current cloud head,
+  persists an exact owner-only local emergency snapshot, validates the applied
+  adapter state, rolls back on optimistic-commit failure, and publishes a new
+  revision without rewinding shared history. An explicit offline `emergency
+  rollback` command restores the pre-restore local state; workspace in-place
+  restore remains deliberately unsupported.
 - Qualified bounded multi-gigabyte session portability against the live
   Cloudflare service in Daytona: a 2,147,483,737-byte Codex JSONL round trip,
   two bounded tail uploads, deterministic concurrent append merge, and

@@ -212,10 +212,18 @@ safety reserve and retain fail-clean semantics if capacity later changes. A
 Daytona object-backed temporary mount exposed and now has regression coverage
 for an empty temporary root disappearing between sync commands.
 
+Full-key, two-way Drop and stopped Codex/Claude mappings now support explicit
+in-place historical restore. The flow creates both a protected cloud snapshot
+and a persistent local emergency snapshot, excludes daemon/harness writers,
+rejects SQLite-family targets, validates materialized adapter state, rolls back
+failed commits, and publishes a new forward revision rather than rewinding the
+shared head. Workspace in-place restore remains deliberately disabled until
+its Git transaction is qualified.
+
 Automated background steady state is not yet claimed. Real-OS daemon/service
-UAT, in-place restore, post-revocation key rewrap, and
-real harness-version compatibility remain blocking work for a public or
-unattended release.
+UAT, live harness/Drop restore UAT, workspace in-place restore,
+post-revocation key rewrap, and real harness-version compatibility remain
+blocking work for a public or unattended release.
 
 The design is intentionally not called production-complete. Crypto selection,
 identity provider, exact compatibility matrix, and legal/commercial decisions

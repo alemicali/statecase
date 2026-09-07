@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { StatecaseClient } from "../src/client.js";
 import { sessionBindingKey, type LocalConfig } from "../src/config.js";
+import { createEmergencySnapshot, restoreEmergencySnapshot } from "../src/emergency.js";
 import { SyncConflict, SyncEngine } from "../src/sync.js";
 
 const temporary: string[] = [];
@@ -420,6 +421,28 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
       contentDigest: "obj_wrong_digest",
     });
     await expect(engineFor(badDigest).pull(config(join(base, "digest")))).rejects.toThrow("content verification");
+
+    const excludedTombstone = new MemoryRemote();
+    const excludedManifest = namespaceManifest("nrev_excluded_tombstone", "snapshot", []);
+    excludedManifest.tombstones.push({
+      namespace: excludedManifest.namespace,
+      logicalPath: ".env",
+      deletedAt: "2026-09-07T10:00:00.000Z",
+    });
+    const excludedKeys = await deriveScopeKey(rootKey, excludedManifest.namespace);
+    excludedManifest.pathClaims.push({ pathId: await testPathId(excludedKeys.dedupKey, ".env"), mutation: "delete" });
+    const excludedObject = await storeNamespaceManifest(excludedTombstone, rootKey, excludedManifest);
+    excludedTombstone.namespaceHeads.set(excludedManifest.namespace, {
+      namespace: excludedManifest.namespace,
+      revisionId: excludedManifest.namespaceRevisionId,
+      manifestObjectId: excludedObject,
+    });
+    excludedTombstone.scopedRevisionId = "srev_excluded_tombstone";
+    const excludedTarget = join(base, "excluded-tombstone");
+    await mkdir(excludedTarget);
+    await writeFile(join(excludedTarget, ".env"), "SECRET=preserved\n");
+    await expect(engineFor(excludedTombstone).pull(config(excludedTarget))).rejects.toThrow("adapter policy");
+    expect(await readFile(join(excludedTarget, ".env"), "utf8")).toBe("SECRET=preserved\n");
 
     const portableDrop = new MemoryRemote();
     await publishStreamFixture(portableDrop, rootKey, {
@@ -898,6 +921,184 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     await mkdir(scopedStaging);
     await expect(engine.pull(config(scopedStaging), false, second.revisionId!)).resolves.toMatchObject({ outcome: "pulled" });
     expect(await readFile(join(scopedStaging, "context.txt"), "utf8")).toBe("version two\n");
+  });
+
+  it("restores a historical Drop exactly in place, rolls back a failed fork, and publishes a new revision (BK-007, BK-009, BK-011)", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-in-place-"));
+    temporary.push(base);
+    const root = join(base, "drop");
+    await mkdir(join(root, "nested"), { recursive: true });
+    await writeFile(join(root, "context.txt"), "version one\n");
+    await writeFile(join(root, "resurrect.txt"), "historical\n");
+    await writeFile(join(root, "nested", "historical.txt"), "nested historical\n");
+    const remote = new MemoryRemote();
+    const key = await randomKey();
+    const engine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    const local = config(root);
+    const historical = await engine.push(local);
+    await writeFile(join(root, "context.txt"), "version two\n");
+    await rm(join(root, "resurrect.txt"));
+    await rm(join(root, "nested"), { recursive: true });
+    await writeFile(join(root, "newer.txt"), "newer remote state\n");
+    const current = await engine.push(local);
+    await writeFile(join(root, "local-only.txt"), "unpublished local state\n");
+
+    const dryRun = await engine.restoreInPlace(local, local.mappings[0]!, historical.revisionId!, { dryRun: true });
+    expect(dryRun).toMatchObject({ outcome: "pulled", dryRun: true, historicalRevisionId: historical.revisionId });
+    expect(remote.scopedRevisionId).toBe(current.revisionId);
+    expect(await readFile(join(root, "context.txt"), "utf8")).toBe("version two\n");
+
+    remote.failNextNamespaceCommit = true;
+    const prepareRecovery = async (paths: readonly string[]) => {
+      const snapshot = await createEmergencySnapshot({
+        id: `restore_${crypto.randomUUID().replaceAll("-", "")}`,
+        createdAt: new Date().toISOString(),
+        statecaseHome: join(base, "statecase"),
+        targetRoot: root,
+        paths,
+      });
+      return { rollback: () => restoreEmergencySnapshot(snapshot.path) };
+    };
+    await expect(engine.restoreInPlace(local, local.mappings[0]!, historical.revisionId!, { prepareRecovery }))
+      .rejects.toMatchObject({ status: 409 });
+    expect(await readFile(join(root, "context.txt"), "utf8")).toBe("version two\n");
+    await expect(readFile(join(root, "resurrect.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(join(root, "nested", "historical.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(join(root, "newer.txt"), "utf8")).toBe("newer remote state\n");
+    expect(await readFile(join(root, "local-only.txt"), "utf8")).toBe("unpublished local state\n");
+
+    const restored = await engine.restoreInPlace(local, local.mappings[0]!, historical.revisionId!, { prepareRecovery });
+    expect(restored).toMatchObject({ outcome: "pulled", dryRun: false, historicalRevisionId: historical.revisionId });
+    expect(restored.revisionId).not.toBe(historical.revisionId);
+    expect(restored.revisionId).not.toBe(current.revisionId);
+    expect(await readFile(join(root, "context.txt"), "utf8")).toBe("version one\n");
+    expect(await readFile(join(root, "resurrect.txt"), "utf8")).toBe("historical\n");
+    expect(await readFile(join(root, "nested", "historical.txt"), "utf8")).toBe("nested historical\n");
+    await expect(readFile(join(root, "newer.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(join(root, "local-only.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+
+    const observerRoot = join(base, "observer");
+    await mkdir(observerRoot);
+    await new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key).pull(config(observerRoot));
+    expect(await readFile(join(observerRoot, "context.txt"), "utf8")).toBe("version one\n");
+    expect(await readFile(join(observerRoot, "resurrect.txt"), "utf8")).toBe("historical\n");
+    expect(await readFile(join(observerRoot, "nested", "historical.txt"), "utf8")).toBe("nested historical\n");
+    await expect(readFile(join(observerRoot, "newer.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("refuses SQLite-family in-place targets before recovery preparation or mutation (BK-007)", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-in-place-db-"));
+    temporary.push(base);
+    const root = join(base, "drop");
+    await mkdir(root);
+    await writeFile(join(root, "state.db"), "database fixture");
+    const remote = new MemoryRemote();
+    const key = await randomKey();
+    const engine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    const local = config(root);
+    const historical = await engine.push(local);
+    const consume = structuredClone(local);
+    consume.mappings[0]!.mode = "consume";
+    await expect(engine.restoreInPlace(consume, consume.mappings[0]!, historical.revisionId!, { dryRun: true }))
+      .rejects.toThrow("two-way");
+    await rm(join(root, "state.db"));
+    const current = await engine.push(local);
+    let prepared = false;
+    await expect(engine.restoreInPlace(local, local.mappings[0]!, historical.revisionId!, {
+      prepareRecovery: async () => {
+        prepared = true;
+        return { rollback: async () => undefined };
+      },
+    })).rejects.toThrow("SQLite");
+    expect(prepared).toBe(false);
+    expect(remote.scopedRevisionId).toBe(current.revisionId);
+    await expect(readFile(join(root, "state.db"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("refuses an in-place target whose parent path has become a symlink (BK-007)", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-in-place-symlink-"));
+    temporary.push(base);
+    const root = join(base, "drop");
+    const outside = join(base, "outside");
+    await Promise.all([mkdir(join(root, "nested"), { recursive: true }), mkdir(outside)]);
+    await writeFile(join(root, "nested", "context.txt"), "historical\n");
+    await writeFile(join(outside, "context.txt"), "outside must survive\n");
+    const remote = new MemoryRemote();
+    const key = await randomKey();
+    const engine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    const local = config(root);
+    const historical = await engine.push(local);
+    await rm(join(root, "nested"), { recursive: true });
+    await engine.push(local);
+
+    const linkedRoot = join(base, "linked-root");
+    await symlink(root, linkedRoot);
+    const linkedConfig = config(linkedRoot);
+    await expect(engine.restoreInPlace(linkedConfig, linkedConfig.mappings[0]!, historical.revisionId!, { dryRun: true }))
+      .rejects.toThrow("real directory");
+
+    await symlink(outside, join(root, "nested"));
+    let prepared = false;
+    await expect(engine.restoreInPlace(local, local.mappings[0]!, historical.revisionId!, {
+      prepareRecovery: async () => {
+        prepared = true;
+        return { rollback: async () => undefined };
+      },
+    })).rejects.toThrow("symlinked");
+    expect(prepared).toBe(false);
+    expect(await readFile(join(outside, "context.txt"), "utf8")).toBe("outside must survive\n");
+
+    await rm(join(root, "nested"));
+    await writeFile(join(root, "nested"), "ordinary file blocks the parent path\n");
+    await expect(engine.restoreInPlace(local, local.mappings[0]!, historical.revisionId!, {
+      prepareRecovery: async () => {
+        prepared = true;
+        return { rollback: async () => undefined };
+      },
+    })).rejects.toThrow(/not a directory|ENOTDIR/u);
+    expect(prepared).toBe(false);
+  });
+
+  it("preserves the historical Session Capsule pins when forking a harness restore (BK-010, WS-024)", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-in-place-session-"));
+    temporary.push(base);
+    const harness = join(base, "codex");
+    const workspace = join(base, "workspace");
+    const session = join(harness, "sessions", "2026", "09", "07", "restore.jsonl");
+    await Promise.all([mkdir(join(harness, "sessions", "2026", "09", "07"), { recursive: true }), mkdir(workspace)]);
+    const firstRecord = JSON.stringify({ type: "session_meta", payload: { cwd: workspace } });
+    await writeFile(session, `${firstRecord}\n`);
+    const remote = new MemoryRemote();
+    const key = await randomKey();
+    const engine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    const local = harnessConfig(harness, workspace);
+    const historical = await engine.push(local);
+    const historicalHead = remote.scopedRevisions.get(historical.revisionId!)!.namespaces
+      .find((head) => head.namespace === "harness:codex:default")!;
+    const historicalManifest = await readTestNamespaceManifest(remote, key, historicalHead);
+    await writeFile(session, `${firstRecord}\n${JSON.stringify({ type: "response_item", payload: { value: 2 } })}\n`);
+    await engine.push(local);
+
+    const statecaseHome = join(base, "statecase");
+    const restored = await engine.restoreInPlace(local, local.mappings[0]!, historical.revisionId!, {
+      prepareRecovery: async (paths) => {
+        const snapshot = await createEmergencySnapshot({
+          id: "restore_session_capsule",
+          createdAt: "2026-09-07T18:00:00.000Z",
+          statecaseHome,
+          targetRoot: harness,
+          paths,
+          harness: "codex",
+        });
+        return { rollback: () => restoreEmergencySnapshot(snapshot.path) };
+      },
+    });
+    const restoredHead = remote.namespaceHeads.get("harness:codex:default")!;
+    const restoredManifest = await readTestNamespaceManifest(remote, key, restoredHead);
+    expect(restoredManifest.sessionCapsules).toEqual(historicalManifest.sessionCapsules);
+    expect(restoredManifest.sessionCapsules?.[0]?.harnessRevisionId).toBe(historical.revisionId);
+    expect(restored.revisionId).not.toBe(historical.revisionId);
+    expect(await readFile(session, "utf8")).toBe(`${firstRecord}\n`);
   });
 
   it("merges disjoint offline edits and pulls the remote side before marking it applied (SY-002, SY-003)", async () => {
@@ -1662,6 +1863,7 @@ class MemoryRemote {
     }>;
   }> = [];
   allowLegacyReads = true;
+  failNextNamespaceCommit = false;
 
   fetch: typeof fetch = async (input, init) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
@@ -1694,6 +1896,10 @@ class MemoryRemote {
     if (url.pathname.endsWith("/namespace-commits")) {
       const request = JSON.parse(String(init?.body)) as (typeof this.namespaceCommitRequests)[number];
       this.namespaceCommitRequests.push(structuredClone(request));
+      if (this.failNextNamespaceCommit) {
+        this.failNextNamespaceCommit = false;
+        return Response.json({ error: { code: "STALE_BASE", message: "injected advancement" } }, { status: 409 });
+      }
       const stale = request.updates.filter((update) => (this.namespaceHeads.get(update.namespace)?.revisionId ?? null) !== update.baseNamespaceRevisionId);
       if (stale.length > 0) return Response.json({ error: { code: "STALE_BASE", message: "advanced" } }, { status: 409 });
       for (const update of request.updates) {

@@ -59,6 +59,14 @@ Use `strict` for unattended work. In an interactive workflow, `warn` may materia
 
 Treat the capsule as the authority even when its harness, workspace, and Drops pin different revision IDs. The CLI authenticates and atomically composes those historical namespace states; never replace a pinned revision with the current head.
 
+## Restore safely
+
+Prefer staging inspection with `statecase --json restore --revision <id> --mapping <id> --target <staging-dir> --dry-run`. Never use a configured live mapping path as a staging target.
+
+For a two-way Drop or Codex/Claude mapping, in-place restore is allowed only on a full-key device and only after explicit operator approval. Run `statecase --json restore --revision <id> --mapping <id> --in-place --dry-run`, report creates/replaces/deletes, and ask the operator to stop the Statecase daemon and every process for that harness. After approval, run the same command with `--yes` instead of `--dry-run`. Do not launch the affected harness from the same agent turn while restoring it.
+
+Preserve the returned `protectedSnapshotId` and `emergencySnapshotPath`. Explain that the historical state was published as a new forward revision, not as a remote-head rewind. If the operator explicitly requests the pre-restore local state, keep daemon/harness processes stopped and run `statecase --json emergency rollback <emergencySnapshotPath> --yes`; this rollback works without cloud access. Never edit or relocate the emergency snapshot before verification. Workspace in-place restore is unsupported; use staging restore for a workspace.
+
 ## Retention maintenance
 
 Use `statecase --json retention plan` to inspect encrypted object and byte counts without mutation. Run `statecase --json retention collect --yes` only after explicit operator approval; normal installations already receive the same retention policy from the daily cloud schedule. Never remove R2 objects directly. Treat `GC_BUSY` as bounded contention and retry after the reported lease interval.

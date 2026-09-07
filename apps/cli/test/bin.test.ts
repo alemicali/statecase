@@ -106,6 +106,24 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
     expect(await command(io, "--json", "restore", "--revision", initialRevisionId, "--mapping", drop.id, "--target", restoreTarget)).toBe(0);
     expect(await readFile(join(restoreTarget, "context.txt"), "utf8")).toBe("context from machine A\n");
     expect(await command(io, "--json", "restore", "--revision", initialRevisionId, "--mapping", drop.id, "--target", restoreTarget)).toBe(2);
+    expect(await command(io, "--json", "restore", "--revision", initialRevisionId, "--mapping", drop.id, "--target", source)).toBe(2);
+    expect(await command(io, "--json", "restore", "--revision", initialRevisionId, "--mapping", drop.id, "--in-place")).toBe(2);
+    expect(await command(io, "--json", "restore", "--revision", initialRevisionId, "--mapping", drop.id, "--in-place", "--dry-run")).toBe(0);
+    expect(await readFile(join(source, "context.txt"), "utf8")).toBe("context updated in sandbox\n");
+    expect(await command(io, "--json", "restore", "--revision", initialRevisionId, "--mapping", drop.id, "--in-place", "--yes")).toBe(0);
+    const inPlace = JSON.parse(output.at(-1)!) as { mode: string; protectedSnapshotId: string; emergencySnapshotPath: string; result: { revisionId: string } };
+    expect(inPlace).toMatchObject({
+      mode: "in-place",
+      protectedSnapshotId: expect.stringMatching(/^snp_/u),
+      emergencySnapshotPath: expect.stringContaining("/recovery/restore_"),
+      result: { revisionId: expect.stringMatching(/^srev_/u) },
+    });
+    expect(await readFile(join(source, "context.txt"), "utf8")).toBe("context from machine A\n");
+    expect(JSON.parse(await readFile(join(inPlace.emergencySnapshotPath, "manifest.json"), "utf8"))).toMatchObject({ version: 1, targetRoot: source });
+    expect(await command(io, "--json", "emergency", "rollback", inPlace.emergencySnapshotPath)).toBe(2);
+    expect(await command(io, "--json", "emergency", "rollback", inPlace.emergencySnapshotPath, "--yes")).toBe(0);
+    expect(await readFile(join(source, "context.txt"), "utf8")).toBe("context updated in sandbox\n");
+    expect(await command(io, "--json", "push")).toBe(0);
     expect(await command(io, "--json", "restore", "--revision", initialRevisionId, "--mapping", "missing", "--target", join(base, "missing"))).toBe(2);
     expect(await command(io, "--json", "conflicts", "resolve", "--mapping", drop.id, "--strategy", "local")).toBe(2);
     expect(await command(io, "--json", "conflicts", "resolve", "--mapping", drop.id, "--strategy", "remote", "--yes")).toBe(2);

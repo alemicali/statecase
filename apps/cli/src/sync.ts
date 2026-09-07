@@ -37,7 +37,7 @@ import type { ScopedVaultKeys } from "./capability.js";
 import type { StatecaseClient } from "./client.js";
 import { isCompleteJsonlRecordSupersequence } from "./append-merge.js";
 import { isCompleteJsonlFileRecordSupersequence, mergeJsonlAppendFiles } from "./append-merge-file.js";
-import { applyFileTransaction } from "./materialize.js";
+import { applyFileTransaction, type FileTransaction } from "./materialize.js";
 import {
   inspectPortableSessionActivity,
   localizePortableSession,
@@ -89,6 +89,23 @@ export interface SyncResult {
   files: number;
   objects: number;
   bytes: number;
+}
+
+export interface InPlaceRestoreResult extends SyncResult {
+  dryRun: boolean;
+  historicalRevisionId: string;
+  namespace: string;
+  namespaceRevisionId: string;
+}
+
+export interface InPlaceRestoreOptions {
+  dryRun?: boolean;
+  prepareRecovery?: (paths: readonly string[]) => Promise<{ rollback(): Promise<void> }>;
+}
+
+interface MaterializationOptions {
+  allowLocalOverwrite?: boolean;
+  materialize?: (transaction: FileTransaction) => Promise<void>;
 }
 
 export class SyncConflict extends Error {
@@ -850,6 +867,206 @@ export class SyncEngine {
       () => head.revisionId!);
   }
 
+  async restoreInPlace(
+    config: LocalConfig,
+    mapping: RootMapping,
+    historicalRevisionId: string,
+    options: InPlaceRestoreOptions = {},
+  ): Promise<InPlaceRestoreResult> {
+    if (!this.vaultKey) throw new Error("in-place restore requires a full-key device");
+    if (mapping.id.startsWith("workspace_") || mapping.namespace.startsWith("workspace:")) {
+      throw new Error("workspace in-place restore is not implemented");
+    }
+    const configured = config.mappings.find((candidate) => candidate.id === mapping.id);
+    if (!configured || configured.namespace !== mapping.namespace || configured.kind !== mapping.kind || configured.mode !== mapping.mode ||
+        resolve(configured.path) !== resolve(mapping.path)) {
+      throw new Error("in-place restore mapping does not match this device");
+    }
+    if (mapping.mode !== "two-way") throw new Error("in-place restore requires a two-way mapping");
+    const targetRootInfo = await lstat(resolve(mapping.path));
+    if (!targetRootInfo.isDirectory() || targetRootInfo.isSymbolicLink()) {
+      throw new Error("in-place restore target root must be a real directory");
+    }
+    const dryRun = options.dryRun ?? false;
+    if (!dryRun && !options.prepareRecovery) throw new Error("in-place restore requires persistent recovery preparation");
+    const remote = await this.client.namespaceHeads(this.vaultId);
+    if (!remote.revisionId) throw new Error("in-place restore requires a scoped vault revision");
+    const historical = await this.client.scopedRevision(this.vaultId, historicalRevisionId);
+    const currentHead = remote.namespaces.find((head) => head.namespace === mapping.namespace);
+    const historicalHead = historical.namespaces.find((head) => head.namespace === mapping.namespace);
+    if (!currentHead || !historicalHead) throw new Error(`namespace is unavailable in the selected revision: ${mapping.namespace}`);
+    const current = (await this.#resolveNamespaceManifest(currentHead)).manifest;
+    const target = (await this.#resolveNamespaceManifest(historicalHead)).manifest;
+    if ((target.conflicts?.length ?? 0) > 0) throw new Error("in-place restore refuses a revision with unresolved conflicts");
+
+    const workingConfig = structuredClone(config);
+    const local = await scanWritableMappings([mapping], workingConfig.workspaces, true);
+    let materialized = false;
+    let recovery: { rollback(): Promise<void> } | undefined;
+    try {
+      recordSessionBindings(workingConfig, [mapping], local);
+      const desiredPaths = new Set(target.entries.map((entry) => entry.logicalPath));
+      const tombstones = new Map(target.tombstones.map((tombstone) => [tombstone.logicalPath, tombstone]));
+      const deletedAt = new Date().toISOString();
+      for (const tombstone of current.tombstones) {
+        if (!desiredPaths.has(tombstone.logicalPath) && !tombstones.has(tombstone.logicalPath)) {
+          tombstones.set(tombstone.logicalPath, tombstone);
+        }
+      }
+      for (const logicalPath of [
+        ...current.entries.map((entry) => entry.logicalPath),
+        ...local.map((entry) => entry.logicalPath),
+      ]) {
+        if (!desiredPaths.has(logicalPath)) tombstones.set(logicalPath, { namespace: mapping.namespace, logicalPath, deletedAt });
+      }
+      for (const logicalPath of desiredPaths) tombstones.delete(logicalPath);
+      const combined: VaultManifestV1 = {
+        schemaVersion: 1,
+        vaultId: this.vaultId,
+        revisionId: historicalRevisionId,
+        parentRevisionIds: [],
+        createdAt: target.createdAt,
+        createdByDeviceId: target.createdByDeviceId,
+        operationId: target.operationId,
+        entries: target.entries,
+        tombstones: [...tombstones.values()].sort((left, right) => left.logicalPath.localeCompare(right.logicalPath, "en")),
+        conflicts: [],
+        sessionCapsules: target.sessionCapsules ?? [],
+      };
+      const pulled = await this.#materializeManifest(
+        workingConfig,
+        dryRun,
+        historicalRevisionId,
+        combined,
+        [mapping],
+        1,
+        (namespace, objectId) => this.client.getNamespaceObject(this.vaultId, namespace, objectId),
+        () => historicalHead.revisionId,
+        {
+          allowLocalOverwrite: true,
+          ...(!dryRun ? {
+            materialize: async (transaction) => {
+              const paths = transactionTargets(transaction);
+              await assertRestoreTransactionSafe(mapping.path, paths);
+              recovery = await options.prepareRecovery!(paths);
+              await applyFileTransaction(transaction);
+              materialized = true;
+            },
+          } : {}),
+        },
+      );
+      if (dryRun) {
+        return {
+          ...pulled,
+          dryRun: true,
+          historicalRevisionId,
+          namespace: mapping.namespace,
+          namespaceRevisionId: historicalHead.revisionId,
+        };
+      }
+
+      const validated = await scanWritableMappings([mapping], workingConfig.workspaces, true);
+      try {
+        const actualPaths = new Set(validated.map((entry) => entry.logicalPath));
+        if (actualPaths.size !== desiredPaths.size || [...desiredPaths].some((path) => !actualPaths.has(path))) {
+          throw new Error("restored namespace failed adapter validation");
+        }
+        const keys = await this.#scopeKeys(mapping.namespace);
+        for (const entry of target.entries) {
+          const expected = workingConfig.applied[mapping.namespace]?.digests[entry.logicalPath];
+          const actual = await optionalFileDigest(sessionDestination(mapping, entry.logicalPath, workingConfig), keys);
+          if (!expected || actual !== expected) {
+            throw new Error("restored namespace failed content validation");
+          }
+        }
+      } finally {
+        await Promise.all(validated.flatMap((entry) => entry.dispose ? [entry.dispose()] : []));
+      }
+
+      const operationId = randomId("op");
+      const namespaceRevisionId = randomId("nrev");
+      const vaultRevisionId = randomId("srev");
+      const createdAt = new Date().toISOString();
+      const createdByDeviceId = workingConfig.deviceId ?? (workingConfig.deviceName ? safeIdentifier(workingConfig.deviceName, "device") : "device_unknown");
+      const keys = await this.#scopeKeys(mapping.namespace);
+      const currentPaths = new Set(current.entries.map((entry) => entry.logicalPath));
+      const pathClaims = [
+        ...target.entries.map((entry) => ({
+          pathId: "",
+          logicalPath: entry.logicalPath,
+          mutation: currentPaths.has(entry.logicalPath) ? "update" as const : "add" as const,
+        })),
+        ...combined.tombstones.map((tombstone) => ({ pathId: "", logicalPath: tombstone.logicalPath, mutation: "delete" as const })),
+      ];
+      for (const claim of pathClaims) claim.pathId = await computePathId(keys.dedupKey, claim.logicalPath);
+      const restoredManifest = namespaceManifestSchema.parse({
+        schemaVersion: 1,
+        vaultId: this.vaultId,
+        namespace: mapping.namespace,
+        namespaceRevisionId,
+        parentNamespaceRevisionIds: [currentHead.revisionId],
+        createdAt,
+        createdByDeviceId,
+        operationId,
+        mode: "snapshot",
+        entries: target.entries,
+        tombstones: combined.tombstones,
+        conflicts: [],
+        sessionCapsules: target.sessionCapsules ?? [],
+        pathClaims: pathClaims.map(({ pathId, mutation }) => ({ pathId, mutation })),
+      });
+      const manifestBytes = encoder.encode(canonicalJson(restoredManifest));
+      const manifestObjectId = await computeObjectId(keys.dedupKey, manifestBytes);
+      const manifestEnvelope = await encryptEnvelope({
+        plaintext: manifestBytes,
+        key: keys.encryptionKey,
+        dedupKey: keys.dedupKey,
+        context: { vaultId: this.vaultId, scopeId: mapping.namespace, compression: "none" },
+      });
+      await this.client.putNamespaceObject(this.vaultId, mapping.namespace, manifestObjectId, manifestEnvelope);
+      const requiredObjectIds = [...new Set(target.entries.flatMap((entry) => entry.objectIds))];
+      const committed = await this.client.commitNamespaces(this.vaultId, {
+        protocolVersion: "1.1",
+        operationId,
+        vaultRevisionId,
+        updates: [{
+          namespace: mapping.namespace,
+          baseNamespaceRevisionId: currentHead.revisionId,
+          namespaceRevisionId,
+          manifestObjectId,
+          requiredObjectIds,
+          ...(restoredManifest.sessionCapsules?.length
+            ? { retainedVaultRevisionIds: capsuleRetentionRoots(restoredManifest.sessionCapsules) }
+            : {}),
+          mode: "replace",
+          pathClaims: restoredManifest.pathClaims,
+        }],
+      });
+      workingConfig.applied[mapping.namespace]!.revisionId = namespaceRevisionId;
+      config.applied[mapping.namespace] = workingConfig.applied[mapping.namespace]!;
+      config.sessionBindings = workingConfig.sessionBindings;
+      return {
+        ...pulled,
+        revisionId: committed.revisionId,
+        dryRun: false,
+        historicalRevisionId,
+        namespace: mapping.namespace,
+        namespaceRevisionId,
+      };
+    } catch (error) {
+      if (materialized && recovery) {
+        try {
+          await recovery.rollback();
+        } catch (rollbackError) {
+          throw new AggregateError([error, rollbackError], "in-place restore failed and emergency rollback was incomplete");
+        }
+      }
+      throw error;
+    } finally {
+      await Promise.all(local.flatMap((entry) => entry.dispose ? [entry.dispose()] : []));
+    }
+  }
+
   async #materializeManifest(
     config: LocalConfig,
     dryRun: boolean,
@@ -859,6 +1076,7 @@ export class SyncEngine {
     manifestObjectCount: number,
     getObject: (namespace: string, objectId: string) => Promise<Uint8Array>,
     appliedRevision: (namespace: string) => string,
+    options: MaterializationOptions = {},
   ): Promise<SyncResult> {
     const byNamespace = new Map(selected.map((mapping) => [mapping.namespace, mapping]));
     const materialized: MaterializedEntry[] = [];
@@ -872,6 +1090,7 @@ export class SyncEngine {
     for (const entry of manifest.entries) {
       const mapping = byNamespace.get(entry.namespace);
       if (!mapping) continue;
+      assertRemotePathAllowed(mapping, entry.logicalPath);
       const keys = await this.#scopeKeys(entry.namespace);
       const portable = portableSession(entry.logicalPath);
       const streamedSession = mapping.kind !== "drop" && (portable !== undefined || entry.chunking?.strategy === "jsonl-records");
@@ -970,6 +1189,7 @@ export class SyncEngine {
     for (const tombstone of manifest.tombstones) {
       const mapping = byNamespace.get(tombstone.namespace);
       if (!mapping) continue;
+      assertRemotePathAllowed(mapping, tombstone.logicalPath);
       const portable = portableSession(tombstone.logicalPath);
       if (portable && mapping.kind !== "drop" && !config.workspaces.some((candidate) => candidate.id === portable.workspaceId)) {
         incompleteNamespaces.add(tombstone.namespace);
@@ -1028,7 +1248,7 @@ export class SyncEngine {
       const prior = config.applied[item.mapping.namespace]?.digests[item.logicalPath];
       if (!prior || currentDigest !== prior) conflicts.push(item.path);
     }
-    if (conflicts.length > 0) throw new SyncConflict(conflicts);
+    if (conflicts.length > 0 && !options.allowLocalOverwrite) throw new SyncConflict(conflicts);
     const workspaceFiles = readyWorkspaces.reduce((total, item) => total + item.captured.capsule.records.length, 0);
     if (dryRun) return { outcome: "pulled", revisionId: remoteRevisionId, files: materialized.length + deletions.length + workspaceFiles, objects: objectCount, bytes: byteCount };
 
@@ -1038,7 +1258,7 @@ export class SyncEngine {
         writes: materialized.map(materializedWrite),
         deletes: deletions.map((item) => item.path),
       },
-      { materialize: applyFileTransaction },
+      { materialize: options.materialize ?? applyFileTransaction },
     );
     for (const mapping of selected) {
       if (incompleteNamespaces.has(mapping.namespace)) continue;
@@ -1951,6 +2171,15 @@ function harnessClassification(kind: RootMapping["kind"], path: string): "file" 
   return classification === "skill" ? "file" : "excluded";
 }
 
+function assertRemotePathAllowed(mapping: RootMapping, logicalPath: string): void {
+  if (mapping.id.startsWith("workspace_") && mapping.namespace.startsWith("workspace:")) return;
+  if (excludedBuiltIn(logicalPath)) throw new Error("remote path is excluded by adapter policy");
+  if (mapping.kind !== "drop" && portableSession(logicalPath)) return;
+  if (harnessClassification(mapping.kind, logicalPath) === "excluded") {
+    throw new Error("remote path is excluded by adapter policy");
+  }
+}
+
 function excludedBuiltIn(path: string): boolean {
   const parts = path.split("/");
   const basename = parts.at(-1) ?? "";
@@ -1982,6 +2211,38 @@ function materializedWrite(item: MaterializedEntry): WorkspaceMaterializedWrite 
   return item.sourcePath !== undefined
     ? { path: item.path, sourcePath: item.sourcePath }
     : { path: item.path, bytes: item.bytes! };
+}
+
+function transactionTargets(transaction: FileTransaction): string[] {
+  return [...new Set([
+    ...transaction.writes.map((write) => resolve(write.path)),
+    ...(transaction.symlinks ?? []).map((link) => resolve(link.path)),
+    ...transaction.deletes.map((path) => resolve(path)),
+  ])].sort((left, right) => left.localeCompare(right, "en"));
+}
+
+async function assertRestoreTransactionSafe(root: string, paths: readonly string[]): Promise<void> {
+  const unsafe = paths.find((path) => /(?:\.db|\.sqlite|\.sqlite3|-(?:wal|shm))$/iu.test(basename(path)));
+  if (unsafe) throw new Error("in-place restore refuses SQLite, WAL, and SHM targets");
+  const absoluteRoot = resolve(root);
+  const rootInfo = await lstat(absoluteRoot);
+  if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) throw new Error("in-place restore target root must be a real directory");
+  for (const path of paths) {
+    const relation = relative(absoluteRoot, path);
+    if (relation === "" || relation === ".." || relation.startsWith(`..${sep}`)) {
+      throw new Error("in-place restore target escapes its configured root");
+    }
+    const parts = relation.split(sep);
+    let parent = absoluteRoot;
+    for (const part of parts.slice(0, -1)) {
+      parent = join(parent, part);
+      const info = await lstat(parent).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? undefined : Promise.reject(error));
+      if (!info) break;
+      if (!info.isDirectory() || info.isSymbolicLink()) {
+        throw new Error("in-place restore refuses a symlinked or non-directory target parent");
+      }
+    }
+  }
 }
 
 async function optionalFileDigest(

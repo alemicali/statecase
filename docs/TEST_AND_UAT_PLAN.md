@@ -311,10 +311,14 @@ deployed Worker test environment.
   retained snapshot, conflict, pending commit, and grace period.
 - `BK-005`: concurrent snapshot creation and garbage collection cannot race.
 - `BK-006`: dry-run lists exact creates/replaces/deletes and byte requirements.
-- `BK-007`: restore refuses an active unsafe database or live harness target.
+- `BK-007`: in-place restore excludes the daemon, refuses a live harness or
+  malformed activity marker, closes start-versus-restore races, and rejects
+  SQLite database/WAL/SHM targets before recovery or mutation.
 - `BK-008`: disk-full during staging leaves destination and applied revision
   unchanged.
-- `BK-009`: restore validation failure rolls back and preserves emergency copy.
+- `BK-009`: restore validation or remote-commit failure rolls back exactly,
+  preserves an independently usable emergency copy, and verifies every backup
+  before any explicit offline rollback mutation.
 - `BK-010`: selective workspace/session/category restore cannot cross scope.
 - `BK-011`: restoring a tombstone creates a new revision.
 - `BK-012`: total cloud loss can be recovered from a separately exported,
@@ -519,7 +523,15 @@ Delete and corrupt selected local data, create later remote tombstones, then
 restore a protected older snapshot first to staging and then in place.
 
 Acceptance: dry-run is exact, validation passes, tombstoned data returns via a
-new revision, and unrelated/current data is untouched.
+new forward revision, the old remote head is never rewound, unrelated/current
+data is untouched, and the persistent emergency snapshot can independently
+restore the exact pre-restore local bytes while offline.
+
+Automated status: Drop and harness namespace tests cover dry-run, create/
+replace/delete planning, SQLite refusal, Session Capsule preservation,
+third-client convergence, failed-commit automatic rollback, and explicit
+offline emergency rollback. Real Cloudflare/Daytona execution and workspace
+in-place restore remain required before the public recovery claim.
 
 ### UAT-09 Lost device and recovery
 

@@ -16,7 +16,8 @@ transactional apply, the persistent daemon core, and native systemd/launchd
 service definitions are implemented. Exact Git index/worktree capsules are
 implemented for ordinary files, safe symlinks, unborn/detached repositories,
 and uninitialized gitlinks. Durable revision pointers, protected snapshots,
-and selective restore to a staging target are implemented. Content-addressed
+selective staging restore, and full-key in-place restore for two-way Drops and
+stopped Codex/Claude mappings are implemented. Content-addressed
 three-way merge handles disjoint/identical namespace changes and preserves
 same-path conflicts; workspace transports are atomic and append-only mappings
 cannot mutate prior paths. Immutable Session Capsules and atomic multi-revision
@@ -29,8 +30,8 @@ Session Capsule activity closure; rewrites and incompatible order fail closed.
 UTC hourly/daily/monthly retention and namespace-object reachability GC are
 implemented with protected-snapshot, Session Capsule, append-parent, grace,
 and conservative migration roots. Sections covering safe parsed text merge,
-in-place restore, and
-initialized submodule hydration remain target requirements, not current claims.
+workspace in-place restore, and initialized submodule hydration remain target
+requirements, not current claims.
 
 Persistent device identities, auth-session binding, device enumeration, and
 server-side revocation are implemented. Revocation blocks new service access
@@ -871,7 +872,9 @@ statecase status [--json]
 statecase doctor [--json]
 statecase conflicts list|show|resolve
 statecase snapshot create|list|protect|delete
-statecase restore --revision ... [--target ...] [--dry-run]
+statecase restore --revision ... --mapping ... --target ... [--dry-run] [--yes]
+statecase restore --revision ... --mapping ... --in-place [--dry-run|--yes]
+statecase emergency rollback <snapshot-path> --yes
 statecase token create --namespace ... --actions read[,append] --ttl ... --output ...
 statecase token list|revoke
 statecase device list|approve|revoke
@@ -955,6 +958,28 @@ Restore modes:
 In-place restore MUST refuse active SQLite/WAL targets and MUST preserve a
 local emergency snapshot of files it will replace. Restore completion requires
 adapter validation; a downloaded but unmaterialized revision is not success.
+
+The current implementation enables in-place mode only for full-key devices and
+configured two-way Drop, Codex, or Claude mappings. Actual execution MUST:
+
+1. require explicit `--in-place --yes`; dry-run MUST remain non-mutating;
+2. acquire the daemon profile lock and, for a harness, an exclusive restore
+   barrier plus a redacted OS process check;
+3. create a protected snapshot of the current remote head;
+4. create and fsync an owner-only emergency snapshot for the exact transaction
+   path set before changing any target;
+5. transactionally materialize and adapter-validate the authenticated target;
+6. commit a new forward namespace/global revision preserving historical
+   Session Capsule pins; and
+7. roll local bytes back from the emergency snapshot if validation or the
+   optimistic commit fails.
+
+The configured target path is inferred from the mapping and an explicit
+`--target`, if supplied, MUST match it. Staging mode MUST refuse that configured
+path so an operator cannot accidentally bypass in-place safeguards. Emergency
+rollback is local/offline, requires `--yes`, and applies the same daemon and
+harness exclusion. Workspace in-place mode MUST fail explicitly until its Git
+index/worktree transaction and initialized-submodule behavior are qualified.
 
 ## 15. Observability and privacy
 

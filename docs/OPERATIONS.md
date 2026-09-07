@@ -83,5 +83,27 @@ still-running deletion can never race a commit. Never delete the R2 vault
 prefix manually; doing so bypasses reachability, grace, and the commit exclusion
 lease.
 
+For an application-data recovery, inspect a historical namespace in staging or
+preview a supported in-place restore first:
+
+```bash
+statecase --json restore --revision <revision-id> --mapping <mapping-id> --target <staging-dir> --dry-run
+statecase --json restore --revision <revision-id> --mapping <mapping-id> --in-place --dry-run
+```
+
+In-place mode currently supports two-way Drops and stopped Codex/Claude
+mappings on full-key devices. Stop the daemon and affected harness, then run
+the approved command with `--yes`. Record the emitted protected snapshot ID and
+local emergency snapshot path. To recover the exact pre-restore local paths,
+keep those processes stopped and use:
+
+```bash
+statecase --json emergency rollback <emergency-snapshot-path> --yes
+```
+
+This emergency rollback is local and offline. Do not hand-edit the snapshot;
+all file backups are verified before any rollback mutation. Workspace in-place
+restore is not yet supported.
+
 The deployment and retention qualification record is
 [2026-09-07 Cloudflare retention UAT](uat/2026-09-07-cloudflare-retention.md).

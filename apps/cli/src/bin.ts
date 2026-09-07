@@ -11,15 +11,18 @@ import { resolveCodexRoots } from "@statecase/adapter-codex";
 import { randomKey } from "@statecase/crypto";
 import { workspaceIdForRemote } from "@statecase/domain";
 import { LocalStateStore } from "@statecase/storage-local";
+import { ProfileLock } from "@statecase/runtime";
 import { captureWorkspace } from "@statecase/workspace";
 import { Command } from "commander";
 
 import { StatecaseClient } from "./client.js";
+import { assertNoHarnessProcess, HarnessActivityRegistry, type ActivityHandle } from "./activity.js";
 import { createBootstrapCapability, openBootstrapCapability, type ScopedVaultKeys } from "./capability.js";
 import { ConfigStore, type LocalConfig, type LocalSecrets, type RootMapping } from "./config.js";
 import { PersistentRuntime, readRuntimeStatus, type DaemonTrigger } from "./daemon.js";
 import { readRecoveryKit, writeRecoveryKit } from "./recovery.js";
 import { DurableReconciler } from "./reconciler.js";
+import { createEmergencySnapshot, inspectEmergencySnapshot, restoreEmergencySnapshot, type EmergencySnapshot } from "./emergency.js";
 import { exitCodeFor, requireSession, selectedVault, StatecaseUsageError } from "./runtime.js";
 import { activateService, installServiceDefinition, removeServiceDefinition, serviceDefinition } from "./service.js";
 import { installHarnessShim, removeHarnessShim, verifyHarnessShim } from "./shims.js";
@@ -274,41 +277,149 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
     });
 
   program.command("restore")
-    .description("materialize one namespace from an immutable historical revision into a staging target")
+    .description("restore one namespace from an immutable historical revision")
     .requiredOption("--revision <revisionId>")
     .requiredOption("--mapping <mappingId>", "Drop/harness mapping ID or workspace ID")
-    .requiredOption("--target <path>")
+    .option("--target <path>", "staging target; with --in-place it must equal the configured path")
+    .option("--in-place", "replace the configured Drop/harness state and publish a new revision")
     .option("--dry-run")
-    .option("--yes", "allow a non-empty target; normal conflict checks still apply")
-    .action(async (options: { revision: string; mapping: string; target: string; dryRun?: boolean; yes?: boolean }) => {
+    .option("--yes", "confirm a non-empty staging target or in-place replacement")
+    .action(async (options: { revision: string; mapping: string; target?: string; inPlace?: boolean; dryRun?: boolean; yes?: boolean }) => {
       const { config, secrets, client } = await requireSession(store, io.fetch);
       const vaultId = selectedVault(config, secrets);
       const mapping = config.mappings.find((item) => item.id === options.mapping);
       const workspace = config.workspaces.find((item) => item.id === options.mapping);
       if (!mapping && !workspace) throw new StatecaseUsageError("restore mapping is not configured on this device", 2);
       if (mapping && workspace) throw new StatecaseUsageError("restore mapping ID is ambiguous", 2);
-      const target = resolve(options.target);
+      if (options.inPlace && !mapping) throw new StatecaseUsageError("workspace in-place restore is not implemented", 2);
+      if (options.inPlace && mapping!.mode !== "two-way") throw new StatecaseUsageError("in-place restore requires a two-way mapping", 2);
+      if (options.inPlace && !options.dryRun && !options.yes) throw new StatecaseUsageError("in-place restore requires --yes", 2);
+      if (!options.inPlace && !options.target) throw new StatecaseUsageError("staging restore requires --target", 2);
+      const configuredTarget = resolve(mapping?.path ?? workspace!.path);
+      const target = options.inPlace ? configuredTarget : resolve(options.target!);
+      if (options.inPlace && options.target && resolve(options.target) !== configuredTarget) {
+        throw new StatecaseUsageError("--in-place target must equal the configured mapping path", 2);
+      }
+      if (!options.inPlace && target === configuredTarget) {
+        throw new StatecaseUsageError("restoring to the configured mapping path requires --in-place", 2);
+      }
       const targetInfo = await lstat(target).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? undefined : Promise.reject(error));
       if (targetInfo && !targetInfo.isDirectory()) throw new StatecaseUsageError("restore target must be a directory", 2);
-      if (targetInfo && (await readdir(target)).length > 0 && !options.yes) {
+      if (!options.inPlace && targetInfo && (await readdir(target)).length > 0 && !options.yes) {
         throw new StatecaseUsageError("non-empty restore target requires --yes", 2);
       }
+      if (options.inPlace && !targetInfo) throw new StatecaseUsageError("configured in-place restore target is missing", 2);
       const restoreConfig = structuredClone(config);
-      restoreConfig.applied = {};
-      if (mapping) {
+      if (!options.inPlace) restoreConfig.applied = {};
+      if (mapping && !options.inPlace) {
         restoreConfig.mappings = [{ ...mapping, mode: "consume", path: target }];
         restoreConfig.workspaces = restoreConfig.workspaces.map((item) => ({ ...item, sync: "identity-only" }));
-      } else {
+      } else if (!options.inPlace) {
         restoreConfig.mappings = [];
         restoreConfig.workspaces = [{ ...workspace!, path: target, sync: "git" }];
       }
       const key = syncAccess(secrets, vaultId);
+      let daemonBarrier: ProfileLock | undefined;
+      let harnessBarrier: ActivityHandle | undefined;
+      let emergency: EmergencySnapshot | undefined;
       try {
-        const result = await new SyncEngine(client, vaultId, key).pull(restoreConfig, options.dryRun, options.revision);
-        emit(io, program, { revisionId: options.revision, mappingId: options.mapping, target, dryRun: Boolean(options.dryRun), result },
-          `${options.dryRun ? "Would restore" : "Restored"} ${result.files} files from ${options.revision} to ${target}`);
+        const engine = new SyncEngine(client, vaultId, key);
+        if (!options.inPlace) {
+          const result = await engine.pull(restoreConfig, options.dryRun, options.revision);
+          emit(io, program, { revisionId: options.revision, mappingId: options.mapping, target, mode: "staging", dryRun: Boolean(options.dryRun), result },
+            `${options.dryRun ? "Would restore" : "Restored"} ${result.files} files from ${options.revision} to ${target}`);
+          return;
+        }
+        let protectedSnapshot: Awaited<ReturnType<StatecaseClient["createSnapshot"]>> | undefined;
+        if (!options.dryRun) {
+          try {
+            daemonBarrier = await ProfileLock.acquire(join(store.home, "daemon.lock"));
+          } catch {
+            throw new StatecaseUsageError("stop the Statecase daemon before in-place restore", 5);
+          }
+          if (mapping!.kind !== "drop") {
+            const activity = new HarnessActivityRegistry(join(store.home, "locks", "harnesses"));
+            try {
+              harnessBarrier = await activity.beginRestore(mapping!.kind);
+              await assertNoHarnessProcess(mapping!.kind);
+            } catch {
+              await harnessBarrier?.release();
+              harnessBarrier = undefined;
+              throw new StatecaseUsageError(`stop ${mapping!.kind} before in-place restore`, 5);
+            }
+          }
+          protectedSnapshot = await client.createSnapshot(vaultId, `Before in-place restore of ${mapping!.id}`);
+        }
+        const result = await engine.restoreInPlace(restoreConfig, mapping!, options.revision, {
+          dryRun: options.dryRun,
+          ...(!options.dryRun ? {
+            prepareRecovery: async (paths) => {
+              emergency = await createEmergencySnapshot({
+                id: randomLocalId("restore"),
+                createdAt: new Date().toISOString(),
+                statecaseHome: store.home,
+                targetRoot: target,
+                paths,
+                ...(mapping!.kind === "drop" ? {} : { harness: mapping!.kind }),
+              });
+              return { rollback: () => restoreEmergencySnapshot(emergency!.path) };
+            },
+          } : {}),
+        });
+        if (!options.dryRun) {
+          config.applied[mapping!.namespace] = restoreConfig.applied[mapping!.namespace]!;
+          config.sessionBindings = restoreConfig.sessionBindings;
+          await store.saveConfig(config);
+        }
+        emit(io, program, {
+          revisionId: options.revision,
+          mappingId: options.mapping,
+          target,
+          mode: "in-place",
+          dryRun: Boolean(options.dryRun),
+          protectedSnapshotId: protectedSnapshot?.id ?? null,
+          emergencySnapshotPath: emergency?.path ?? null,
+          result,
+        }, `${options.dryRun ? "Would restore" : "Restored"} ${result.files} files in place from ${options.revision}${result.revisionId ? ` as ${result.revisionId}` : ""}`);
       } finally {
+        await harnessBarrier?.release();
+        await daemonBarrier?.release();
         wipeSyncAccess(key);
+      }
+    });
+
+  const emergencyCommand = program.command("emergency").description("inspect and apply local emergency restore snapshots");
+  emergencyCommand.command("rollback")
+    .argument("<snapshot>")
+    .option("--yes", "confirm local rollback")
+    .action(async (snapshotInput: string, options: { yes?: boolean }) => {
+      if (!options.yes) throw new StatecaseUsageError("emergency rollback requires --yes", 2);
+      const snapshotPath = resolve(snapshotInput);
+      const snapshot = await inspectEmergencySnapshot(snapshotPath);
+      let daemonBarrier: ProfileLock | undefined;
+      let harnessBarrier: ActivityHandle | undefined;
+      try {
+        try {
+          daemonBarrier = await ProfileLock.acquire(join(store.home, "daemon.lock"));
+        } catch {
+          throw new StatecaseUsageError("stop the Statecase daemon before emergency rollback", 5);
+        }
+        if (snapshot.harness) {
+          const activity = new HarnessActivityRegistry(join(store.home, "locks", "harnesses"));
+          try {
+            harnessBarrier = await activity.beginRestore(snapshot.harness);
+            await assertNoHarnessProcess(snapshot.harness);
+          } catch {
+            await harnessBarrier?.release();
+            harnessBarrier = undefined;
+            throw new StatecaseUsageError(`stop ${snapshot.harness} before emergency rollback`, 5);
+          }
+        }
+        await restoreEmergencySnapshot(snapshotPath);
+        emit(io, program, { ...snapshot, snapshotPath, restored: true }, `Restored ${snapshot.records} paths from ${snapshot.id}`);
+      } finally {
+        await harnessBarrier?.release();
+        await daemonBarrier?.release();
       }
     });
 
@@ -656,6 +767,7 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
         intervalMs: intervalSeconds * 1000,
         warn: io.stderr,
       });
+      const activity = await new HarnessActivityRegistry(join(store.home, "locks", "harnesses")).enter(harness);
       try {
         const result = await supervisor.run({
           harness,
@@ -666,6 +778,7 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
         });
         requestedExitCode = result.exitCode;
       } finally {
+        await activity.release();
         if (liveKey) wipeSyncAccess(liveKey);
         journal.close();
       }
@@ -694,7 +807,12 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
       const env = { ...process.env };
       delete env.STATECASE_ACTIVE_HARNESS;
       const supervisor = new HarnessSupervisor({ reconcile: async () => {}, intervalMs: 0, warn: io.stderr });
-      requestedExitCode = (await supervisor.run({ harness: harnessInput, executable: record.realExecutable, args: harnessArgs, cwd: process.cwd(), env })).exitCode;
+      const activity = await new HarnessActivityRegistry(join(store.home, "locks", "harnesses")).enter(harnessInput);
+      try {
+        requestedExitCode = (await supervisor.run({ harness: harnessInput, executable: record.realExecutable, args: harnessArgs, cwd: process.cwd(), env })).exitCode;
+      } finally {
+        await activity.release();
+      }
     });
 
   const shim = program.command("shim").description("inspect or remove transparent harness shims");
