@@ -17,6 +17,11 @@ Branch protection should require these logical checks on pull requests:
 5. `native-macos` — real launchd start/stop, private IPC, duplicate-writer denial,
    profile isolation, filesystem notification, SIGKILL restart, and cleanup on
    a disposable hosted macOS runner with synthetic unauthenticated state only.
+6. `background-sync` — two authenticated daemon processes with local
+   workerd/D1/R2, interrupted object upload, durable journal replay, offline
+   restart, disjoint updates, deletion, and idle no-op verification. All account
+   credentials and database/object state are generated inside one temporary
+   fixture; no external account or existing agent directory is used.
 
 Jobs use `npm ci`, minimum permissions, dependency caching, concurrency
 cancellation, timeouts, and no production credentials. CI forks receive no
@@ -49,7 +54,8 @@ and owner approval; it must not be used to merge untested new code.
 
 ### Pull request
 
-Run quality, runtime compatibility, and native macOS lifecycle. Add dependency review and CodeQL to the
+Run quality, runtime compatibility, native macOS lifecycle, and authenticated
+background sync. Add dependency review and CodeQL to the
 required set as soon as GitHub exposes them for the repository. Core integration
 tests use local Cloudflare emulation and fake identity; no network account or
 personal harness directory.

@@ -4,6 +4,11 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Added authenticated multi-process background UAT against isolated local
+  workerd/D1/R2: automatic bidirectional Drop sync, interrupted object upload,
+  durable journal replay after SIGKILL, offline restart, disjoint convergence,
+  deletion propagation, and 45-second idle no-op verification. A dedicated CI
+  job runs this without external credentials or real harness directories.
 - Added profile-safe `daemon start` / `daemon stop`, idempotent service startup,
   and manager-loaded definition checks. Installation/removal now refuse another
   profile's service; uninstall verifies ownership before stopping anything.

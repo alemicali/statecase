@@ -22,6 +22,7 @@
     "test:package": "node scripts/smoke-package.mjs",
     "test:coverage": "vitest run --coverage",
     "uat:remote": "node scripts/uat/daytona-product.mjs",
+    "uat:background": "node scripts/uat/background-sync.mjs",
     "typecheck": "tsc --noEmit"
   },
   "engines": {

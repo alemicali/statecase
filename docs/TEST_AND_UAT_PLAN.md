@@ -316,6 +316,11 @@ deployed Worker test environment.
 
 ## 9. Daemon and shim tests
 
+- `RT-015`: independent authenticated daemon processes converge without manual
+  sync after setup, preserve a running journal operation across an interrupted
+  object upload and SIGKILL, restart offline, reconcile disjoint peer writes,
+  propagate deletion, and avoid idle revisions. Local workerd evidence is
+  separate from live Cloudflare/native-manager qualification.
 - `RT-001`: setup resolves the real harness binary and refuses recursion.
 - `RT-002`: stdin/stdout/stderr, TTY dimensions, colors, and interactive input
   pass through unchanged.
@@ -559,6 +564,13 @@ states. Restart offline, continue using the harness, reconnect, and sync.
 
 Acceptance: native work continues, queued state is visible, transfer resumes,
 and the final revision contains each logical change exactly once.
+
+The automated `npm run uat:background` drill covers authenticated CLI daemons
+against local workerd/D1/R2 using a per-device fault proxy. It holds an encrypted
+object PUT before upstream acceptance, verifies a persisted running journal
+row, kills/restarts offline, and later verifies that the original row commits.
+Native harness use and live-service/native-manager convergence remain separate
+UAT requirements; this test must not be used to claim those are complete.
 
 ### UAT-08 Restore drill
 

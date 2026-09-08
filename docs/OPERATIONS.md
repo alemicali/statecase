@@ -110,11 +110,19 @@ manager with an existing unit.
 npm ci
 npm run check
 npm run cloud:test
+npm run uat:background
 docker compose -f compose.test.yaml run --rm --build test
 ```
 
 All automated filesystem tests use temporary synthetic homes. The Docker
 service copies the repository into its image and mounts no host harness roots.
+
+The background UAT builds on a previously built CLI. It starts a local Worker
+with isolated D1/R2, creates synthetic device credentials, and runs two real
+daemon processes through per-device loopback proxies. It injects SIGKILL and
+network failures, then stops only its owned process groups and removes its
+temporary credentials, profiles, database, and objects. It does not provision
+Cloudflare resources or touch real agent state.
 
 ## Deploy
 

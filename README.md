@@ -64,6 +64,9 @@ start/stop, private IPC, filesystem notifications, duplicate-writer denial,
 and SIGKILL recovery with the hardened systemd-user definition.
 The [native macOS lifecycle drill](docs/uat/2026-09-08-native-launchd.md) also
 passed on macOS 26.6.2 arm64, including CLI start/stop and profile isolation.
+The [authenticated background drill](docs/uat/2026-09-08-background-sync.md)
+tests automatic two-device convergence and interrupted-upload journal replay
+against local workerd/D1/R2; native-manager/live-service convergence is separate.
 
 The approved direction lives in:
 

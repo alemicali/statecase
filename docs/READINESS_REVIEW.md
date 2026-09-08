@@ -142,6 +142,13 @@ profile isolation. Definitions pin the installing Node interpreter.
 Sleep/reboot/network-change integration and authenticated multi-device
 background convergence are still required before background steady state is claimed.
 
+The [local authenticated background drill](uat/2026-09-08-background-sync.md)
+now exercises two real daemon processes against workerd/D1/R2: bidirectional
+transfer without manual sync, an interrupted encrypted upload, durable journal
+replay across SIGKILL/offline restart, disjoint writes, deletion, and idle no-op
+behavior. It does not combine a native manager with live Cloudflare or certify
+real harness resume; those remaining gates are not waived by local evidence.
+
 Exact workspace capsules now reproduce staged and unstaged bytes separately,
 deletions, additions, modes, safe symlinks, detached and unborn repositories,
 and uninitialized gitlinks. They reject malformed/corrupt input and dirty or

@@ -53,6 +53,19 @@ jobs:
       - run: npm test
       - run: npm run build
 
+  background-sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run uat:background
+
   native-macos:
     runs-on: macos-latest
     timeout-minutes: 10
