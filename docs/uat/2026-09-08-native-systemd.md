@@ -79,5 +79,6 @@ ownership inspection, deliberate crash injection, and fixture cleanup.
 
 Local `npm run check` passed with **446 tests**, **90.29%** overall branch
 coverage, and **100%** service-module branch coverage. The launchd command
-branches have local contract tests; a new real `native-macos` CI job is the
-separate OS-level qualification gate, not implied by this Linux result.
+branches have local contract tests. The separate real `native-macos` job also
+passed; see the [launchd report](2026-09-08-native-launchd.md) for its OS/runtime
+matrix and boundaries. That result is independent of this Linux drill.

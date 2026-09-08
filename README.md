@@ -48,7 +48,7 @@ and retains a safety reserve before copying plaintext. A real Daytona run has
 qualified 2-GiB transfer and concurrent append merge. Daily reachability GC now
 applies 24 hourly, 30 daily, and 12 monthly UTC checkpoints plus protected
 snapshots, Session Capsule pins, and a 30-day grace period. Remaining release
-gates include macOS service UAT, authenticated background convergence,
+gates include authenticated background convergence,
 sleep/reboot qualification, initialized-submodule hydration, live
 real-version harness restore UAT, process-reset rotation fault injection,
 and real-version Codex/Claude fixture certification. Local and workerd coverage
@@ -62,6 +62,8 @@ This is not yet a public-production release.
 The [native Linux lifecycle drill](docs/uat/2026-09-08-native-systemd.md) passed
 start/stop, private IPC, filesystem notifications, duplicate-writer denial,
 and SIGKILL recovery with the hardened systemd-user definition.
+The [native macOS lifecycle drill](docs/uat/2026-09-08-native-launchd.md) also
+passed on macOS 26.6.2 arm64, including CLI start/stop and profile isolation.
 
 The approved direction lives in:
 

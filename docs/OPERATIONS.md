@@ -93,7 +93,8 @@ retain their filesystem hardening and require configured writable roots to be
 available. `statecase daemon status` uses owner-only local IPC.
 
 The [Linux lifecycle drill](uat/2026-09-08-native-systemd.md) passed with isolated
-fixtures. macOS, authenticated background convergence, and sleep/boot behavior
+fixtures. The [macOS lifecycle drill](uat/2026-09-08-native-launchd.md) passed
+on macOS 26.6.2 arm64 / Node 24.20.0. Authenticated background convergence and sleep/boot behavior
 remain release gates. Use `statecase daemon start|stop|status` after installation.
 Start/stop are idempotent and verify the installed profile and loaded definition.
 Linux stop preserves autostart; macOS stop unloads the job so KeepAlive cannot

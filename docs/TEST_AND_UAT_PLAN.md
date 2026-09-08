@@ -340,8 +340,9 @@ deployed Worker test environment.
 - `RT-013`: native services pin the installing Node interpreter, preserve
   literal special-character paths, reject control-character injection, and
   survive a real manager-driven SIGKILL/restart without duplicate writers.
-  Linux evidence: `uat/2026-09-08-native-systemd.md`; macOS lifecycle and
-  authenticated background convergence remain separate gates.
+  Linux evidence: `uat/2026-09-08-native-systemd.md`; macOS evidence:
+  `uat/2026-09-08-native-launchd.md`. Authenticated background convergence remains
+  a separate gate.
 
 ## 10. Backup, retention, and restore tests
 

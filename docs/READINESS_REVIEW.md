@@ -136,8 +136,10 @@ systemd-user and launchd installers are implemented with safe ownership and
 uninstall semantics. The [native Linux lifecycle UAT](uat/2026-09-08-native-systemd.md)
 passed real systemd-user start/stop, private IPC, filesystem notifications,
 duplicate-writer denial, and SIGKILL restart with an isolated unauthenticated
-profile. Definitions now pin the installing Node interpreter. macOS lifecycle,
-sleep/reboot/network-change integration, and authenticated multi-device
+profile. The [macOS launchd drill](uat/2026-09-08-native-launchd.md) also passed
+on macOS 26.6.2 arm64 with Node 24.20.0, including idempotent CLI start/stop and
+profile isolation. Definitions pin the installing Node interpreter.
+Sleep/reboot/network-change integration and authenticated multi-device
 background convergence are still required before background steady state is claimed.
 
 Exact workspace capsules now reproduce staged and unstaged bytes separately,
@@ -257,13 +259,13 @@ pre-restore Git state. The drill exposed and fixed detached-HEAD convergence in
 ordinary baseline acquisition. See the
 [workspace restore UAT](uat/2026-09-07-workspace-in-place-restore-daytona.md).
 
-Automated background steady state is not yet claimed. macOS daemon/service
-UAT, authenticated background convergence, sleep/reboot qualification,
+Automated background steady state is not yet claimed. Authenticated background
+convergence, sleep/reboot qualification,
 real-version harness restore UAT, and real harness-version compatibility remain
 blocking work for a public or unattended release.
 
-The design is intentionally not called production-complete. Crypto selection,
-identity provider, exact compatibility matrix, and legal/commercial decisions
+The design is intentionally not called production-complete. Independent security
+review, the exact harness compatibility matrix, and legal/commercial decisions
 remain explicit gates rather than hidden assumptions. Any new requirement that
 changes trust boundaries, plaintext exposure, conflict semantics, or deletion
 must update the strategy, implementation specification, threat model, and test

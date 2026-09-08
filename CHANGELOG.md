@@ -8,7 +8,7 @@ All notable changes to Statecase will be documented here.
   and manager-loaded definition checks. Installation/removal now refuse another
   profile's service; uninstall verifies ownership before stopping anything.
   Linux CLI lifecycle and profile-isolation UAT passed. Added an isolated real
-  launchd CI job; macOS qualification depends on that job passing.
+  launchd CI job; the lifecycle passed on macOS 26.6.2 arm64 / Node 24.20.0.
 - Pinned the installing Node interpreter in Linux/macOS service definitions,
   preserved literal systemd environment-like paths, and rejected path control
   characters. Qualified real systemd-user start/stop, filesystem notifications,

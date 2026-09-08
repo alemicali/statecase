@@ -127,8 +127,9 @@ loads a login-shell PATH. Definition paths reject ASCII controls; systemd
 specifier escaping and disabled ExecStart environment expansion preserve
 literal `%` and `${...}` in local paths. After replacing/removing the pinned
 Node runtime, reinstall the service. Linux native lifecycle evidence is recorded
-in `uat/2026-09-08-native-systemd.md`; this does not qualify macOS lifecycle,
-machine reboot/sleep, or authenticated background convergence.
+in `uat/2026-09-08-native-systemd.md`; macOS 26.6.2 arm64 lifecycle evidence is
+in `uat/2026-09-08-native-launchd.md`. Neither qualifies machine reboot/sleep
+or authenticated background convergence.
 
 `daemon start|stop` MUST verify the installed Statecase marker and profile
 binding before invoking a manager. A loaded manager definition MUST resolve to
