@@ -49,6 +49,16 @@ writes even when an event is missed.
 
 ## Verification
 
+Native Codex 0.153.4 qualification found that `apply_patch` is a freeform
+`custom_tool_call`, not a JSON path argument. The extractor now recognizes its
+bounded patch envelope and operation headers (including move destinations),
+never path-like headings inside added/context text. These remain candidate
+write references; filesystem/Git reconciliation proves captured content.
+Arbitrary shell and code execution is not parsed or traced by this change.
+An empty unresolved list proves only the extracted set is satisfied, not that
+every opaque execution's external reads were observed. Coverage reporting for
+that gap remains release work, without silently uploading external roots.
+
 Protocol tests reject malformed dependency identities. Adapter tests cover
 provider event variants, malformed arguments, narrative false positives,
 duplicates, and unsafe relative paths. The two-device sync test proves clean

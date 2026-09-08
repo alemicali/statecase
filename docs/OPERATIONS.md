@@ -126,6 +126,21 @@ network failures, then stops only its owned process groups and removes its
 temporary credentials, profiles, database, and objects. It does not provision
 Cloudflare resources or touch real agent state.
 
+`npm run uat:native-codex` separately qualifies native Codex 0.153.4 resume
+against the actual sync engine and an in-memory reference transport. Set
+`STATECASE_UAT_CODEX` to its absolute executable and `STATECASE_UAT_PARENT` to
+an absolute disposable-fixture parent outside `/tmp`. The driver generates new
+homes, isolated SQLite/config roots, an unborn Git workspace, and a loopback
+Responses provider. It uses no model-provider credentials. All generated
+session contents remain in its private fixture and are removed after execution.
+
+The default native permission mode is `workspace-write`. Only in a dedicated
+disposable VM/container, use `STATECASE_UAT_CODEX_SANDBOX=externally-isolated`
+together with `STATECASE_UAT_CONFIRM=run-native-harness-in-disposable-sandbox`
+when nested sandboxing is unavailable. This changes the generated fixture's
+configuration, never the operator's harness. The CI job runs this opt-in in a
+fresh hosted runner VM. See the [executed scope and limitations](uat/2026-09-08-native-codex-resume.md).
+
 ## Deploy
 
 ```bash

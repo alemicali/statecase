@@ -121,7 +121,11 @@ function visitToolEvents(value: unknown, accept: (name: string, input: unknown) 
     const name = [value.name, value.tool, value.tool_name, functionRecord?.name].find((item) => typeof item === "string");
     let input = value.arguments ?? value.input ?? value.parameters ?? functionRecord?.arguments;
     if (typeof input === "string") {
-      try { input = JSON.parse(input) as unknown; } catch { input = undefined; }
+      const patch = name === "apply_patch" ? patchPathArguments(input) : undefined;
+      if (patch) input = patch;
+      else {
+        try { input = JSON.parse(input) as unknown; } catch { input = undefined; }
+      }
     }
     if (typeof name === "string" && input !== undefined) accept(name, input);
     return;
@@ -130,6 +134,34 @@ function visitToolEvents(value: unknown, accept: (name: string, input: unknown) 
     if (key === "text" || ((key === "content" || key === "message") && typeof item === "string")) continue;
     visitToolEvents(item, accept);
   }
+}
+
+/** Recognize the native freeform patch envelope, never headings inside added text. */
+function patchPathArguments(input: string): { paths: Array<{ path: string }> } | undefined {
+  const lines = input.replaceAll("\r\n", "\n").trimEnd().split("\n");
+  if (lines[0] !== "*** Begin Patch" || lines.at(-1) !== "*** End Patch") return undefined;
+  const paths: Array<{ path: string }> = [];
+  let operation: string | undefined;
+  for (const line of lines.slice(1, -1)) {
+    const header = /^\*\*\* (Add|Update|Delete) File: (.+)$/u.exec(line);
+    if (header) {
+      operation = header[1];
+      paths.push({ path: header[2] });
+      continue;
+    }
+    const move = /^\*\*\* Move to: (.+)$/u.exec(line);
+    if (move) {
+      if (operation !== "Update") return undefined;
+      paths.push({ path: move[1] });
+      continue;
+    }
+    if (!operation || operation === "Delete") return undefined;
+    if (operation === "Add" ? !line.startsWith("+")
+      : !/^[ +-]/u.test(line) && line !== "@@" && !line.startsWith("@@ ") && line !== "*** End of File") {
+      return undefined;
+    }
+  }
+  return { paths };
 }
 
 function pathArguments(value: unknown): string[] {

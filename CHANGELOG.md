@@ -4,6 +4,13 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Qualified native Codex 0.153.4 session-ID resume after encrypted engine
+  transfer to a fresh home, SQLite root, and differently mapped Git workspace
+  in Daytona, using a deterministic loopback provider. Added a reproducible
+  native-harness CI drill. Fixed native freeform `apply_patch` dependency
+  extraction; patch body prose and incomplete envelopes do not become paths.
+  This is not yet packaged/live-cloud, cross-host, Claude, or hosted-model
+  resume qualification; opaque shell reads remain a coverage limitation.
 - Qualified the packaged native Linux/live Cloudflare background path: real
   systemd automatic restarts, interrupted-upload journal replay, offline and
   disjoint convergence, deletion, and idle no-op behavior. The opt-in UAT driver

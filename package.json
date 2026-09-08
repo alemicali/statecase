@@ -23,6 +23,7 @@
     "test:coverage": "vitest run --coverage",
     "uat:remote": "node scripts/uat/daytona-product.mjs",
     "uat:background": "node scripts/uat/background-sync.mjs",
+    "uat:native-codex": "node scripts/uat/native-codex.mjs",
     "typecheck": "tsc --noEmit"
   },
   "engines": {

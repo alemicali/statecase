@@ -613,11 +613,14 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
       { type: "session_meta", payload: { cwd: workspace } },
       { type: "tool_call", name: "read_file", arguments: { path: "tracked.txt" } },
       { type: "tool_call", name: "edit_file", arguments: { path: "changed.txt" } },
+      { type: "response_item", payload: { type: "custom_tool_call", name: "apply_patch",
+        input: "*** Begin Patch\n*** Add File: patch-only.txt\n+native write\n*** End Patch" } },
       { type: "tool_call", name: "read_file", arguments: { path: "ignored.txt" } },
       { type: "tool_call", name: "read_file", arguments: { path: join(drop, "brief.md") } },
       { type: "tool_call", name: "read_file", arguments: { path: join(drop, ".env") } },
       { type: "tool_call", name: "read_file", arguments: { path: "/outside/not-mapped.txt" } },
     ];
+    await writeFile(join(workspace, "patch-only.txt"), "native write\n");
     await writeFile(join(harness, "sessions", "2026", "native-01.jsonl"), `${session.map((record) => JSON.stringify(record)).join("\n")}\n`);
     const local: LocalConfig = {
       ...config(drop),
@@ -647,6 +650,7 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     expect(reports[0]!.dependencies).toEqual(expect.arrayContaining([
       expect.objectContaining({ logicalPath: "tracked.txt", source: "git-baseline", gitObjectId: expect.stringMatching(/^[0-9a-f]{40}$/u), status: "resolved" }),
       expect.objectContaining({ logicalPath: "changed.txt", source: "workspace-overlay", contentDigest: expect.any(String), status: "resolved" }),
+      expect.objectContaining({ logicalPath: "patch-only.txt", source: "workspace-overlay", contentDigest: expect.any(String), status: "resolved" }),
       expect.objectContaining({ logicalPath: "ignored.txt", source: "workspace-overlay", status: "unresolved" }),
       expect.objectContaining({ logicalPath: "drop_reference/brief.md", source: "drop", contentDigest: expect.any(String), status: "resolved" }),
       expect.objectContaining({ logicalPath: "drop_reference/.env", source: "drop", status: "unresolved" }),

@@ -51,6 +51,50 @@ describe("append-safe JSONL scan (AD-CX-003..005, AD-CL-003)", () => {
 });
 
 describe("structured harness activity extraction (WS-021..WS-024)", () => {
+  it("extracts native Codex 0.153.4 freeform patch targets, including moves (WS-022)", () => {
+    const input = ["*** Begin Patch", "*** Add File: new.txt", "+new", "*** Update File: old.txt",
+      "*** Move to: moved.txt", "@@", "-old", "+new", "*** Delete File: removed.txt", "*** End Patch"].join("\n");
+    expect(extractActivityReferences([
+      { type: "session_meta", payload: { cwd: "/fixture/project" } },
+      { type: "response_item", payload: { type: "custom_tool_call", name: "apply_patch", input } },
+    ])).toEqual(["new.txt", "old.txt", "moved.txt", "removed.txt"].map((name) => ({
+      path: `/fixture/project/${name}`, access: "write", source: "native-event",
+    })));
+  });
+
+  it("does not confuse patch payload prose with headers or accept incomplete patches", () => {
+    const call = (input: string, name = "apply_patch") => ({ type: "custom_tool_call", name, input });
+    const valid = "*** Begin Patch\r\n*** Add File: real.txt\r\n+*** Delete File: fake.txt\r\n*** End Patch\r\n";
+    expect(extractActivityReferences([
+      { type: "session_meta", cwd: "/fixture" },
+      call(valid), call(valid), call(valid, "unrelated_tool"),
+      { type: "message", text: valid },
+      call("*** Begin Patch\n*** Add File: incomplete.txt\n+x"),
+      call("*** Begin Patch\n*** Add File: wrong.txt\nunprefixed payload\n*** End Patch"),
+      call("*** Begin Patch\n*** Move to: orphan.txt\n*** End Patch"),
+      call("*** Begin Patch\n*** Add File: ../outside.txt\n+x\n*** End Patch"),
+    ])).toEqual([{ path: "/fixture/real.txt", access: "write", source: "native-event" }]);
+  });
+
+  it.each([
+    "*** Begin Patch\n*** End Patch",
+    "*** Begin Patch\n+orphan\n*** End Patch",
+    "*** Begin Patch\n*** Delete File: old.txt\n+invalid\n*** End Patch",
+    "*** Begin Patch\n*** Add File: new.txt\n-invalid\n*** End Patch",
+    "*** Begin Patch\n*** Add File: new.txt\n*** Move to: other.txt\n*** End Patch",
+    "*** Begin Patch\n*** Update File: old.txt\n*** Unknown\n*** End Patch",
+  ])("ignores unsupported freeform patch structure: %s", (input) => {
+    expect(extractActivityReferences([{ type: "session_meta", cwd: "/fixture" },
+      { type: "custom_tool_call", name: "apply_patch", input }])).toEqual([]);
+  });
+
+  it("accepts update hunk context and EOF markers without parsing body paths", () => {
+    expect(extractActivityReferences([{ type: "session_meta", cwd: "/fixture" },
+      { type: "custom_tool_call", name: "apply_patch", input:
+        "*** Begin Patch\n*** Update File: /external/target.txt\n@@ function\n context\n-old\n+new\n*** End of File\n*** End Patch" },
+    ])).toEqual([{ path: "/external/target.txt", access: "write", source: "native-event" }]);
+  });
+
   it("extracts canonical absolute read, write, delete, and rename references from tool calls", () => {
     const records = [
       { type: "session_meta", payload: { cwd: "/work/project" } },

@@ -279,3 +279,23 @@ remain explicit gates rather than hidden assumptions. Any new requirement that
 changes trust boundaries, plaintext exposure, conflict semantics, or deletion
 must update the strategy, implementation specification, threat model, and test
 traceability before code merges.
+
+### Native Codex continuity checkpoint — 2026-09-08
+
+The [native Codex drill](uat/2026-09-08-native-codex-resume.md) passed actual
+Codex 0.153.4 `exec resume` by the original UUID after engine-level encrypted
+transfer and strict Session Capsule hydration into a different home/checkout.
+The target began with an empty native SQLite directory. Its restored model
+input included the original prompt and tool outputs, and native tools read and
+modified the transferred file in the mapped target while leaving the source
+unchanged. Responses came from a deterministic loopback fixture; storage was
+an in-memory reference transport inside one Daytona sandbox, not live Cloudflare.
+
+This drill exposed and fixed missing freeform `apply_patch` activity references.
+It does not establish that arbitrary shell/code executions disclose all reads:
+`exec_command` command strings are not currently parsed or traced. A clean
+`strict` report validates the extracted dependency set, not universal read
+coverage. Complete coverage reporting for opaque tool execution remains required
+before an unconditional complete-context claim. Packaged/live-cloud cross-host
+resume, Claude resume, interactive pickers, the full compatibility matrix, and
+sleep/reboot remain open qualification work.

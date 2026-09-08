@@ -204,6 +204,11 @@ policy; they are never uploaded merely because they are present.
   auth, logs, caches, binaries, and unknown paths correctly.
 - `AD-CX-007`: materialized sessions remain discoverable/resumable from the
   mapped workspace or are reported as incompatible.
+  Native Codex 0.153.4 UUID resume is now exercised by `npm run uat:native-codex`:
+  real read/write tools, engine-level encrypted transfer, fresh native SQLite,
+  non-mutating hydration preview, mapped CWD, original history, same UUID, and
+  the freeform patch dependency. The loopback provider and reference transport
+  do not qualify hosted inference, live Cloudflare, or a physical second host.
 - `AD-CX-008`: very large sparse/session files stream in bounded memory.
 
 ### 5.2 Claude
@@ -245,6 +250,10 @@ policy; they are never uploaded merely because they are present.
 - `WS-021`: external read appears as unresolved dependency until a Drop/policy
   supplies it.
 - `WS-022`: parsed read/write events use workspace-relative canonical paths.
+  Regression coverage includes Codex 0.153.4 freeform patch headers, move
+  destinations, CRLF, payload/header ambiguity, incomplete envelopes, and
+  external/unsafe paths. Arbitrary shell/code reads are not thereby traced;
+  extracted dependency completeness and tool-observation coverage are separate.
 - `WS-023`: transcript lies about a path; filesystem/Git reconciliation remains
   authoritative.
 - `WS-024`: optional OS activity events missing/reordered/duplicated do not

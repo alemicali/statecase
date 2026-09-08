@@ -54,6 +54,10 @@ real-version harness restore UAT, process-reset rotation fault injection,
 and real-version Codex/Claude fixture certification. Local and workerd coverage
 already exercises fresh vault-key epochs, exact active-device sealed envelopes,
 old-epoch write denial, capability invalidation, and multi-epoch recovery.
+Native Codex 0.153.4 UUID resume after encrypted engine transfer to a fresh home
+and mapped checkout passed in Daytona; [the report](docs/uat/2026-09-08-native-codex-resume.md)
+separates this deterministic-provider/reference-storage drill from live-cloud,
+cross-host, Claude, interactive-picker, and complete read-observation claims.
 The packaged post-revocation rotation, multi-epoch offline catch-up, clean-device
 recovery, scoped reissuance, and historical Drop restore passed a live Daytona
 drill against Cloudflare.
