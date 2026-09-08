@@ -7,6 +7,18 @@ import { CredentialFile, type CredentialFileOptions } from "./credentials.js";
 export type MappingKind = "drop" | "codex" | "claude";
 export type MappingMode = "two-way" | "publish" | "consume" | "append";
 
+export interface MemoryIdentity {
+  kind: "claude-project" | "codex-global";
+  harnessNamespace: string;
+  workspaceId?: string;
+}
+export interface MemoryBinding extends MemoryIdentity {
+  id: string;
+  name?: string;
+  path: string;
+  mode: MappingMode;
+}
+
 export interface RootMapping {
   id: string;
   kind: MappingKind;
@@ -14,6 +26,8 @@ export interface RootMapping {
   name: string;
   namespace: string;
   path: string;
+  /** Internal derived mapping only; never an implicit ordinary Drop policy. */
+  memory?: MemoryIdentity;
 }
 
 export interface LocalConfig {
@@ -23,6 +37,7 @@ export interface LocalConfig {
   deviceName?: string;
   selectedVaultId?: string;
   mappings: RootMapping[];
+  memories?: MemoryBinding[];
   workspaces: Array<{
     id: string;
     path: string;

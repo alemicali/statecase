@@ -8,6 +8,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import Database from "better-sqlite3";
+import { trackFixtureProcess, fixtureFailureSummary } from "./fixture-process.mjs";
 
 // Local by default. Live mode requires explicit scope/cleanup configuration;
 // it never grants signup access or deletes remote objects on its own.
@@ -43,6 +44,7 @@ let vault;
 let nativeDefinition;
 let nativeLinked = false;
 const machines = {};
+let currentPhase = "setup";
 try {
   if (nativeLinux) assert.equal((await manager("show", "statecase.service", "--property=LoadState", "--value")).trim(), "not-found", "refusing to interfere with existing native service");
   await mkdir(env.HOME, { recursive: true, mode: 0o700 });
@@ -149,11 +151,15 @@ try {
     catch (error) { if (error.code === "ENOENT") return true; throw error; }
   }, "automatic deletion propagation");
   const before = await head();
+  currentPhase = "idle";
   // Cover at least one maximum reconciliation and two remote polls.
   await new Promise((resolveWait) => setTimeout(resolveWait, 45_000));
   assert.equal(await head(), before, "idle daemons produced spurious revisions");
   phase("deletion-and-idle-noop");
   for (const name of ["a", "b"]) assert.equal((await status(name)).running, true);
+} catch (error) {
+  console.error(JSON.stringify(fixtureFailureSummary(error, currentPhase, children)));
+  throw new Error("background UAT failed; see redacted process diagnostics");
 } finally {
   try {
     if (nativeLinked) {
@@ -178,14 +184,10 @@ console.log(JSON.stringify({ result: "pass", runtime: nativeLinux ? "systemd-use
   remoteCleanupRequired: Boolean(remoteApi),
   boundary: "two isolated installations on one host; no real harness, separate physical peer, or machine reboot qualified" }));
 
-function phase(name) { console.log(JSON.stringify({ phase: name, result: "pass" })); }
+function phase(name) { currentPhase = name; console.log(JSON.stringify({ phase: name, result: "pass" })); }
 function child(entrypoint, args, childEnv) {
-  const processHandle = spawn(process.execPath, [entrypoint, ...args], { env: childEnv, cwd: repository, stdio: "ignore", detached: true });
-  const tracked = { process: processHandle, done: false, expectedStop: false };
-  tracked.exited = new Promise((resolveExit) => {
-    processHandle.once("exit", () => { tracked.done = true; resolveExit(); });
-    processHandle.once("error", () => { tracked.done = true; resolveExit(); });
-  });
+  const processHandle = spawn(process.execPath, [entrypoint, ...args], { env: childEnv, cwd: repository, stdio: ["ignore", "pipe", "pipe"], detached: true });
+  const tracked = trackFixtureProcess(processHandle, entrypoint === wrangler ? "backend" : "daemon");
   children.push(tracked);
   return tracked;
 }

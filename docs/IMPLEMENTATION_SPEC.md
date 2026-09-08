@@ -1291,3 +1291,14 @@ file changes use conflict exit `5`; invalid/unsafe/incomplete instruction contex
 uses integrity exit `6`. Preserve the existing JSON `{error:{code,message}}`
 contract and fixed redacted messages, rather than exposing native paths or
 OS errors as internal failures.
+
+## Memory collections — ADR-0025
+
+Memory selection is opt-in and separate from Drops and harness setup. A local
+binding names a stable `memory:<id>` namespace, native category, owning harness,
+optional logical workspace and explicit device-local directory. Validate IDs
+and ownership before filesystem access. Current binding/Markdown validators are
+foundation modules, not yet wired into synchronization or CLI enrollment.
+The encrypted descriptor, capsule pins, namespace grants, native-location
+qualification and complete TDD/UAT obligations are normative in
+[ADR-0025](adr/0025-memory-identity-and-local-bindings.md).

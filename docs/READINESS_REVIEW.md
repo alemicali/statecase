@@ -475,3 +475,32 @@ publication intentionally refuses a server without the new provenance feature.
 Project memory, full native precedence/import/version coverage, mixed-client
 fencing, packaged independent-host UAT and all existing release gates remain
 open. This checkpoint does not claim production readiness.
+
+### Follow-up CI and memory foundation — 2026-09-08
+
+CI `34201611557` on `db67125` finished with eight successful jobs and a failed
+background-sync job. Both native instruction jobs still passed. Background UAT
+passed startup, bidirectional transfer, interrupted-upload journal retention
+and offline-crash/disjoint convergence, then received ECONNREFUSED from its
+local Worker during the idle phase. The earlier all-nine success on `5dbecea`
+does not make this later run green. The original fixture discarded process
+diagnostics, so server/supervisor cause is not established.
+
+A local repeat of the original drill passed with synthetic workerd/D1/R2 and
+verified fixture cleanup. That does not waive the CI failure. RT-017 adds bounded,
+redacted process/exit/signal diagnostics and preserves failure without retry or
+backend restart; follow-up execution and cause resolution remain required.
+
+ADR-0025 and initial memory binding/Markdown validators are implemented and
+unit-tested, not connected product functionality. CLI enrollment, authenticated
+collection descriptors, encrypted transport, capsule pins/retention, native
+effective location/recall, daemon parity and independent-host UAT remain open.
+Ordinary harness setup still does not select or scan memory.
+
+The complete local check for these foundations/diagnostics passed 752 tests
+across 55 files, build, type/lint and clean-installed package checks; global
+branches are 91.61% (4001/4367). The new memory binding and Markdown policy
+modules each have 100% branch coverage (46/46 and 21/21). Both the original
+background drill and its instrumented follow-up passed locally with verified
+cleanup. Exact-candidate CI is still required; these passes do not establish
+why the earlier hosted-runner service disappeared.

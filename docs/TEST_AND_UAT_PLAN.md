@@ -814,6 +814,19 @@ cross-host/live-Worker and mixed-client qualification remain required.
 
 ### Acceptance gates
 
+RT-017 tracks unexpected background fixture service loss. Diagnostics must
+distinguish a live supervisor from an exited process and report only allowlisted
+exit/network/signal/category metadata. Negative controls include arbitrary
+stderr content, large output, unknown signals/codes and spawn failure. A running
+supervisor is not proof that its descendant Worker or service socket is healthy.
+No retry, automatic backend restart, reduced idle window or skipped assertion
+may turn a service-loss failure into a pass. Local repeats do not replace exact
+candidate CI qualification or establish a cause for an earlier failure.
+
+AD-MEM-001..010 in [ADR-0025](adr/0025-memory-identity-and-local-bindings.md)
+track memory integration separately from global instructions. Binding and format
+unit tests prove only their own boundaries, not native memory portability.
+
 A release candidate is rejected when:
 
 - a critical/required test is skipped or flaky;

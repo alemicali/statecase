@@ -4,6 +4,17 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Added opt-in memory identity/binding and bounded Markdown format foundations
+  (ADR-0025). Validate native category, logical workspace and namespace identity
+  independently of each device's local path; reject malformed IDs and ownership
+  collisions. Memory CLI/transport/capsule/native integration remains pending;
+  this does not enable memory synchronization.
+- Added redacted background-UAT process diagnostics after CI lost its local
+  Worker connection during the idle check. Record expected stops, exit status,
+  signals and bounded stderr categories without printing raw child output.
+  No retry or automatic backend restart masks the failure; root cause remains
+  under investigation (RT-017).
+
 - Added encrypted global instruction transport for Codex AGENTS files and
   Claude CLAUDE/rules/reviewed Markdown includes. Validate closed imports,
   bounded stable native reads, owner-only materialization, conflicts, deletion,
