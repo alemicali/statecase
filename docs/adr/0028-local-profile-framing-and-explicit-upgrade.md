@@ -124,3 +124,9 @@ The initial local historical-package drill passed all seven refusals. It is
 evidence for those stopped-profile commands, not every historical release,
 arbitrary credential/skill commands, active legacy processes, native harnesses,
 power loss or independent hosts. Exact-candidate CI is recorded separately.
+
+Candidate `20728d3` subsequently passed all nine jobs of CI `34223473210`,
+including the real clean-installed historical/current package drill and native
+Codex/Claude/macOS/background checks. See the
+[executed qualification](../uat/2026-09-08-profile-migration.md). This closes that
+candidate's platform recheck, not the wider stopped-process and release limits.

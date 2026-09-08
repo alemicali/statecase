@@ -32,6 +32,15 @@ test is not full historical/native-format compatibility, power-loss durability,
 malicious same-user race protection or live cross-host qualification. Exact-
 candidate native/platform CI is required before promoting this implementation.
 
+Candidate `20728d3` subsequently passed all nine jobs in
+[CI 34223473210](https://github.com/alemicali/statecase/actions/runs/34223473210).
+Quality passed 951 tests, 12 workerd tests and the exact clean-installed
+historical/current package drill, including the final native-directory inventory.
+Both native harness jobs, macOS lifecycle/credential jobs, both Node versions and
+the complete background drill also passed. See the
+[executed profile report](uat/2026-09-08-profile-migration.md) for artifact hashes,
+job IDs and preserved boundaries. Live deployment and operator profiles are unchanged.
+
 ## Required client/service contract checkpoint — 2026-09-08
 
 The previous committed candidate `5907829` passed all nine jobs in CI
