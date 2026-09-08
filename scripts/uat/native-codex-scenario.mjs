@@ -206,7 +206,10 @@ async function configure(machine) {
 }
 
 async function harness(machine, args) {
-  const pending = execute(executable, args, { env: environment(machine), timeout: 45_000, maxBuffer: 1024 * 1024, detached: true });
+  // Every invocation belongs to this synthetic device, including startup
+  // project discovery before CLI -C is applied. Never inherit the engine's
+  // most recent peer cwd after the A -> B -> A round trip.
+  const pending = execute(executable, args, { cwd: machine.project, env: environment(machine), timeout: 45_000, maxBuffer: 1024 * 1024, detached: true });
   // exec also consumes piped stdin; without EOF a command can hang before inference.
   pending.child.stdin.end();
   let result;

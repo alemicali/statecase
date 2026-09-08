@@ -109,3 +109,11 @@ before that failure. The next driver adds bounded, allowlisted TOML change
 categories without logging config values/paths or weakening byte equality.
 The same run failed two jobs on one forced-suspension profile-lock test;
 ADR-0022 records the separately reproduced native-GC lifetime correction.
+
+Commit `1561dd8` / CI `34195947655` narrowed the Codex mutation to the
+`projects` table only (no other top-level semantic changes). Inspection found
+that after the A -> B -> A transfer, fresh target processes inherited the
+source cwd and relied solely on `-C`. The fixture now supplies the destination
+cwd explicitly to `execFile`, keeping process startup within that synthetic
+device. The complete byte-preservation assertion remains unchanged; this is
+a candidate correction, not a passing native result until rerun.
