@@ -52,13 +52,50 @@ deleted after the chosen restore point. Git restoration checks HEAD, index,
 working tree, untracked files, rollback after commit failure, and convergence
 in an independent clone.
 
+## Additional offline and failure-path qualification
+
+Follow-up candidate based on `802343b`:
+
+- `npm run check`: 432 tests in 35 files passed; lint, typecheck, build, and
+  clean-prefix package installation passed. Branch coverage 90.12%
+  (2947/3270), statements 93.71%, functions 92.25%, lines 96.04%.
+- The new `vault-keys.ts` module has 100% branch/line/function/statement coverage.
+- `npm run cloud:test`: 12 workerd/D1/R2/DO tests passed.
+- Two production-Argon2id-heavy integration tests exceeded the default
+  five-second test deadline under local load. Their explicit deadline is now
+  30 seconds; crypto cost parameters, assertions, coverage thresholds, and
+  ordinary test deadlines are unchanged. A timed-out asynchronous test had
+  also raced fixture/environment cleanup; the complete rerun above passed.
+
+- A CLI peer stays offline through epochs two and three. A missing epoch or a
+  forged later envelope fails without changing credential bytes or local file
+  content. Restoring the valid history makes one subsequent pull converge.
+- History ingestion persists once only after authenticating the entire
+  contiguous sequence; schema, gap, truncation, authentication, network, and
+  persistence failures release all owned key buffers. Canonical legacy and
+  full historical rings, no-op refresh, and early command failure are covered.
+- A committed rotation with an unavailable reconciliation endpoint and a
+  connection failure followed by an old-epoch read both retain the candidate
+  recovery kit and prior local epoch. A lost response already superseded by
+  another rotation is matched against its exact historical envelope; the
+  following sync catches up to the newer root.
+- Regression tests reproduced unwiped derived-key buffers on historical rekey
+  download/cleanup failures and on concurrent session append merge. The fixed
+  paths release them without wiping the caller's root keys. Failed restore
+  rolls back local content and leaves the remote revision unchanged.
+- A separate regression reproduced an unclaimed merged plaintext stage when
+  input cleanup failed. The merge now completes input cleanup before passing
+  ownership to its caller and releases the merged stage on failure. Both
+  epochs one and two cover successful merge, base/remote download failures,
+  cleanup failure, unchanged remote head, and a successful retry.
+
+These assertions inspect explicitly owned mutable buffers only; they do not
+prove erasure of immutable JavaScript strings or all process/library copies.
+
 ## Unclaimed boundaries and follow-up gates
 
 - This is not a Cloudflare deployment or a packaged Daytona rotation drill.
 - The persistent-floor fixture and injected D1 failure prove fencing/retry,
   not an actual runtime process reset with a delayed in-flight D1 transaction.
-- Multi-epoch offline CLI history ingestion, failure-path key-buffer cleanup,
-  and recovery reconciliation after an already-superseded rotation still need
-  expanded qualification before this slice is deployed.
 - Native Linux/macOS daemon lifecycle, supported real harness version windows,
   and the remaining readiness/security/retention gates are unchanged.

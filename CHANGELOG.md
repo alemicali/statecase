@@ -4,6 +4,14 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Made offline vault-key history ingestion atomic: validate and authenticate the
+  entire contiguous history before replacing local credentials. Commands use
+  the authoritative current keyring rather than a potentially stale legacy
+  alias, wipe owned root-key buffers on early failures, and reconcile a lost
+  rotation response even after a later rotation has committed. Historical
+  rekey and streaming append merge now release derived-key buffers on download
+  and cleanup failures; failed input cleanup also releases an unclaimed merged
+  plaintext stage without advancing the remote revision.
 - Added post-revocation cryptographic key rotation with fresh monotonic vault
   key epochs, device-local X25519 exchange identities, sealed envelopes for the
   exact active-member set, transactional D1 recipient enforcement, old-epoch

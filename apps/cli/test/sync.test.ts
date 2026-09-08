@@ -6,16 +6,19 @@ import { promisify } from "node:util";
 
 import { computeObjectId, decryptEnvelope, deriveScopeKey, encryptEnvelope, randomKey } from "@statecase/crypto";
 import { canonicalJson, namespaceManifestSchema, type NamespaceManifestV1 } from "@statecase/protocol";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { StatecaseClient } from "../src/client.js";
 import { sessionBindingKey, type LocalConfig, type RootMapping } from "../src/config.js";
 import { createEmergencySnapshot, restoreEmergencySnapshot } from "../src/emergency.js";
 import { SyncConflict, SyncEngine, type VaultKeyring } from "../src/sync.js";
+import * as streamTransfer from "../src/stream-transfer.js";
+import * as appendMerge from "../src/append-merge-file.js";
 
 const temporary: string[] = [];
 const runFile = promisify(execFile);
 afterEach(async () => {
+  vi.restoreAllMocks();
   const { rm } = await import("node:fs/promises");
   await Promise.all(temporary.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
@@ -1027,6 +1030,42 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     expect(await readFile(join(scopedStaging, "context.txt"), "utf8")).toBe("version two\n");
   });
 
+  it.each(["download", "cleanup", "none"])("releases historical rekey buffers after %s and preserves root-key ownership (CR-010)", async (failure) => {
+    const root = await mkdtemp(join(tmpdir(), "statecase-rekey-ownership-"));
+    temporary.push(root);
+    await writeFile(join(root, "context.txt"), "historical\n");
+    const remote = new MemoryRemote();
+    const client = new StatecaseClient("https://remote.test", "token", remote.fetch);
+    const rootKey = await randomKey();
+    const local = config(root);
+    const historical = await new SyncEngine(client, "vlt_test", rootKey).push(local);
+    await writeFile(join(root, "context.txt"), "unpublished local\n");
+    const engine = new SyncEngine(client, "vlt_test", { currentEpoch: 2, keys: { 1: rootKey, 2: await randomKey() } });
+    const downloadedKeys: Uint8Array[] = [];
+    const realDownload = streamTransfer.downloadVerifiedEntry;
+    vi.spyOn(streamTransfer, "downloadVerifiedEntry").mockImplementation(async (input) => {
+      downloadedKeys.push(input.keys.encryptionKey, input.keys.dedupKey);
+      if (failure === "download") throw new Error("injected rekey download failure");
+      const staged = await realDownload(input);
+      return { ...staged, dispose: async () => {
+        await staged.dispose();
+        if (failure === "cleanup") throw new Error("injected rekey cleanup failure");
+      } };
+    });
+    const operation = engine.restoreInPlace(local, local.mappings[0]!, historical.revisionId!, {
+      prepareRecovery: async () => ({ rollback: async () => { await writeFile(join(root, "context.txt"), "unpublished local\n"); } }),
+    });
+    if (failure === "none") await expect(operation).resolves.toMatchObject({ outcome: "pulled" });
+    else {
+      await expect(operation).rejects.toThrow(`injected rekey ${failure} failure`);
+      expect(remote.scopedRevisionId).toBe(historical.revisionId);
+      expect(await readFile(join(root, "context.txt"), "utf8")).toBe("unpublished local\n");
+    }
+    expect(downloadedKeys).toHaveLength(2);
+    expect(downloadedKeys.every((key) => key.every((byte) => byte === 0))).toBe(true);
+    expect(rootKey.some((byte) => byte !== 0)).toBe(true);
+  });
+
   it.each([1, 2])("restores a historical Drop at key epoch %i, rolls back a failed fork, and publishes a new revision (BK-007, BK-009, BK-011, CR-010)", async (epoch) => {
     const base = await mkdtemp(join(tmpdir(), "statecase-in-place-"));
     temporary.push(base);
@@ -1338,7 +1377,7 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     expect(await readFile(join(observerRoot, "from-second.txt"), "utf8")).toBe("second\n");
   });
 
-  it.each([1, 2])("merges concurrent complete-record appends across epoch %i and restores each native path (ID-012, SY-004, SY-005, CR-010)", async (epoch) => {
+  it.each([1, 2].flatMap((epoch) => ["none", "base-download", "remote-download", "cleanup"].map((failure) => ({ epoch, failure }))))("merges concurrent complete-record appends across epoch $epoch after $failure and restores each native path (ID-012, SY-004, SY-005, CR-010)", async ({ epoch, failure }) => {
     const base = await mkdtemp(join(tmpdir(), "statecase-session-append-merge-"));
     temporary.push(base);
     const firstHarness = join(base, "first-codex");
@@ -1393,7 +1432,39 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     expect(remote.namespaceHeads.get("harness:codex:default")!.revisionId).toBe(remoteHeadBeforeRejectedRewrite);
 
     await writeFile(secondSession, `${[localizedBase, ...secondAppend].map((record) => JSON.stringify(record)).join("\n")}\n`);
-    await expect(secondEngine.push(secondConfig)).resolves.toMatchObject({ outcome: "pushed" });
+    const downloadedKeys: Uint8Array[] = [];
+    const realDownload = streamTransfer.downloadVerifiedEntry;
+    let downloadCount = 0;
+    const stagedMerges: string[] = [];
+    const realMerge = appendMerge.mergeJsonlAppendFiles;
+    const mergeSpy = vi.spyOn(appendMerge, "mergeJsonlAppendFiles").mockImplementation(async (input) => {
+      const result = await realMerge(input);
+      if (result.outcome === "merged") stagedMerges.push(result.path);
+      return result;
+    });
+    const downloadSpy = vi.spyOn(streamTransfer, "downloadVerifiedEntry").mockImplementation(async (input) => {
+      downloadedKeys.push(input.keys.encryptionKey, input.keys.dedupKey);
+      downloadCount += 1;
+      if ((failure === "base-download" && downloadCount === 1) || (failure === "remote-download" && downloadCount === 2)) {
+        throw new Error(`injected append ${failure} failure`);
+      }
+      const staged = await realDownload(input);
+      return { ...staged, dispose: async () => {
+        await staged.dispose();
+        if (failure === "cleanup") throw new Error("injected append cleanup failure");
+      } };
+    });
+    if (failure === "none") await expect(secondEngine.push(secondConfig)).resolves.toMatchObject({ outcome: "pushed" });
+    else {
+      await expect(secondEngine.push(secondConfig)).rejects.toThrow(`injected append ${failure} failure`);
+      expect(remote.namespaceHeads.get("harness:codex:default")!.revisionId).toBe(remoteHeadBeforeRejectedRewrite);
+    }
+    downloadSpy.mockRestore();
+    mergeSpy.mockRestore();
+    expect(downloadedKeys.length).toBeGreaterThanOrEqual(failure === "base-download" ? 2 : 4);
+    expect(downloadedKeys.every((key) => key.every((byte) => byte === 0))).toBe(true);
+    for (const path of stagedMerges) await expect(readFile(path)).rejects.toMatchObject({ code: "ENOENT" });
+    if (failure !== "none") await expect(secondEngine.push(secondConfig)).resolves.toMatchObject({ outcome: "pushed" });
     expect(secondConfig.applied["harness:codex:default"]!.revisionId).toBe(commonRevision);
 
     const dependencies = (await secondEngine.dependencies()).find((report) => report.sessionKey.endsWith(":session"))!;

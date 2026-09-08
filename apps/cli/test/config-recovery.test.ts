@@ -108,7 +108,8 @@ describe("CLI local security and recovery (CR-007, CR-009, AU-011)", () => {
       currentEpoch: 1,
       keys: { 1: new Uint8Array(32), 2: new Uint8Array(31) },
     }, "correct horse battery staple")).rejects.toThrow("invalid epoch");
-  });
+  // Each malformed payload is encrypted and decrypted with production Argon2id.
+  }, 30_000);
 });
 
 async function writeEncryptedKeyringPayload(path: string, payload: unknown): Promise<void> {

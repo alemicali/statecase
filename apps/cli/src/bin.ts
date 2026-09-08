@@ -30,6 +30,7 @@ import { installHarnessShim, removeHarnessShim, verifyHarnessShim } from "./shim
 import { installSkill, uninstallSkill, verifySkill } from "./skills.js";
 import { HarnessSupervisor, resolveHarnessExecutable, type HarnessName, type ReconcileReason } from "./supervisor.js";
 import { SyncConflict, SyncEngine, type VaultKeyring } from "./sync.js";
+import { decodeVaultKeyring, encodeVaultKeyring, refreshVaultKeyring, wipeVaultKeyring, withVaultKeyring } from "./vault-keys.js";
 
 export interface CliIO {
   stdout(value: string): void;
@@ -177,81 +178,83 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
     .action(async (options: { recoveryFile: string; yes: boolean }) => {
       const { config, secrets, client } = await requireSession(store, io.fetch);
       const vaultId = selectedVault(config, secrets);
-      if (!config.deviceId || !secrets.deviceExchange) throw new StatecaseUsageError("log in again to initialize this device's exchange key", 3);
-      const keyring = decodeVaultKeyring(secrets, vaultId);
-      const recipients = await client.vaultKeyRecipients(vaultId);
-      if (recipients.keyEpoch !== keyring.currentEpoch) throw new StatecaseUsageError("refresh the latest vault key before rotating it", 5);
-      if (!recipients.devices.some((device) => device.id === config.deviceId)) {
-        throw new StatecaseUsageError("the current device is not an eligible key recipient", 4);
-      }
-      const scoped = await client.namespaceHeads(vaultId);
-      if (scoped.namespaces.length === 0 && (await client.head(vaultId)).revisionId) {
-        throw new StatecaseUsageError("synchronize once to migrate the vault to protocol 1.1 before rotating keys", 5);
-      }
-      const newEpoch = keyring.currentEpoch + 1;
-      const newKey = await randomKey();
-      const recoveryFile = resolve(options.recoveryFile);
-      const nextKeyring = { currentEpoch: newEpoch, keys: { ...keyring.keys, [newEpoch]: newKey } };
-      let remoteRotated = false;
-      let recoveryCreated = false;
-      let preserveRecovery = false;
-      let reconciled = false;
-      try {
-        await writeRecoveryKeyringKit(recoveryFile, vaultId, nextKeyring, requireRecoveryPassphrase());
-        recoveryCreated = true;
-        const envelopes = await Promise.all(recipients.devices.map(async (device) => ({
-          deviceId: device.id,
-          envelope: await sealVaultKeyForDevice({
-            vaultId,
-            keyEpoch: newEpoch,
-            deviceId: device.id,
-            vaultKey: newKey,
-            recipientPublicKey: device.publicExchangeKey,
-          }),
-        })));
-        let rotated: { keyEpoch: number; rotated: true };
-        try {
-          rotated = await client.rotateVaultKey(vaultId, {
-            expectedEpoch: keyring.currentEpoch,
-            newEpoch,
-            envelopes,
-          });
-          remoteRotated = true;
-        } catch (error) {
-          if (!isAmbiguousRemoteMutation(error)) throw error;
-          const outcome = await reconcileVaultKeyRotation({
-            client,
-            vaultId,
-            expectedEpoch: keyring.currentEpoch,
-            newEpoch,
-            newKey,
-            deviceId: config.deviceId,
-            deviceExchange: secrets.deviceExchange,
-          });
-          if (outcome === "unknown") {
-            preserveRecovery = true;
-            throw new StatecaseUsageError(
-              `vault key rotation outcome is unknown; recovery kit preserved at ${recoveryFile}; run statecase sync before retrying`,
-              7,
-            );
-          }
-          if (outcome === "not-committed") throw error;
-          remoteRotated = true;
-          reconciled = true;
-          rotated = { keyEpoch: newEpoch, rotated: true };
+      const deviceId = config.deviceId;
+      const deviceExchange = secrets.deviceExchange;
+      if (!deviceId || !deviceExchange) throw new StatecaseUsageError("log in again to initialize this device's exchange key", 3);
+      return withVaultKeyring(secrets, vaultId, async (keyring) => {
+        const recipients = await client.vaultKeyRecipients(vaultId);
+        if (recipients.keyEpoch !== keyring.currentEpoch) throw new StatecaseUsageError("refresh the latest vault key before rotating it", 5);
+        if (!recipients.devices.some((device) => device.id === config.deviceId)) {
+          throw new StatecaseUsageError("the current device is not an eligible key recipient", 4);
         }
-        secrets.vaultKeyrings ??= {};
-        secrets.vaultKeyrings[vaultId] = encodeVaultKeyring(nextKeyring);
-        secrets.vaultKeys[vaultId] = Buffer.from(newKey).toString("base64url");
-        await store.saveSecrets(secrets);
-        emit(io, program, { ...rotated, reconciled, recoveryFile, rekeyPending: scoped.namespaces.length > 0 }, `Rotated ${vaultId} to key epoch ${newEpoch}`);
-      } catch (error) {
-        if (recoveryCreated && !remoteRotated && !preserveRecovery) await unlink(recoveryFile).catch(() => undefined);
-        throw error;
-      } finally {
-        newKey.fill(0);
-        for (const key of Object.values(keyring.keys)) key.fill(0);
-      }
+        const scoped = await client.namespaceHeads(vaultId);
+        if (scoped.namespaces.length === 0 && (await client.head(vaultId)).revisionId) {
+          throw new StatecaseUsageError("synchronize once to migrate the vault to protocol 1.1 before rotating keys", 5);
+        }
+        const newEpoch = keyring.currentEpoch + 1;
+        const newKey = await randomKey();
+        const recoveryFile = resolve(options.recoveryFile);
+        const nextKeyring = { currentEpoch: newEpoch, keys: { ...keyring.keys, [newEpoch]: newKey } };
+        let remoteRotated = false;
+        let recoveryCreated = false;
+        let preserveRecovery = false;
+        let reconciled = false;
+        try {
+          await writeRecoveryKeyringKit(recoveryFile, vaultId, nextKeyring, requireRecoveryPassphrase());
+          recoveryCreated = true;
+          const envelopes = await Promise.all(recipients.devices.map(async (device) => ({
+            deviceId: device.id,
+            envelope: await sealVaultKeyForDevice({
+              vaultId,
+              keyEpoch: newEpoch,
+              deviceId: device.id,
+              vaultKey: newKey,
+              recipientPublicKey: device.publicExchangeKey,
+            }),
+          })));
+          let rotated: { keyEpoch: number; rotated: true };
+          try {
+            rotated = await client.rotateVaultKey(vaultId, {
+              expectedEpoch: keyring.currentEpoch,
+              newEpoch,
+              envelopes,
+            });
+            remoteRotated = true;
+          } catch (error) {
+            if (!isAmbiguousRemoteMutation(error)) throw error;
+            const outcome = await reconcileVaultKeyRotation({
+              client,
+              vaultId,
+              expectedEpoch: keyring.currentEpoch,
+              newEpoch,
+              newKey,
+              deviceId,
+              deviceExchange,
+            });
+            if (outcome === "unknown") {
+              preserveRecovery = true;
+              throw new StatecaseUsageError(
+                `vault key rotation outcome is unknown; recovery kit preserved at ${recoveryFile}; run statecase sync before retrying`,
+                7,
+              );
+            }
+            if (outcome === "not-committed") throw error;
+            remoteRotated = true;
+            reconciled = true;
+            rotated = { keyEpoch: newEpoch, rotated: true };
+          }
+          secrets.vaultKeyrings ??= {};
+          secrets.vaultKeyrings[vaultId] = encodeVaultKeyring(nextKeyring);
+          secrets.vaultKeys[vaultId] = Buffer.from(newKey).toString("base64url");
+          await store.saveSecrets(secrets);
+          emit(io, program, { ...rotated, reconciled, recoveryFile, rekeyPending: scoped.namespaces.length > 0 }, `Rotated ${vaultId} to key epoch ${newEpoch}`);
+        } catch (error) {
+          if (recoveryCreated && !remoteRotated && !preserveRecovery) await unlink(recoveryFile).catch(() => undefined);
+          throw error;
+        } finally {
+          newKey.fill(0);
+        }
+      });
     });
 
   const token = program.command("token").description("grant and revoke short-lived namespace capabilities");
@@ -263,27 +266,25 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
     .action(async (options: { namespace: string; actions: string; ttl: string; output: string }) => {
       const { config, secrets, client } = await requireSession(store, io.fetch);
       const vaultId = selectedVault(config, secrets);
-      const encodedVaultKey = secrets.vaultKeys[vaultId];
-      if (!encodedVaultKey) throw new StatecaseUsageError("a full vault key is required to grant a capability", 4);
-      const vaultKeyring = decodeVaultKeyring(secrets, vaultId);
-      const namespaces = parseCsv(options.namespace);
-      const actions = parseCapabilityActions(options.actions);
-      const namespaceHeads = new Map((await client.namespaceHeads(vaultId)).namespaces.map((head) => [head.namespace, head]));
-      const staleEpochNamespaces = namespaces.filter((namespace) => {
-        const head = namespaceHeads.get(namespace);
-        return head && (head.keyEpoch ?? 1) !== vaultKeyring.currentEpoch;
-      });
-      if (staleEpochNamespaces.length > 0) {
-        throw new StatecaseUsageError(`synchronize rotated namespaces before granting a capability: ${staleEpochNamespaces.join(", ")}`, 5);
-      }
-      const ttlMinutes = Number(options.ttl);
-      if (!Number.isSafeInteger(ttlMinutes) || ttlMinutes < 1 || ttlMinutes > 1440) {
-        throw new StatecaseUsageError("--ttl must be an integer from 1 to 1440 minutes", 2);
-      }
-      const expiresAt = Date.now() + ttlMinutes * 60_000;
-      const vaultKey = Buffer.from(encodedVaultKey, "base64url");
-      const outputPath = resolve(options.output);
-      try {
+      if (!secrets.vaultKeys[vaultId] && !secrets.vaultKeyrings?.[vaultId]) throw new StatecaseUsageError("a full vault key is required to grant a capability", 4);
+      return withVaultKeyring(secrets, vaultId, async (vaultKeyring) => {
+        const namespaces = parseCsv(options.namespace);
+        const actions = parseCapabilityActions(options.actions);
+        const namespaceHeads = new Map((await client.namespaceHeads(vaultId)).namespaces.map((head) => [head.namespace, head]));
+        const staleEpochNamespaces = namespaces.filter((namespace) => {
+          const head = namespaceHeads.get(namespace);
+          return head && (head.keyEpoch ?? 1) !== vaultKeyring.currentEpoch;
+        });
+        if (staleEpochNamespaces.length > 0) {
+          throw new StatecaseUsageError(`synchronize rotated namespaces before granting a capability: ${staleEpochNamespaces.join(", ")}`, 5);
+        }
+        const ttlMinutes = Number(options.ttl);
+        if (!Number.isSafeInteger(ttlMinutes) || ttlMinutes < 1 || ttlMinutes > 1440) {
+          throw new StatecaseUsageError("--ttl must be an integer from 1 to 1440 minutes", 2);
+        }
+        const expiresAt = Date.now() + ttlMinutes * 60_000;
+        const vaultKey = vaultKeyring.keys[vaultKeyring.currentEpoch]!;
+        const outputPath = resolve(options.output);
         const material = await createBootstrapCapability({ vaultId, keyEpoch: vaultKeyring.currentEpoch, vaultKey, namespaces, actions, expiresAt });
         await writeProtectedBootstrapFile(outputPath, `${material.bootstrapToken}\n`);
         let record;
@@ -303,10 +304,7 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
           throw error;
         }
         emit(io, program, { capability: record, bootstrapFile: outputPath }, `Created ${record.id}; bootstrap token written to ${outputPath}`);
-      } finally {
-        vaultKey.fill(0);
-        wipeSyncAccess(vaultKeyring);
-      }
+      });
     });
   token.command("list").action(async () => {
     const { client } = await requireSession(store, io.fetch);
@@ -1191,36 +1189,19 @@ async function syncAccess(
   if (secrets.vaultKeyrings?.[vaultId] || secrets.vaultKeys[vaultId]) {
     const keyring = decodeVaultKeyring(secrets, vaultId);
     if (!config.deviceId || !secrets.deviceExchange) return keyring;
-    const history = await client.vaultKeyEnvelopes(vaultId, keyring.currentEpoch);
-    let expectedEpoch = keyring.currentEpoch + 1;
-    for (const item of history.envelopes) {
-      if (item.keyEpoch !== expectedEpoch) {
-        wipeSyncAccess(keyring);
-        throw new StatecaseUsageError("vault key history is incomplete on this device", 6);
-      }
-      const key = await openVaultKeyEnvelope({
-        envelope: item.envelope,
-        expectedVaultId: vaultId,
-        expectedKeyEpoch: item.keyEpoch,
-        expectedDeviceId: config.deviceId,
-        recipientPublicKey: secrets.deviceExchange.publicKey,
-        recipientPrivateKey: secrets.deviceExchange.privateKey,
-      });
-      keyring.keys[item.keyEpoch] = key;
-      keyring.currentEpoch = item.keyEpoch;
-      expectedEpoch += 1;
-    }
-    if (keyring.currentEpoch !== history.keyEpoch) {
-      wipeSyncAccess(keyring);
-      throw new StatecaseUsageError("vault key history is incomplete on this device", 6);
-    }
-    if (history.envelopes.length > 0) {
-      secrets.vaultKeyrings ??= {};
-      secrets.vaultKeyrings[vaultId] = encodeVaultKeyring(keyring);
-      secrets.vaultKeys[vaultId] = Buffer.from(keyring.keys[keyring.currentEpoch]!).toString("base64url");
-      await store.saveSecrets(secrets);
-    }
-    return keyring;
+    return refreshVaultKeyring({
+      keyring, vaultId, deviceId: config.deviceId, deviceExchange: secrets.deviceExchange,
+      readHistory: () => client.vaultKeyEnvelopes(vaultId, keyring.currentEpoch),
+      persist: async (current) => {
+        const next = {
+          ...secrets,
+          vaultKeyrings: { ...secrets.vaultKeyrings, [vaultId]: encodeVaultKeyring(current) },
+          vaultKeys: { ...secrets.vaultKeys, [vaultId]: Buffer.from(current.keys[current.currentEpoch]!).toString("base64url") },
+        };
+        await store.saveSecrets(next);
+        Object.assign(secrets, next);
+      },
+    });
   }
   const scoped = secrets.scopedVaults?.[vaultId];
   if (!scoped) throw new StatecaseUsageError("selected vault key is unavailable", 2);
@@ -1229,34 +1210,7 @@ async function syncAccess(
 
 function wipeSyncAccess(access: Buffer | VaultKeyring | ScopedVaultKeys): void {
   if (access instanceof Uint8Array) access.fill(0);
-  else if ("currentEpoch" in access) for (const key of Object.values(access.keys)) key.fill(0);
-}
-
-function decodeVaultKeyring(secrets: LocalSecrets, vaultId: string): VaultKeyring {
-  const stored = secrets.vaultKeyrings?.[vaultId];
-  if (!stored) {
-    const root = secrets.vaultKeys[vaultId];
-    if (!root) throw new StatecaseUsageError("selected vault key is unavailable", 2);
-    const key = Buffer.from(root, "base64url");
-    if (key.byteLength !== 32) throw new StatecaseUsageError("stored vault key is invalid", 6);
-    return { currentEpoch: 1, keys: { 1: key } };
-  }
-  if (!Number.isSafeInteger(stored.currentEpoch) || stored.currentEpoch < 1) throw new StatecaseUsageError("stored vault keyring is invalid", 6);
-  const keys: Record<number, Uint8Array> = {};
-  for (const [epoch, encoded] of Object.entries(stored.keys)) {
-    const key = Buffer.from(encoded, "base64url");
-    if (!/^\d+$/u.test(epoch) || Number(epoch) < 1 || key.byteLength !== 32) throw new StatecaseUsageError("stored vault keyring is invalid", 6);
-    keys[Number(epoch)] = key;
-  }
-  if (!keys[stored.currentEpoch]) throw new StatecaseUsageError("stored vault keyring current epoch is unavailable", 6);
-  return { currentEpoch: stored.currentEpoch, keys };
-}
-
-function encodeVaultKeyring(keyring: { currentEpoch: number; keys: Record<number, Uint8Array> }): { currentEpoch: number; keys: Record<string, string> } {
-  return {
-    currentEpoch: keyring.currentEpoch,
-    keys: Object.fromEntries(Object.entries(keyring.keys).map(([epoch, key]) => [epoch, Buffer.from(key).toString("base64url")])),
-  };
+  else if ("currentEpoch" in access) wipeVaultKeyring(access);
 }
 
 function parseCsv(value: string): string[] {

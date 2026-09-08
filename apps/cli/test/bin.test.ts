@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { randomKey, sealVaultKeyForDevice } from "@statecase/crypto";
 
 import { runCli, type CliIO } from "../src/bin.js";
 
@@ -243,9 +244,10 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
     };
     expect(replacementSecrets.vaultKeyrings?.vlt_test).toMatchObject({ currentEpoch: 2, keys: { 1: expect.any(String), 2: expect.any(String) } });
     expect(errors.join("\n")).not.toContain("correct horse battery staple");
-  });
+  // Real Argon2id recovery/enrollment on four devices is not a 5-second unit test.
+  }, 30_000);
 
-  it("preserves the recovery kit when a committed rotation cannot be reconciled after connection loss (CR-010)", async () => {
+  it.each(["committed-unavailable", "precommit-old-read"])("preserves the recovery kit after ambiguous connection loss: %s (CR-010)", async (failure) => {
     const base = await mkdtemp(join(tmpdir(), "statecase-cli-rotation-unknown-"));
     temporary.push(base);
     const home = join(base, "machine");
@@ -262,17 +264,114 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
 
     expect(await command(io, "--json", "login", "--non-interactive", "--device-name", "only device")).toBe(0);
     expect(await command(io, "--json", "vault", "create", "personal", "--recovery-file", initialRecovery)).toBe(0);
-    remote.loseNextRotationResponse = true;
-    remote.failRotationReconciliation = true;
+    remote.loseNextRotationResponse = failure === "committed-unavailable";
+    remote.failRotationReconciliation = failure === "committed-unavailable";
+    remote.failNextRotationBeforeCommit = failure === "precommit-old-read";
 
     expect(await command(io, "--json", "vault", "key", "rotate", "--recovery-file", rotatedRecovery, "--yes")).toBe(7);
-    expect(remote.keyEpoch).toBe(2);
+    expect(remote.keyEpoch).toBe(failure === "committed-unavailable" ? 2 : 1);
     expect((await stat(rotatedRecovery)).mode & 0o777).toBe(0o600);
     const secrets = JSON.parse(await readFile(join(home, "credentials.json"), "utf8")) as {
       vaultKeyrings: Record<string, { currentEpoch: number }>;
     };
     expect(secrets.vaultKeyrings.vlt_test.currentEpoch).toBe(1);
     expect(errors.at(-1)).toContain("recovery kit preserved");
+  });
+
+  it("reconciles a lost rotation response from history even after another rotation has already committed (CR-010)", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-cli-superseded-epoch-"));
+    temporary.push(base);
+    const home = join(base, "owner");
+    const remote = new CliRemote();
+    const output: string[] = [];
+    const io: CliIO = { stdout: (value) => output.push(value), stderr: (value) => output.push(value), fetch: remote.fetch };
+    process.env.STATECASE_API_URL = "https://remote.test";
+    process.env.STATECASE_TOKEN = "superseded-epoch-token";
+    process.env.STATECASE_RECOVERY_PASSPHRASE = "correct horse battery staple";
+    process.env.STATECASE_HOME = home;
+    expect(await command(io, "--json", "login", "--non-interactive", "--device-name", "owner")).toBe(0);
+    expect(await command(io, "--json", "vault", "create", "personal", "--recovery-file", join(base, "kits", "epoch1.json"))).toBe(0);
+    const thirdKey = await randomKey();
+    remote.loseNextRotationResponse = true;
+    remote.beforeLostRotationResponse = async () => {
+      // Simulate a second authorized rotation reaching the service before the
+      // first writer observes its lost response. This is fixture-only key use.
+      const envelopes = await Promise.all([...remote.devices.values()].map(async (device) => ({ deviceId: device.id,
+        envelope: await sealVaultKeyForDevice({ vaultId: "vlt_test", deviceId: device.id, keyEpoch: 3,
+          vaultKey: thirdKey, recipientPublicKey: device.publicExchangeKey! }),
+      })));
+      expect((await remote.fetch("https://remote.test/v1/vaults/vlt_test/key-rotations", {
+        method: "POST", body: JSON.stringify({ expectedEpoch: 2, newEpoch: 3, envelopes }),
+      })).status).toBe(201);
+    };
+    expect(await command(io, "--json", "vault", "key", "rotate", "--recovery-file", join(base, "kits", "epoch2.json"), "--yes")).toBe(0);
+    expect(JSON.parse(output.at(-1)!)).toMatchObject({ keyEpoch: 2, reconciled: true });
+    expect(remote.keyEpoch).toBe(3);
+    expect(await command(io, "--json", "pull")).toBe(0);
+    const local = JSON.parse(await readFile(join(home, "credentials.json"), "utf8")) as { vaultKeyrings: Record<string, { currentEpoch: number; keys: Record<string, string> }> };
+    expect(local.vaultKeyrings.vlt_test.currentEpoch).toBe(3);
+    expect(local.vaultKeyrings.vlt_test.keys[3]).toBe(Buffer.from(thirdKey).toString("base64url"));
+    expect(output.join("\n")).not.toContain(Buffer.from(thirdKey).toString("base64url"));
+  });
+
+  it("catches up after multiple offline rotations and leaves credentials/files untouched on missing or forged history (CR-010)", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-cli-offline-epochs-"));
+    temporary.push(base);
+    const owner = join(base, "owner");
+    const peer = join(base, "peer");
+    const source = join(base, "source");
+    const target = join(base, "target");
+    const kit = join(base, "kits", "epoch1.json");
+    await Promise.all([mkdir(source), mkdir(target)]);
+    await writeFile(join(source, "context.txt"), "epoch one\n");
+    const remote = new CliRemote();
+    const output: string[] = [];
+    const errors: string[] = [];
+    const io: CliIO = { stdout: (value) => output.push(value), stderr: (value) => errors.push(value), fetch: remote.fetch };
+    process.env.STATECASE_API_URL = "https://remote.test";
+    process.env.STATECASE_TOKEN = "offline-epochs-token";
+    process.env.STATECASE_RECOVERY_PASSPHRASE = "correct horse battery staple";
+    process.env.STATECASE_HOME = owner;
+    expect(await command(io, "--json", "login", "--non-interactive", "--device-name", "owner")).toBe(0);
+    expect(await command(io, "--json", "vault", "create", "personal", "--recovery-file", kit)).toBe(0);
+    expect(await command(io, "--json", "drop", "add", source, "--name", "context")).toBe(0);
+    const drop = JSON.parse(output.at(-1)!) as { id: string };
+    expect(await command(io, "--json", "push")).toBe(0);
+    process.env.STATECASE_HOME = peer;
+    expect(await command(io, "--json", "login", "--non-interactive", "--device-name", "peer")).toBe(0);
+    expect(await command(io, "--json", "vault", "join", "vlt_test", "--recovery-file", kit)).toBe(0);
+    expect(await command(io, "--json", "drop", "map", drop.id, target, "--name", "context")).toBe(0);
+    expect(await command(io, "--json", "pull")).toBe(0);
+    const priorCredentials = await readFile(join(peer, "credentials.json"));
+    const peerId = (JSON.parse(await readFile(join(peer, "config.json"), "utf8")) as { deviceId: string }).deviceId;
+
+    process.env.STATECASE_HOME = owner;
+    for (const epoch of [2, 3]) {
+      expect(await command(io, "--json", "vault", "key", "rotate", "--recovery-file", join(base, "kits", `epoch${epoch}.json`), "--yes")).toBe(0);
+      await writeFile(join(source, "context.txt"), `epoch ${epoch}\n`);
+      expect(await command(io, "--json", "push")).toBe(0);
+    }
+    process.env.STATECASE_HOME = peer;
+    const second = remote.keyEnvelopeHistory.get(2)!;
+    remote.keyEnvelopeHistory.delete(2);
+    expect(await command(io, "--json", "pull")).toBe(6);
+    expect(await readFile(join(peer, "credentials.json"))).toEqual(priorCredentials);
+    expect(await readFile(join(target, "context.txt"), "utf8")).toBe("epoch one\n");
+    remote.keyEnvelopeHistory.set(2, second);
+    const third = remote.keyEnvelopeHistory.get(3)!;
+    const originalEnvelope = third.get(peerId)!;
+    third.set(peerId, second.get(peerId)!);
+    expect(await command(io, "--json", "pull")).toBe(6);
+    expect(await readFile(join(peer, "credentials.json"))).toEqual(priorCredentials);
+    expect(await readFile(join(target, "context.txt"), "utf8")).toBe("epoch one\n");
+    third.set(peerId, originalEnvelope);
+    expect(await command(io, "--json", "pull")).toBe(0);
+    expect(await readFile(join(target, "context.txt"), "utf8")).toBe("epoch 3\n");
+    const recovered = JSON.parse(await readFile(join(peer, "credentials.json"), "utf8")) as {
+      vaultKeyrings: Record<string, { currentEpoch: number; keys: Record<string, string> }>;
+    };
+    expect(recovered.vaultKeyrings.vlt_test.currentEpoch).toBe(3);
+    expect(Object.keys(recovered.vaultKeyrings.vlt_test.keys)).toEqual(["1", "2", "3"]);
   });
 
   it("drives an approved Git workspace restore through the packaged CLI surface (BK-009, WS-030)", async () => {
@@ -674,8 +773,11 @@ class CliRemote {
   readonly devices = new Map<string, { id: string; name: string; status: "active" | "revoked"; publicExchangeKey?: string }>();
   keyEpoch = 1;
   readonly keyEnvelopes = new Map<string, string>();
+  readonly keyEnvelopeHistory = new Map<number, Map<string, string>>();
   readonly homeDevices = new Map<string, string>();
   loseNextRotationResponse = false;
+  failNextRotationBeforeCommit = false;
+  beforeLostRotationResponse?: () => Promise<void>;
   failRotationReconciliation = false;
   readonly snapshots = new Map<string, { id: string; name: string; revisionId: string; manifestObjectId?: string; protocolVersion?: "1.1"; protected: true; createdAt: number }>();
   readonly revisions = new Map<string, { revisionId: string; manifestObjectId: string; previousRevisionId: string | null }>();
@@ -802,10 +904,17 @@ class CliRemote {
       const deviceId = process.env.STATECASE_HOME ? this.homeDevices.get(process.env.STATECASE_HOME) : undefined;
       const device = deviceId ? this.devices.get(deviceId) : undefined;
       if (device?.status === "revoked") return Response.json({ error: { code: "NOT_FOUND" } }, { status: 404 });
-      const envelope = this.keyEpoch > afterEpoch && deviceId ? this.keyEnvelopes.get(deviceId) : undefined;
-      return Response.json({ keyEpoch: this.keyEpoch, envelopes: envelope ? [{ keyEpoch: this.keyEpoch, envelope }] : [] });
+      const envelopes = [...this.keyEnvelopeHistory.entries()]
+        .filter(([epoch, values]) => epoch > afterEpoch && Boolean(deviceId && values.has(deviceId)))
+        .sort(([left], [right]) => left - right)
+        .map(([keyEpoch, values]) => ({ keyEpoch, envelope: values.get(deviceId!)! }));
+      return Response.json({ keyEpoch: this.keyEpoch, envelopes });
     }
     if (url.pathname === "/v1/vaults/vlt_test/key-rotations" && method === "POST") {
+      if (this.failNextRotationBeforeCommit) {
+        this.failNextRotationBeforeCommit = false;
+        throw new TypeError("simulated connection loss before mutation becomes visible");
+      }
       const input = JSON.parse(String(init?.body)) as { expectedEpoch: number; newEpoch: number; envelopes: Array<{ deviceId: string; envelope: string }> };
       const active = [...this.devices.values()].filter((candidate) => candidate.status === "active" && candidate.publicExchangeKey).map((candidate) => candidate.id).sort();
       const recipients = input.envelopes.map((item) => item.deviceId).sort();
@@ -816,8 +925,10 @@ class CliRemote {
       this.keyEpoch = input.newEpoch;
       this.keyEnvelopes.clear();
       for (const envelope of input.envelopes) this.keyEnvelopes.set(envelope.deviceId, envelope.envelope);
+      this.keyEnvelopeHistory.set(this.keyEpoch, new Map(this.keyEnvelopes));
       if (this.loseNextRotationResponse) {
         this.loseNextRotationResponse = false;
+        await this.beforeLostRotationResponse?.();
         throw new TypeError("simulated connection loss after committed rotation");
       }
       return Response.json({ keyEpoch: this.keyEpoch, rotated: true }, { status: 201 });

@@ -1576,24 +1576,30 @@ export class SyncEngine {
     const workspace = config.workspaces.find((candidate) => candidate.id === local.session!.workspaceId);
     if (!workspace) throw new Error(`workspace ${local.session.workspaceId} is not mapped on this device`);
     const downloaded: Array<Awaited<ReturnType<typeof downloadVerifiedEntry>>> = [];
+    const ownedKeys: Uint8Array[] = [];
+    let disposeMerged: (() => Promise<void>) | undefined;
     try {
+      const baseKeys = await this.#scopeKeys(baseEntry.namespace, baseEntry.keyEpoch ?? 1);
+      ownedKeys.push(baseKeys.encryptionKey, baseKeys.dedupKey);
       const base = await downloadVerifiedEntry({
         objectIds: baseEntry.objectIds,
         totalSize: baseEntry.totalSize,
         contentDigest: baseEntry.contentDigest,
         maximumSize: MAX_STREAMED_SESSION_BYTES,
-        keys: await this.#scopeKeys(baseEntry.namespace, baseEntry.keyEpoch ?? 1),
+        keys: baseKeys,
         vaultId: this.vaultId,
         namespace: baseEntry.namespace,
         getObject: (objectId) => this.client.getNamespaceObject(this.vaultId, baseEntry.namespace, objectId),
       });
       downloaded.push(base);
+      const remoteKeys = await this.#scopeKeys(remoteEntry.namespace, remoteEntry.keyEpoch ?? 1);
+      ownedKeys.push(remoteKeys.encryptionKey, remoteKeys.dedupKey);
       const remote = await downloadVerifiedEntry({
         objectIds: remoteEntry.objectIds,
         totalSize: remoteEntry.totalSize,
         contentDigest: remoteEntry.contentDigest,
         maximumSize: MAX_STREAMED_SESSION_BYTES,
-        keys: await this.#scopeKeys(remoteEntry.namespace, remoteEntry.keyEpoch ?? 1),
+        keys: remoteKeys,
         vaultId: this.vaultId,
         namespace: remoteEntry.namespace,
         getObject: (objectId) => this.client.getNamespaceObject(this.vaultId, remoteEntry.namespace, objectId),
@@ -1604,25 +1610,35 @@ export class SyncEngine {
         remotePath: remote.path,
         localPath: local.stagedPath,
       });
+      if (merged.outcome === "merged") disposeMerged = merged.dispose;
+      // Finish input cleanup before transferring ownership of the merged stage.
+      // allSettled waits for every input even when one cleanup fails.
+      const cleanup = await Promise.allSettled(downloaded.map((item) => item.dispose()));
+      downloaded.length = 0;
+      const failed = cleanup.find((item) => item.status === "rejected");
+      if (failed?.status === "rejected") throw failed.reason;
       if (merged.outcome === "diverged") return undefined;
-      try {
-        const described = await describeStagedJsonl(merged.path, keys.dedupKey, JSONL_CHUNK_POLICY);
-        const activity = await inspectPortableSessionActivity(merged.path, workspace.id, resolve(workspace.path));
-        return { ...merged, ...described, activity };
-      } catch (error) {
-        await merged.dispose();
-        throw error;
-      }
+      const described = await describeStagedJsonl(merged.path, keys.dedupKey, JSONL_CHUNK_POLICY);
+      const activity = await inspectPortableSessionActivity(merged.path, workspace.id, resolve(workspace.path));
+      return { ...merged, ...described, activity };
+    } catch (error) {
+      await Promise.allSettled([
+        ...downloaded.map((item) => item.dispose()),
+        ...(disposeMerged ? [disposeMerged()] : []),
+      ]);
+      throw error;
     } finally {
-      await Promise.all(downloaded.map((item) => item.dispose()));
+      for (const key of ownedKeys) key.fill(0);
     }
   }
 
   async #entryAtCurrentDigest(entry: NamespaceManifestV1["entries"][number]): Promise<NamespaceManifestV1["entries"][number]> {
     if ((entry.keyEpoch ?? 1) === this.keyEpoch) return entry;
     const oldKeys = await this.#scopeKeys(entry.namespace, entry.keyEpoch ?? 1);
-    const keys = await this.#scopeKeys(entry.namespace);
+    const ownedKeys = Object.values(oldKeys);
     try {
+      const keys = await this.#scopeKeys(entry.namespace);
+      ownedKeys.push(keys.encryptionKey, keys.dedupKey);
       const staged = await downloadVerifiedEntry({
         ...entry,
         maximumSize: entry.chunking?.strategy === "jsonl-records" ? MAX_STREAMED_SESSION_BYTES : MAX_FILE_BYTES,
@@ -1636,52 +1652,54 @@ export class SyncEngine {
         await staged.dispose();
       }
     } finally {
-      for (const key of [...Object.values(oldKeys), ...Object.values(keys)]) key.fill(0);
+      for (const key of ownedKeys) key.fill(0);
     }
   }
 
   async #rekeyEntry(entry: NamespaceManifestV1["entries"][number], dryRun = false): Promise<NamespaceManifestV1["entries"][number]> {
     if ((entry.keyEpoch ?? 1) === this.keyEpoch) return entry;
     const oldKeys = await this.#scopeKeys(entry.namespace, entry.keyEpoch ?? 1);
-    const keys = await this.#scopeKeys(entry.namespace);
-    const streamed = entry.chunking?.strategy === "jsonl-records";
-    const staged = await downloadVerifiedEntry({
-      ...entry,
-      maximumSize: streamed ? MAX_STREAMED_SESSION_BYTES : MAX_FILE_BYTES,
-      keys: oldKeys,
-      vaultId: this.vaultId,
-      getObject: (objectId) => this.client.getNamespaceObject(this.vaultId, entry.namespace, objectId),
-    });
+    const ownedKeys = Object.values(oldKeys);
     try {
-      const objectIds: string[] = [];
-      const source = createReadStream(staged.path, { highWaterMark: JSONL_CHUNK_POLICY.maxSize });
-      const chunks = streamed ? chunkJsonlStream(source, JSONL_CHUNK_POLICY) : source;
-      for await (const plaintext of chunks) {
-        const objectId = await computeObjectId(keys.dedupKey, plaintext);
-        const envelope = await encryptEnvelope({
-          plaintext,
-          key: keys.encryptionKey,
-          dedupKey: keys.dedupKey,
-          context: { vaultId: this.vaultId, scopeId: entry.namespace, compression: "none" },
-        });
-        if (!dryRun) await this.client.putNamespaceObject(this.vaultId, entry.namespace, objectId, envelope);
-        objectIds.push(objectId);
-      }
-      return {
+      const keys = await this.#scopeKeys(entry.namespace);
+      ownedKeys.push(keys.encryptionKey, keys.dedupKey);
+      const streamed = entry.chunking?.strategy === "jsonl-records";
+      const staged = await downloadVerifiedEntry({
         ...entry,
-        keyEpoch: this.keyEpoch,
-        objectIds,
-        contentDigest: await computeObjectIdStream(keys.dedupKey, createReadStream(staged.path)),
-        chunking: streamed
-          ? { strategy: "jsonl-records", ...JSONL_CHUNK_POLICY }
-          : { strategy: "fixed", size: JSONL_CHUNK_POLICY.maxSize },
-      };
+        maximumSize: streamed ? MAX_STREAMED_SESSION_BYTES : MAX_FILE_BYTES,
+        keys: oldKeys,
+        vaultId: this.vaultId,
+        getObject: (objectId) => this.client.getNamespaceObject(this.vaultId, entry.namespace, objectId),
+      });
+      try {
+        const objectIds: string[] = [];
+        const source = createReadStream(staged.path, { highWaterMark: JSONL_CHUNK_POLICY.maxSize });
+        const chunks = streamed ? chunkJsonlStream(source, JSONL_CHUNK_POLICY) : source;
+        for await (const plaintext of chunks) {
+          const objectId = await computeObjectId(keys.dedupKey, plaintext);
+          const envelope = await encryptEnvelope({
+            plaintext,
+            key: keys.encryptionKey,
+            dedupKey: keys.dedupKey,
+            context: { vaultId: this.vaultId, scopeId: entry.namespace, compression: "none" },
+          });
+          if (!dryRun) await this.client.putNamespaceObject(this.vaultId, entry.namespace, objectId, envelope);
+          objectIds.push(objectId);
+        }
+        return {
+          ...entry,
+          keyEpoch: this.keyEpoch,
+          objectIds,
+          contentDigest: await computeObjectIdStream(keys.dedupKey, createReadStream(staged.path)),
+          chunking: streamed
+            ? { strategy: "jsonl-records", ...JSONL_CHUNK_POLICY }
+            : { strategy: "fixed", size: JSONL_CHUNK_POLICY.maxSize },
+        };
+      } finally {
+        await staged.dispose();
+      }
     } finally {
-      await staged.dispose();
-      oldKeys.encryptionKey.fill(0);
-      oldKeys.dedupKey.fill(0);
-      keys.encryptionKey.fill(0);
-      keys.dedupKey.fill(0);
+      for (const key of ownedKeys) key.fill(0);
     }
   }
 

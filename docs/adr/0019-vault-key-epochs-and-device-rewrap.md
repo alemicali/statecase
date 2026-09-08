@@ -83,10 +83,25 @@ checks the recovery epoch and active installation; an HTTP preflight check is
 not sufficient. An omitted request epoch means one for legacy clients.
 Version-one epoch-one kits remain readable for unrotated vaults.
 
+History ingestion authenticates the complete response before replacing local
+credentials once. It never advances the caller's epoch/map incrementally.
+Schema, sequence, authentication, network, and persistence failures wipe owned
+decoded buffers and leave the persisted prior authority intact. Local full-key
+rings require canonical base64url 32-byte roots and a contiguous epoch sequence,
+bounded to 1,000 retained epochs consistently with the recovery format. Commands
+derive capabilities from the keyring's current root, not its legacy alias.
+Command-owned decoded root buffers are released on preflight failures too;
+historical rekey and append-merge scope buffers are released even if download
+or temporary-stage cleanup fails. This is bounded buffer ownership hygiene,
+not a claim that JavaScript strings, library copies, or process memory can all
+be securely erased.
+
 The rotating client writes a new exclusive, owner-only recovery kit before the
 remote mutation. If the mutation response is lost, it queries the authoritative
 epoch and decrypts its own proposed-epoch envelope from history, then compares that key with the
 candidate key in constant time. It accepts the rotation only on an exact match.
+It locates that proposed epoch in the retained envelope history even when a
+later rotation has already superseded it; the next sync ingests newer epochs.
 If reconciliation is unavailable, it preserves the recovery kit, does not
 advance local credentials, and reports an unknown outcome. A definitive
 rejection removes only the newly created unused candidate kit. An existing

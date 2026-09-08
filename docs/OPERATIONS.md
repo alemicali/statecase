@@ -59,6 +59,16 @@ at the prior epoch. Do not rotate again blindly: restore connectivity and run
 won. Existing scoped capability grants and redeemed sessions are revoked by the
 same D1 transaction and must be reissued only after namespace rekeying.
 
+An offline trusted installation can catch up through several rotations with
+one normal `sync` or `pull`. The CLI authenticates every missing envelope in
+order and saves the complete keyring once. Missing, forged, out-of-order, or
+regressing history fails closed; credentials and synchronized files remain at
+their previous state. Retrying after the history is available is safe. A lost
+rotation response is reconciled against that exact proposed epoch, even when
+the service has already advanced again; the next sync ingests the newer epochs.
+The current CLI/recovery format retains a contiguous history of at most 1,000
+epochs. Do not prune historical keys manually: immutable revisions require them.
+
 The coordinator durably fences the old write epoch before sending D1 a
 rotation. If D1 has not completed it (for example, membership changed after
 preflight), commits remain blocked even after a service restart. Once the

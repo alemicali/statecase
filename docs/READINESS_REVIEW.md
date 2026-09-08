@@ -181,7 +181,11 @@ records passing offline/restore variants, final coordinator fencing,
 transactional capability/enrollment checks, immutable exchange identities,
 and injected D1 failure recovery. It explicitly separates this evidence from
 live deployment, real process-reset fault injection, and outstanding
-key-history/failure-path qualification.
+release gates. Additional local CLI tests now cover multi-epoch offline
+catch-up, unchanged credentials/files on incomplete or forged history, and
+lost-response reconciliation after a newer rotation. Download and cleanup
+faults verify derived-key release, discarded temporary merged sessions, and
+unchanged remote revisions; these do not replace the packaged live drill.
 
 Full-key devices now merge concurrent appends to the same recognized Codex or
 Claude JSONL session when both branches retain one byte-identical complete
