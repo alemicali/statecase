@@ -137,13 +137,14 @@ describe("derived reference participant authority and stable observations (RT-00
     if (kind === "unborn-to-unborn") expect(prepared.retentionWrites).toEqual([]);
     prepared.dispose();
   });
-  it.each(["default-files", "reftable", "absent-log", "invalid-log", "valueless-log"])("uses native configuration for %s", async kind => {
+  it.each(["default-files", "reftable", "reftable-v1", "absent-log", "invalid-log", "valueless-log"])("uses native configuration for %s", async kind => {
     const f = await fixture();
-    if (kind === "reftable") await f.git("config", "extensions.refStorage", kind);
+    if (kind === "reftable-v1") await f.git("config", "core.repositoryFormatVersion", "1");
+    if (kind.startsWith("reftable")) await f.git("config", "extensions.refStorage", "reftable");
     if (kind === "absent-log" || kind === "valueless-log") await f.git("config", "--unset", "core.logAllRefUpdates");
     if (kind === "valueless-log") await fs.appendFile(join(f.metadata, "config"), "\n[core]\nlogAllRefUpdates\n");
     if (kind === "invalid-log") await f.git("config", "core.logAllRefUpdates", "invalid");
-    if (kind === "reftable" || kind === "invalid-log") await expect(prepareGitReferences(f.indexes, [f.plan])).rejects.toMatchObject({ code: "PROFILE_RECOVERY_REQUIRED" });
+    if (kind.startsWith("reftable") || kind === "invalid-log") await expect(prepareGitReferences(f.indexes, [f.plan])).rejects.toMatchObject({ code: "PROFILE_RECOVERY_REQUIRED" });
     else { const prepared = await prepareGitReferences(f.indexes, [f.plan]); expect(prepared.files.writes.length).toBeGreaterThan(0); prepared.dispose(); }
   });
   it.each(["future-version", "unknown-extension"])("does not confuse rejected repository discovery with an absent backend: %s", async kind => {

@@ -66,6 +66,12 @@ esbuild and independent Node processes; worker scheduling must leave capacity fo
 those children. This does not increase per-test timeouts, skip correctness tests
 or retry failures. Preserve failing-run evidence when adjusting orchestration.
 
+On a shared local machine, do not overlap complete portable coverage runs with
+workerd integration/UAT suites. Their independent worker pools do not share this
+cap. Hosted jobs on separate runners can still execute concurrently. The
+2026-09-09 readiness record preserves eight five-second timeouts from an
+accidental local overlap; serialized diagnosis does not waive timing failures.
+
 ## Runtime matrix
 
 The maintained baseline is Node `>=22.12`. CI covers Node 22 and 24.

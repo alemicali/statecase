@@ -130,6 +130,9 @@ regression ID.
   content as locally applied, including unsupported future harness paths. A
   repeated push preserves the remote head; supported content subsequently
   hydrates, while unsupported content fails closed without advancing markers.
+  Pull downloads and materializes only advanced namespaces: an independent Drop
+  update preserves a locally growing unchanged session's bytes/inode and applied
+  marker. Verify real profile commit, byte-identical dry-run and repeat no-op.
 - `SY-012`: a destination changed or created after preflight must not be
   overwritten or deleted. Inject changes immediately before commit for streamed
   sessions, Drops, tombstones, absent/initially identical files, incomplete tails,

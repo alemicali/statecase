@@ -4,6 +4,13 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Pull only advanced namespaces: an independent Drop update no longer rewrites
+  or conflicts with an unchanged remotely tracked local session. Preserve
+  unrelated profile state and avoid unchanged-scope object downloads. Require
+  successful native Git repository discovery before interpreting an absent
+  reference-backend setting; refuse invalid formats before reference allocation.
+  Runtime activity integration and full release qualification remain open.
+
 - Couple the internal encrypted engine materialization handoff to the complete
   workspace/profile coordinator. Prepare applied state and session bindings
   before native writes; retain observed profile authority through scoped session

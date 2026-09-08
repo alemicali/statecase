@@ -4,6 +4,52 @@ Status: foreground sync implemented and deployed; release qualification in progr
 production launch
 Last updated: 2026-09-09
 
+## Hosted failure diagnosis and independent namespace pull — 2026-09-09
+
+Candidate `199d495` completed [CI 34284910251](https://github.com/alemicali/statecase/actions/runs/34284910251)
+with four failures: quality, both compatibility jobs and native macOS failed
+the same reftable admission test. The other five jobs passed. This supersedes
+the pending-CI statement in the historical section below; its local success was
+not cross-platform qualification. No retry, timeout change or skipped test was
+used to hide the failure.
+
+A disposable upstream Git 2.55.0 build reproduced rejected repository discovery
+being misread as an absent backend setting (exit 1). Requiring `--local` returns
+a discovery error instead. Two new regressions fail on old Git 2.43.0 too.
+ADR-0037 documents the correction and preserves reftable refusal coverage.
+
+The engine now selects only advanced remote namespaces after configured-scope
+validation. The new independent-Drop regression first failed with a false local
+session conflict; it now passes through the real profile coordinator without
+changing the growing session's bytes/inode. Dry-run preserves the profile bytes;
+downloads exclude unchanged context; repeated pull invokes neither downloads
+nor the coordinator. The first complete `npm run check` passed **1,347 tests in
+73 files**, lint, types, build and package smoke; global branches were 93.03%
+(5449/5857). All 71 reference tests also passed with disposable Git 2.55.0.
+
+An additional JSON coverage measurement was mistakenly overlapped locally with
+the separate workerd suite. That measurement failed eight five-second tests:
+one changed-branch engine handoff and seven workspace-profile tests; 1,339 tests
+passed. Wall time rose from 46.66 to 82.61 seconds, and summed test time from
+120.90 to 296.22 seconds. The separate workerd suite passed all 12 tests. This
+is evidence of sensitivity to concurrent load, not proof of the sole root cause
+or a waived flaky-test gate. Controlled single-worker diagnosis passed all 172
+tests in the two affected suites; the seven workspace cases completed in
+416–838 ms. Local orchestration policy now forbids overlapping complete
+coverage/workerd runs (hosted isolated runners can still run concurrently).
+The subsequent default-worker JSON coverage run, with no workerd overlap, still
+failed five different workspace-profile timeout cases (1,342 passing). This
+disproves overlap as a sufficient explanation. Host `/proc/pressure/io` then
+reported 80.92% some/69.51% full stall averages over 60 seconds, versus zero
+memory pressure. Full single-worker JSON coverage then passed **1,347 tests in
+73 files** in 117.91 seconds, with unchanged thresholds. New selection branches
+at lines 1613/1623 are 4/4 covered; backend admission at lines 48/49 is 4/4.
+Reference participant branches remain 96.13%, global 93.03%; whole SyncEngine
+86.75% and workspace 89.67% remain below their full critical-module targets.
+The first default-worker full check and the later serialized coverage are
+separate evidence. Hosted qualification and local timing robustness remain open;
+no timeout, gate or test has been reduced. All product/release gates remain.
+
 ## Encrypted engine joins the profile decision — 2026-09-09
 
 ADR-0036 now passes the engine's verified applied/binding proposal, guarded files

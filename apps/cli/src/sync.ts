@@ -1610,16 +1610,18 @@ export class SyncEngine {
     }
     const selected = allowed ? configured.filter((mapping) => allowed.has(mapping.namespace)) : configured;
     const heads = new Map(remote.namespaces.map((head) => [head.namespace, head]));
-    const relevantHeads = selected.map((mapping) => heads.get(mapping.namespace)).filter((head) => head !== undefined);
-    if (relevantHeads.length === 0) return { outcome: "unchanged", revisionId: remote.revisionId, files: 0, objects: 0, bytes: 0 };
+    if (!selected.some((mapping) => heads.has(mapping.namespace))) return { outcome: "unchanged", revisionId: remote.revisionId, files: 0, objects: 0, bytes: 0 };
     const missingHeads = selected.filter((mapping) => !heads.has(mapping.namespace));
     if (missingHeads.length > 0) {
       throw new Error(`namespace heads are missing for configured mappings: ${missingHeads.map((mapping) => mapping.namespace).sort().join(", ")}`);
     }
-    if (selected.every((mapping) => {
-      const head = heads.get(mapping.namespace);
-      return head && config.applied[mapping.namespace]?.revisionId === head.revisionId;
-    })) return { outcome: "unchanged", revisionId: remote.revisionId, files: 0, objects: 0, bytes: 0 };
+    // Validate the complete configured scope above, but do not inspect or rewrite
+    // a local namespace just because an independent remote namespace advanced.
+    // Explicit hydration clears its selected applied markers and still hydrates
+    // the complete pinned closure through this same path.
+    const advanced = selected.filter((mapping) => config.applied[mapping.namespace]?.revisionId !== heads.get(mapping.namespace)!.revisionId);
+    if (advanced.length === 0) return { outcome: "unchanged", revisionId: remote.revisionId, files: 0, objects: 0, bytes: 0 };
+    const relevantHeads = advanced.map((mapping) => heads.get(mapping.namespace)!);
 
     const manifests: NamespaceManifestV1[] = [];
     let manifestObjectCount = 0;
@@ -1642,7 +1644,7 @@ export class SyncEngine {
       conflicts: manifests.flatMap((manifest) => manifest.conflicts),
       sessionCapsules: manifests.flatMap((manifest) => manifest.sessionCapsules ?? []),
     };
-    return this.#materializeManifest(config, dryRun, revisionId, combined, selected, manifestObjectCount,
+    return this.#materializeManifest(config, dryRun, revisionId, combined, advanced, manifestObjectCount,
       (namespace, objectId) => this.client.getNamespaceObject(this.vaultId, namespace, objectId),
       (namespace) => heads.get(namespace)!.revisionId,
       (namespace) => heads.get(namespace)!.keyEpoch ?? 1);

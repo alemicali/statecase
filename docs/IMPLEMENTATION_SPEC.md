@@ -8,6 +8,13 @@ Related: [Product strategy](./PRODUCT_STRATEGY.md),
 
 ## 1. Normative language and current-state warning
 
+ADR-0037 narrows ordinary pull to advanced namespace revisions after validating
+the configured authority/head selection. Unchanged local scopes are not replayed
+as a side effect of another namespace changing. Explicit pinned hydration still
+selects its whole closure. Native reference admission requires successful local
+Git repository discovery, not a generic absent-key response. These corrections
+do not enable unfinished activity-aware runtime/profile recovery wiring.
+
 `MUST`, `MUST NOT`, `SHOULD`, and `MAY` are normative. This document describes
 the target architecture. The current implementation provides the encrypted
 manual CLI and supervised foreground vertical slices plus its single

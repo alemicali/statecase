@@ -41,7 +41,10 @@ export async function prepareGitReferences(indexes: readonly GitIndexParticipant
     };
     // Reject non-files backends before allocating native parents or locks.
     for (const index of indexes) {
-      const result = await execute("git", ["-C", index.layout.root, "config", "--get", "extensions.refStorage"], { env: environment(), timeout: 10000, maxBuffer: 4096, encoding: "utf8" })
+      // Without --local Git's gentle discovery can reject the repository, then
+      // return exit 1 for an absent key outside any repository. Require successful
+      // repository discovery before interpreting exit 1 as the default backend.
+      const result = await execute("git", ["-C", index.layout.root, "config", "--local", "--get", "extensions.refStorage"], { env: environment(), timeout: 10000, maxBuffer: 4096, encoding: "utf8" })
         .then(value => value.stdout.trim(), error => { if ((error as { code?: unknown }).code === 1) return "files"; throw fail(); });
       if (result !== "files") throw fail();
     }

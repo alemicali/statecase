@@ -1,5 +1,19 @@
 # Statecase threat model
 
+## Incremental admission corrections (ADR-0037)
+
+Unchanged namespace heads do not authorize rewriting their locally growing
+context when an unrelated Drop advances. Validate configured permissions and
+missing heads before narrowing downloads/materialization; retain unchanged
+applied markers and bindings. This is not exclusion for an actively changed
+incoming session: runtime activity barriers remain required.
+
+Generic Git configuration queries can return an absent-key exit status after
+repository discovery failed. Require `--local` for backend admission so invalid
+repository formats cannot be mistaken for the default files backend. Refuse
+before allocating native reference parents/locks. This does not qualify later
+configuration races, other backends or arbitrary native maintenance.
+
 ## Local profile downgrade boundary (ADR-0028)
 
 A framed configuration rejects historical JSON readers before config-dependent

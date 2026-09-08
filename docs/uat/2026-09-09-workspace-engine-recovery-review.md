@@ -9,8 +9,9 @@ Test IDs: RT-006, WS-034, BK-009, SY-011, SY-012, AD-MEM-005
 This intentionally remains one integrated PR. Its size requires the following
 review order; intermediate test/source commits are not separate product releases.
 
-1. ADR-0035 and ADR-0036: authority, durable ordering, reference retention,
-   scoped hydration identity, rollback and explicit remaining requirements.
+1. ADR-0035, ADR-0036 and ADR-0037: authority, durable ordering, reference
+   retention, scoped hydration identity, incremental selection, required native
+   discovery, rollback and explicit remaining requirements.
 2. `git-reference-participant.ts`: original/desired native reference validation,
    derived exact grants, stable bounded descriptor reads, packed/ref/reflog
    preservation, native configuration semantics, pin verification and retirement.
@@ -38,16 +39,31 @@ include absent full-workspace handoff/pins/reflogs, unsafe descriptor/text reads
 incorrect Git booleans, acquisition before stale/unselected/dry-run refusal,
 uncoupled engine metadata and invalid scoped-hydration profile authority.
 
-Final local evidence: all check steps pass, 1,342 tests/73 files. Reference
+Local evidence at `199d495`: all check steps pass, 1,342 tests/73 files. Reference
 branches 96.13% (100% lines/functions), profile checkpoint 94.89%, changed engine
 hydration/handoff region 90% (27/30), global 93.03% (5451/5859). Whole engine
 86.77% and workspace 89.67% remain below their full critical-module targets.
 An earlier 1,292-test check passed but reference branches were 79.22%; boundary
 tests raised coverage without reducing gates. No existing test timeout was raised.
 
-Prior exact baseline CI 34242219691 passed all nine jobs. New exact-candidate
-CI remains pending until terminal results are recorded. Do not infer new hosted
-qualification from the baseline, local tests or a successful workflow start.
+Prior exact baseline CI 34242219691 passed all nine jobs. Candidate `199d495`
+failed CI 34284910251 in four jobs on the same reftable admission test; the five
+other jobs passed. ADR-0037 records reproduction on upstream Git 2.55.0 and two
+new failing-first regressions (`73f4903`) on local Git 2.43.0. `ac1efa7` separately
+reproduces unrelated namespace reapplication conflicting with local session
+growth. Both corrections remain in this PR. The first current full check passed
+1,347 tests/73 files and lint/types/build/package; 71 reference cases also passed
+under disposable Git 2.55.0. A subsequent JSON coverage run overlapped with the
+workerd suite and failed eight five-second engine/workspace-profile tests, with
+1,339 passing. Workerd passed all 12 cases. Preserve that failure and diagnose
+with serialized workloads; it is not waived by the first green result. Current
+hosted qualification remains pending. A default-worker coverage run without
+workerd also timed out in five workspace cases (1,342 passing), disproving
+overlap as the sole explanation. Host I/O stall metrics and the failure history
+are preserved in the readiness review. Full single-worker coverage subsequently
+passed all 1,347 cases with unchanged thresholds: new selection/admission branch
+regions are each 4/4, reference participant 96.13%, global 93.03%. Local timing
+robustness remains open; do not infer hosted success from these local runs.
 
 No new dependency, public command, cloud schema, harness patch, live deployment,
 merge or release. No real profile, keychain, credentials or bucket was used.
