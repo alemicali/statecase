@@ -3,8 +3,17 @@ import { describe, expect, it } from "vitest";
 
 import { exitCodeFor, selectedVault } from "../src/runtime.js";
 import { CredentialStorageError } from "../src/credentials.js";
+import { NativeFileError } from "../src/native-file.js";
+import { InstructionError } from "@statecase/adapter-common/instructions";
 
 describe("CLI error contract", () => {
+  it("classifies native instruction failures as authorization, integrity or concurrent-state conflicts (AD-CTX-003, AD-CTX-009)", () => {
+    expect(exitCodeFor(new NativeFileError("NATIVE_FILE_CHANGED"))).toBe(5);
+    expect(exitCodeFor(new NativeFileError("NATIVE_FILE_UNSAFE"))).toBe(6);
+    expect(exitCodeFor(new InstructionError("INSTRUCTION_AUTHORITY_UNVERIFIED"))).toBe(4);
+    expect(exitCodeFor(new InstructionError("INSTRUCTION_FORMAT_INVALID"))).toBe(6);
+    expect(exitCodeFor(new InstructionError("INSTRUCTION_DEPENDENCY_UNRESOLVED"))).toBe(6);
+  });
   it("maps local credential failures to stable integrity, retry, conflict and unsupported exit codes (AU-013)", () => {
     for (const code of ["CREDENTIAL_STATE_CHANGED", "CREDENTIAL_STORE_LOCKED"] as const) expect(exitCodeFor(new CredentialStorageError(code))).toBe(5);
     for (const code of ["CREDENTIAL_STORE_UNAVAILABLE", "CREDENTIAL_COMMIT_FAILED"] as const) expect(exitCodeFor(new CredentialStorageError(code))).toBe(7);

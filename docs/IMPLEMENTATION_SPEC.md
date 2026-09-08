@@ -1285,3 +1285,9 @@ The namespace-list response advertises `commitProvenance: 1`; instruction
 publication requires this feature before uploads, also during legacy migration.
 An updated Worker must be deployed before live instruction publication. This
 does not retire the outstanding mixed-client fencing requirement.
+
+CLI instruction authority failures use authorization exit `4`; concurrent native
+file changes use conflict exit `5`; invalid/unsafe/incomplete instruction context
+uses integrity exit `6`. Preserve the existing JSON `{error:{code,message}}`
+contract and fixed redacted messages, rather than exposing native paths or
+OS errors as internal failures.

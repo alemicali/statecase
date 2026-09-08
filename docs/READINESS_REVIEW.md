@@ -467,8 +467,10 @@ concurrent absence/tree guards and historical instruction recovery;
 the exact committed candidate still requires native CI evidence.
 
 Native instruction fixtures now require fresh-session global context, Codex
-override precedence and Claude imports/rules. Their implementation is not a
-native pass. The live Worker has not been updated by this change; instruction
+override precedence and Claude imports/rules. Both pinned native jobs pass on
+`5dbecea` in CI `34201242162`, which completed with all nine jobs successful;
+see the [exact evidence](uat/2026-09-08-global-instructions.md).
+The live Worker has not been updated by this change; instruction
 publication intentionally refuses a server without the new provenance feature.
 Project memory, full native precedence/import/version coverage, mixed-client
 fencing, packaged independent-host UAT and all existing release gates remain

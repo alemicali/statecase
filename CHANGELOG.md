@@ -13,8 +13,12 @@ All notable changes to Statecase will be documented here.
   to instruction paths and append histories that skip their authorized parent;
   require a provenance-capable server before instruction uploads. Extended
   native CI fixtures check fresh-session instruction loading and precedence;
-  native qualification, live deployment and workspace memory remain gates
+  selected pinned native checks pass; live deployment and workspace memory remain gates
   (ADR-0024, AD-CTX-001..009).
+
+- Map native instruction failures to documented authorization, integrity and
+  concurrent-state conflict exit codes, preserving the CLI JSON envelope for
+  scripted/agent-native callers instead of reporting an internal failure.
 
 - Fixed premature native mutex finalization during suspended lock acquisition.
   Retain acquired mutexes until explicit release or process exit; deterministic

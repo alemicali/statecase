@@ -1,6 +1,8 @@
 import type { LocalConfig, LocalSecrets, ConfigStore } from "./config.js";
 import { RemoteError, StatecaseClient } from "./client.js";
 import { CredentialStorageError } from "./credentials.js";
+import { NativeFileError } from "./native-file.js";
+import { InstructionError } from "@statecase/adapter-common/instructions";
 
 export class StatecaseUsageError extends Error {
   constructor(message: string, readonly exitCode = 2) {
@@ -33,6 +35,8 @@ export function selectedVault(config: LocalConfig, secrets: LocalSecrets): strin
 
 export function exitCodeFor(error: unknown): number {
   if (error instanceof StatecaseUsageError) return error.exitCode;
+  if (error instanceof NativeFileError) return error.code === "NATIVE_FILE_CHANGED" ? 5 : 6;
+  if (error instanceof InstructionError) return error.code === "INSTRUCTION_AUTHORITY_UNVERIFIED" ? 4 : 6;
   if (error instanceof CredentialStorageError) {
     if (error.code === "CREDENTIAL_STATE_CHANGED" || error.code === "CREDENTIAL_STORE_LOCKED") return 5;
     if (error.code === "CREDENTIAL_STORE_UNAVAILABLE" || error.code === "CREDENTIAL_COMMIT_FAILED") return 7;
