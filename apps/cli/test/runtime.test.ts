@@ -19,6 +19,7 @@ describe("CLI error contract", () => {
     expect(exitCodeFor(new ProfileFormatError("PROFILE_UPGRADE_REQUIRED"))).toBe(6);
     expect(exitCodeFor(new ProfileFormatError("PROFILE_UNSUPPORTED"))).toBe(6);
     expect(exitCodeFor(new ProfileFormatError("PROFILE_WRITE_FAILED"))).toBe(7);
+    expect(exitCodeFor(new ProfileFormatError("PROFILE_RECOVERY_REQUIRED"))).toBe(6);
   });
   it("classifies client/service incompatibility as integrity exit 6 (PR-014)", () => {
     expect(exitCodeFor(new RemoteError(426, "UNSUPPORTED_PROTOCOL", "fixed compatibility diagnostic"))).toBe(6);
