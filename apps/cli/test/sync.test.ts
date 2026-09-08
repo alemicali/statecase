@@ -5,7 +5,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 import { computeObjectId, decryptEnvelope, deriveScopeKey, encryptEnvelope, randomKey } from "@statecase/crypto";
-import { canonicalJson, namespaceManifestSchema, type NamespaceManifestV1 } from "@statecase/protocol";
+import { canonicalJson, namespaceManifestSchema, SERVICE_HEALTH, type NamespaceManifestV1 } from "@statecase/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { StatecaseClient } from "../src/client.js";
@@ -3000,6 +3000,7 @@ class MemoryRemote {
 
   fetch: typeof fetch = async (input, init) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
+    if (url.pathname === "/health") return Response.json(SERVICE_HEALTH);
     const method = init?.method ?? "GET";
     const scopedRevision = /^\/v1\/vaults\/vlt_test\/scoped-revisions\/([^/]+)$/u.exec(url.pathname);
     if (scopedRevision) {

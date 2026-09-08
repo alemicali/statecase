@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { SERVICE_HEALTH } from "../../packages/protocol/src/index.ts";
 
 // Test-only encrypted object transport; never bundled into the product CLI.
 export function referenceTransport(canary) {
@@ -6,6 +7,7 @@ export function referenceTransport(canary) {
   let head = null;
   return { objectCount: () => objects.size, fetch: async (input, init) => {
     const url = new URL(input);
+    if (url.pathname === "/health") return Response.json(SERVICE_HEALTH);
     let match = /\/namespaces\/([^/]+)\/objects\/([^/]+)$/u.exec(url.pathname);
     if (match) {
       const objectKey = `${decodeURIComponent(match[1])}\0${match[2]}`;

@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import Database from "better-sqlite3";
 import { trackFixtureProcess, fixtureFailureSummary } from "./fixture-process.mjs";
+import { contractHeaders } from "./contract.mjs";
 
 // Local by default. Live mode requires explicit scope/cleanup configuration;
 // it never grants signup access or deletes remote objects on its own.
@@ -254,7 +255,7 @@ async function eventually(predicate, label, timeout = 90_000) {
 }
 async function request(path, options = {}) {
   const response = await fetch(`${apiUrl}${path}`, { method: options.method,
-    headers: { ...(options.body ? { "content-type": "application/json", origin: apiUrl } : {}), ...options.headers },
+    headers: { ...contractHeaders, ...(options.body ? { "content-type": "application/json", origin: apiUrl } : {}), ...options.headers },
     body: options.body ? JSON.stringify(options.body) : undefined, signal: AbortSignal.timeout(15_000) });
   const json = await response.json();
   return { status: response.status, headers: response.headers, json };

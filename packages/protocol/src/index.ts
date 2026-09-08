@@ -1,4 +1,5 @@
 import { z } from "zod";
+export { CLIENT_CONTRACT_VERSION, CLIENT_CAPABILITIES, CLIENT_HEADERS, SERVICE_HEALTH, acceptsClientContract, acceptsServiceContract } from "./compatibility.js";
 
 export const PROTOCOL_VERSION = "1.0" as const;
 export const SCOPED_PROTOCOL_VERSION = "1.1" as const;
@@ -239,6 +240,7 @@ export const namespaceManifestSchema = z.object({
 export type NamespaceManifestV1 = z.infer<typeof namespaceManifestSchema>;
 
 export type ProtocolErrorCode =
+  | "CLIENT_UPGRADE_REQUIRED"
   | "AUTH_REQUIRED"
   | "FORBIDDEN"
   | "NOT_FOUND"

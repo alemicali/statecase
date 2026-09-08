@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { InMemoryCoordinatorStorage, VaultCoordinatorCore } from "@statecase/sync-core";
+import { CLIENT_HEADERS, SERVICE_HEALTH } from "@statecase/protocol";
 
 import {
   ControlPlaneError,
@@ -56,14 +57,59 @@ function fixture(options: { authenticated?: boolean; authorized?: boolean; admin
     control,
     capabilities: new MemoryCapabilities(),
   };
-  return { app: createCloudApp(services), objects, services, control };
+  const rawApp = createCloudApp(services);
+  const app = { request: (input: string, init: RequestInit = {}) => rawApp.request(input, {
+    ...init, headers: { ...CLIENT_HEADERS, ...Object.fromEntries(new Headers(init.headers)) },
+  }) };
+  return { app, rawApp, objects, services, control };
 }
 
 describe("Cloud API contract (PR-001..PR-015)", () => {
+  it("gates every protected route before domain work, including malformed bodies and missing capabilities (PR-014)", async () => {
+    const { rawApp, services } = fixture();
+    const authorizeVault = vi.spyOn(services, "authorizeVault"), authorizeNamespace = vi.spyOn(services, "authorizeNamespace");
+    const coordinator = vi.spyOn(services, "coordinator");
+    const controls = Object.getOwnPropertyNames(MemoryControl.prototype).filter((name) => name !== "constructor")
+      .map((name) => vi.spyOn(services.control, name as keyof ControlPlane));
+    // Use the router's actual inventory so a newly added /v1 route is covered.
+    const protectedRoutes = rawApp.routes.filter((route) => route.path.startsWith("/v1/") && route.path !== "/v1/*");
+    expect(protectedRoutes.length).toBeGreaterThan(20);
+    for (const contractHeaders of [{}, { ...CLIENT_HEADERS, "x-statecase-capabilities": "namespace-provenance-v1" },
+      { ...CLIENT_HEADERS, "x-statecase-capabilities": CLIENT_HEADERS["x-statecase-capabilities"] + ",memory-references-v1" }]) {
+      for (const route of protectedRoutes) {
+        const path = route.path.replace(/:[A-Za-z]+/gu, "fixture");
+        const response = await rawApp.request(path, { method: route.method, headers: contractHeaders,
+          ...(route.method === "GET" ? {} : { body: "not-json-private-canary" }) });
+        expect(response.status, `${route.method} ${route.path}`).toBe(426);
+        expect(response.headers.get("cache-control")).toBe("no-store");
+        expect(await response.json()).toMatchObject({ error: { code: "CLIENT_UPGRADE_REQUIRED" } });
+      }
+    }
+    expect(authorizeVault).not.toHaveBeenCalled(); expect(authorizeNamespace).not.toHaveBeenCalled();
+    expect(coordinator).not.toHaveBeenCalled(); for (const control of controls) expect(control).not.toHaveBeenCalled();
+  });
+  it("rejects old clients before object writes, control changes or bootstrap consumption (PR-014)", async () => {
+    const { rawApp: app, objects, services, control } = fixture();
+    const redeem = vi.spyOn(services.capabilities, "redeem");
+    const create = vi.spyOn(control, "createVault");
+    for (const [path, method, body] of [
+      ["/v1/vaults/vlt_01/namespaces/drop:docs/objects/obj_one", "PUT", "encrypted"],
+      ["/v1/vaults", "POST", '{"name":"old-client"}'],
+      ["/api/bootstrap/redeem", "POST", JSON.stringify({ token: "x".repeat(43) })],
+    ]) {
+      const response = await app.request(path!, { method, body });
+      expect(response.status).toBe(426);
+      expect(await response.json()).toMatchObject({ error: { code: "CLIENT_UPGRADE_REQUIRED" } });
+    }
+    expect(create).not.toHaveBeenCalled(); expect(redeem).not.toHaveBeenCalled();
+    expect(await objects.exists("vlt_01", "obj_one", "drop:docs")).toBe(false);
+    expect((await fixture({ authenticated: false }).rawApp.request("/v1/vaults")).status).toBe(401);
+    expect((await fixture({ authenticated: false }).rawApp.request("/api/auth/sign-in/email", { method: "POST" })).status).toBe(207);
+  });
   it("exposes unauthenticated health without payload detail", async () => {
     const response = await fixture({ authenticated: false }).app.request("/health");
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ protocolVersion: "1.1", legacyProtocolVersion: "1.0", service: "statecase", status: "ok" });
+    expect(await response.json()).toEqual(SERVICE_HEALTH);
     expect(response.headers.get("x-content-type-options")).toBe("nosniff");
   });
 

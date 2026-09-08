@@ -9,6 +9,7 @@ import { gunzipSync } from "node:zlib";
 import { SyncEngine } from "../../apps/cli/src/sync.ts";
 import { StatecaseClient } from "../../apps/cli/src/client.ts";
 import { randomKey } from "../../packages/crypto/src/index.ts";
+import { SERVICE_HEALTH } from "../../packages/protocol/src/index.ts";
 import { assertNativePreferences, summarizeNativeConfigChange, summarizeNativeProjectChange } from "./native-preferences.mjs";
 import { nativeResponseEvents } from "./native-responses-events.mjs";
 import { assertNativeInstructions } from "./native-instructions.mjs";
@@ -313,6 +314,7 @@ function referenceTransport(canary) {
   let head = null;
   return { objectCount: () => objects.size, fetch: async (input, init) => {
     const url = new URL(input);
+    if (url.pathname === "/health") return Response.json(SERVICE_HEALTH);
     let match = /\/namespaces\/([^/]+)\/objects\/([^/]+)$/u.exec(url.pathname);
     if (match) {
       const objectKey = `${decodeURIComponent(match[1])}\0${match[2]}`;

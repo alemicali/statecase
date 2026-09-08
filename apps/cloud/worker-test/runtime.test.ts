@@ -1,14 +1,21 @@
-import { env, exports } from "cloudflare:workers";
+import { env, exports as rawExports } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { createCloudServices, type StatecaseEnvironment, type VaultCoordinator } from "../src/bindings.js";
+import { CLIENT_HEADERS, SERVICE_HEALTH } from "@statecase/protocol";
+
+// Ordinary scenarios model the current CLI. Compatibility negatives use the
+// actual raw Worker export explicitly, without these default headers.
+const exports = { default: { fetch: (input: string, init: RequestInit = {}) => rawExports.default.fetch(input, {
+  ...init, headers: { ...CLIENT_HEADERS, ...Object.fromEntries(new Headers(init.headers)) },
+}) } };
 
 describe("Statecase in workerd (PR-001, PR-005, PR-010, PR-011, AU-001)", () => {
   it("runs the real Worker entrypoint", async () => {
     const response = await exports.default.fetch("http://statecase.test/health");
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ protocolVersion: "1.1", legacyProtocolVersion: "1.0", service: "statecase", status: "ok" });
+    expect(await response.json()).toEqual(SERVICE_HEALTH);
   });
 
   it("applies the complete D1 control and auth schema", async () => {
@@ -20,7 +27,7 @@ describe("Statecase in workerd (PR-001, PR-005, PR-010, PR-011, AU-001)", () => 
   });
 
   it("stores a new vault-key epoch atomically for every active member (CR-010, AU-008)", async () => {
-    const signup = await exports.default.fetch("http://statecase.test/api/auth/sign-up/email", {
+    const signup = await rawExports.default.fetch("http://statecase.test/api/auth/sign-up/email", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ email: "rotation@statecase.test", name: "Rotation Operator", password: "a-strong-rotation-password" }),
@@ -385,6 +392,17 @@ describe("Statecase in workerd (PR-001, PR-005, PR-010, PR-011, AU-001)", () => 
     expect(created.status).toBe(201);
     expect(JSON.stringify(await created.json())).not.toContain(bootstrapToken);
 
+    // PR-014: a rejected old binary must not consume a real single-use grant.
+    const grantBefore = await env.DB.prepare("SELECT * FROM capability_grants WHERE id = ?").bind(capabilityId).first();
+    const oldRedemption = await rawExports.default.fetch("http://statecase.test/api/bootstrap/redeem", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: bootstrapToken }),
+    });
+    expect(oldRedemption.status).toBe(426);
+    expect(oldRedemption.headers.get("cache-control")).toBe("no-store");
+    expect(await oldRedemption.json()).toMatchObject({ error: { code: "CLIENT_UPGRADE_REQUIRED" } });
+    expect(await env.DB.prepare("SELECT * FROM capability_grants WHERE id = ?").bind(capabilityId).first()).toEqual(grantBefore);
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM capability_sessions WHERE grant_id = ?").bind(capabilityId).first("count")).toBe(0);
+
     const redemptionRequest = () => exports.default.fetch("http://statecase.test/api/bootstrap/redeem", {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: bootstrapToken }),
     });
@@ -403,6 +421,25 @@ describe("Statecase in workerd (PR-001, PR-005, PR-010, PR-011, AU-001)", () => 
     expect((await exports.default.fetch(`http://statecase.test/v1/vaults/${vault.id}/head`, { headers: capabilityHeaders })).status).toBe(404);
     const allowedBase = `http://statecase.test/v1/vaults/${vault.id}/namespaces/${encodeURIComponent(namespace)}/objects`;
     const forbiddenBase = `http://statecase.test/v1/vaults/${vault.id}/namespaces/${encodeURIComponent("drop:private")}/objects`;
+    const objectsBefore = await env.BLOBS.list();
+    const coordinator = (env.VAULTS as DurableObjectNamespace<VaultCoordinator>).getByName(vault.id);
+    const headBefore = await coordinator.scopedHead();
+    // Valid device and scoped credentials do not bypass compatibility checks.
+    for (const authorization of [deviceHeaders.authorization, capabilityHeaders.authorization]) {
+      for (const contract of [undefined, "0", "2"]) {
+        const headers = { authorization, ...(contract === undefined ? {} : { ...CLIENT_HEADERS, "x-statecase-client-contract": contract }) };
+        for (const [url, method] of [[`${allowedBase}/obj_old_client`, "PUT"],
+          [`http://statecase.test/v1/vaults/${vault.id}/namespace-commits`, "POST"],
+          [`http://statecase.test/v1/vaults/${vault.id}/namespaces`, "GET"]]) {
+          const response = await rawExports.default.fetch(url!, { method, headers, ...(method === "GET" ? {} : { body: "malformed-private-input" }) });
+          expect(response.status).toBe(426);
+          expect(await response.json()).toMatchObject({ error: { code: "CLIENT_UPGRADE_REQUIRED" } });
+        }
+      }
+    }
+    expect((await env.BLOBS.list()).objects).toEqual(objectsBefore.objects);
+    expect(await coordinator.scopedHead()).toEqual(headBefore);
+    expect((await rawExports.default.fetch(`${allowedBase}/obj_old_client`)).status).toBe(401);
     const manifestPut = await exports.default.fetch(`${allowedBase}/obj_manifest`, { method: "PUT", headers: capabilityHeaders, body: Uint8Array.of(1) });
     expect(manifestPut.status, await manifestPut.clone().text()).toBe(201);
     expect((await exports.default.fetch(`${allowedBase}/obj_chunk`, { method: "PUT", headers: capabilityHeaders, body: Uint8Array.of(2) })).status).toBe(201);

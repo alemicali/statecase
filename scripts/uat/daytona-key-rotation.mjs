@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { contractHeaders } from "./contract.mjs";
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
@@ -144,6 +145,7 @@ function run(name, args, options) {
 }
 async function request(path, options = {}) {
   const headers = new Headers(options.headers);
+  for (const [name, value] of Object.entries(contractHeaders)) headers.set(name, value);
   let body;
   if (options.body !== undefined) {
     headers.set("content-type", "application/json");

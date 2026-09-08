@@ -10,8 +10,13 @@ import { MemoryIdentityError } from "../src/memory-sync.js";
 import { MemoryBindingError } from "../src/memory-bindings.js";
 import { ConfigStateChanged } from "../src/config.js";
 import { MemoryReferenceError } from "../src/session-memory-paths.js";
+import { RemoteError } from "../src/client.js";
 
 describe("CLI error contract", () => {
+  it("classifies client/service incompatibility as integrity exit 6 (PR-014)", () => {
+    expect(exitCodeFor(new RemoteError(426, "UNSUPPORTED_PROTOCOL", "fixed compatibility diagnostic"))).toBe(6);
+    expect(exitCodeFor(new RemoteError(426, "CLIENT_UPGRADE_REQUIRED", "fixed upgrade diagnostic"))).toBe(6);
+  });
   it("classifies memory identity and format failures as integrity errors and invalid local bindings as usage (AD-MEM-007)", () => {
     expect(exitCodeFor(new MemoryIdentityError())).toBe(6);
     expect(exitCodeFor(new MemoryFormatError())).toBe(6);

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { contractHeaders } from "./contract.mjs";
 import { createHash, randomBytes } from "node:crypto";
 import { lstat, mkdir, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -228,6 +229,7 @@ async function assertMissing(path) {
 
 async function request(path, options = {}) {
   const headers = new Headers(options.headers);
+  for (const [name, value] of Object.entries(contractHeaders)) headers.set(name, value);
   let body;
   if (options.body !== undefined) {
     headers.set("content-type", "application/json");

@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 
 import { afterEach, describe, expect, it } from "vitest";
 import { randomKey, sealVaultKeyForDevice } from "@statecase/crypto";
+import { SERVICE_HEALTH } from "@statecase/protocol";
 
 import { runCli, type CliIO } from "../src/bin.js";
 import { ConfigStore } from "../src/config.js";
@@ -22,6 +23,30 @@ afterEach(async () => {
 });
 
 describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
+  it("refuses incompatible bootstrap with JSON exit 6 before credential/config writes or token transmission (PR-014)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "statecase-incompatible-bootstrap-")); temporary.push(root);
+    process.env.STATECASE_HOME = join(root, "profile");
+    const store = new ConfigStore(), config = await store.loadConfig();
+    config.apiUrl = "https://incompatible.statecase.test";
+    await store.saveConfig(config);
+    const before = await readFile(join(store.home, "config.json"));
+    const secretsBefore = await store.loadSecrets();
+    const token = "synthetic-bootstrap-private-canary";
+    process.env.STATECASE_BOOTSTRAP_TOKEN = token;
+    const output: string[] = [], errors: string[] = [], calls: string[] = [];
+    const io: CliIO = { stdout: (value) => output.push(value), stderr: (value) => errors.push(value), fetch: async (input, init) => {
+      calls.push(String(input)); expect(init?.body).toBeUndefined(); expect(new Headers(init?.headers).has("authorization")).toBe(false);
+      return Response.json({ service: "statecase", status: "ok", protocolVersion: "1.1", private: token });
+    } };
+    expect(await command(io, "--json", "bootstrap", "--non-interactive")).toBe(6);
+    expect(calls).toEqual(["https://incompatible.statecase.test/health"]);
+    expect(output).toEqual([]);
+    expect(JSON.parse(errors[0]!)).toMatchObject({ error: { code: 6, message: expect.stringContaining("compatibility") } });
+    expect(errors.join("")).not.toContain(token);
+    expect(await readFile(join(store.home, "config.json"))).toEqual(before);
+    expect(await store.loadSecrets()).toEqual(secretsBefore);
+    expect(process.env.STATECASE_BOOTSTRAP_TOKEN).toBe(token);
+  });
   it("publishes selected memory and stages only the requested memory or Drop namespace (AD-MEM-007)", async () => {
     const root = await mkdtemp(join(tmpdir(), "statecase-memory-product-")); temporary.push(root);
     process.env.STATECASE_HOME = join(root, "profile"); process.env.STATECASE_TOKEN = "synthetic-token";
@@ -856,6 +881,7 @@ class CliRemote {
 
   fetch: typeof fetch = async (input, init) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
+    if (url.pathname === "/health") return Response.json(SERVICE_HEALTH);
     const method = init?.method ?? "GET";
     if (url.pathname === "/v1/vaults/vlt_test/garbage-collection" && method === "POST") {
       const { dryRun } = JSON.parse(String(init?.body)) as { dryRun: boolean };
