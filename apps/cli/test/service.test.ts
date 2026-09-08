@@ -19,6 +19,32 @@ afterEach(async () => {
 });
 
 describe("native daemon service definitions (RT-010, RT-012, RT-013)", () => {
+  it("pins an explicit macOS keychain in launchd while preserving legacy profile ownership", async () => {
+    const original = await installed("darwin");
+    const keychainPath = join(original.source.home, 'key & "local".keychain-db');
+    const selected = serviceDefinition({ ...original.source, keychainPath });
+    expect(selected.contents).toContain('<key>STATECASE_KEYCHAIN_PATH</key>');
+    expect(selected.contents).toContain('key &amp; &quot;local&quot;.keychain-db');
+    await installServiceDefinition(selected);
+    expect((await installServiceDefinition(selected)).created).toBe(false);
+    // A later stop/uninstall need not know the keychain password or repeat its
+    // path. It must still identify the installed profile, including old plists.
+    const runner = vi.fn(async () => { throw Object.assign(new Error("missing"), { code: 113, stderr: 'Could not find service "com.statecase.daemon"' }); });
+    await activateService(original, "stop", runner);
+    const environment = selected.contents.match(/  <key>EnvironmentVariables<\/key>[\s\S]*?<\/dict>\n/u)![0];
+    await writeFile(selected.path, selected.contents.replace(environment, environment + environment));
+    await expect(activateService(original, "stop", runner)).rejects.toThrow("another profile");
+    await writeFile(selected.path, selected.contents.replace("STATECASE_HOME", "UNRECOGNIZED_HOME"));
+    await expect(activateService(original, "stop", runner)).rejects.toThrow("another profile");
+    await writeFile(selected.path, selected.contents);
+    expect(await removeServiceDefinition(original)).toBe(true);
+    for (const keychainPath of ["", "relative.keychain", "/bad\npath", "/" + "x".repeat(2048)]) {
+      expect(() => serviceDefinition({ ...original.source, keychainPath })).toThrow();
+    }
+    const linux = serviceDefinition({ ...original.source, platform: "linux", keychainPath });
+    expect(linux.contents).not.toContain("STATECASE_KEYCHAIN_PATH");
+  });
+
   it.each(["linux", "darwin"] as const)("pins the Node interpreter without relying on the login-shell PATH (%s)", (platform) => {
     const source = { platform, home: "/tmp/service-home", statecaseExecutable: "/tmp/app ${UNSET}/statecase",
       nodeExecutable: "/tmp/node runtime/bin/node", statecaseHome: "/tmp/service-home/state", roots: [], uid: 501 };

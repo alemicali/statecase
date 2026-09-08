@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ProfileLock } from "@statecase/runtime";
+import { encryptEnvelope } from "@statecase/crypto";
 import type { LocalSecrets } from "../src/config.js";
 import { CredentialFile, CredentialStorageError, type CredentialKeyProtector } from "../src/credentials.js";
 
@@ -23,6 +24,17 @@ async function fixture() {
 }
 
 describe("OS-backed local credential protection (AU-012, AU-013, CR-011)", () => {
+  it("reads the original Linux v2 envelope context without rewriting or migrating it", async () => {
+    const f = await fixture(); const id = `loc_${"a".repeat(32)}`; const key = new Uint8Array(32).fill(37);
+    f.keys.set(id, key);
+    const envelope = await encryptEnvelope({ plaintext: Buffer.from(JSON.stringify(secrets())), key, dedupKey: key,
+      context: { vaultId: "local-credentials", scopeId: id, compression: "none" } });
+    const encoded = JSON.stringify({ version: 2, backend: "secret-service", keyId: id, envelope: Buffer.from(envelope).toString("base64url") });
+    await writeFile(f.path, encoded, { mode: 0o600 });
+    expect(await new CredentialFile(f.root, { protector: f.protector }).read()).toEqual(secrets());
+    expect(await readFile(f.path, "utf8")).toBe(encoded); expect(f.calls()).toBe(1);
+  });
+
   it("persists the macOS backend, refuses cross-platform fallback, and authenticates backend identity", async () => {
     const f = await fixture(); const mac = { ...f.protector, backend: "macos-keychain" as const };
     const store = new CredentialFile(f.root, { protector: mac }); await store.write(secrets()); await store.protect();
