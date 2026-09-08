@@ -576,3 +576,27 @@ type checking, build and the expanded clean-installed package smoke. Global
 branches are 91.90% (4222/4594); memory management is 100% (44/44), and config
 persistence is 94.11% (16/17). The packaged skill was updated using skill-creator
 and its validator passed. This local result requires exact-candidate CI evidence.
+
+Follow-up CI `34208471408` on `32fb75b` completed successfully in all nine jobs.
+This closes the candidate's umask-fixture recheck, not native memory qualification
+or the unrelated earlier background-service root cause.
+
+### Native memory qualification fixture — 2026-09-08
+
+AD-MEM-008 now has an executable Claude 2.1.263 drill, selected with
+`npm run uat:native-claude -- --memory` in the disposable GitHub runner. It uses
+four fresh session IDs, a repository-derived source memory root and a different
+explicit target `autoMemoryDirectory`, synthetic Markdown, deterministic native
+Read/Edit/Write calls, encrypted reference transport, strict hydration preview,
+return transfer and a disabled-memory negative control. Startup assertions
+exclude assistant history, tool results, tool descriptions and prompt canaries;
+topic content must be absent at startup and present after the native Read.
+Unselected project memory must remain unchanged and absent from startup context.
+
+The fixture is implemented, not yet recorded as a native pass. Its five local
+evidence-guard tests pass; the complete local check passes 803 tests in 58 files,
+lint, type checking, build and clean-package smoke, with unchanged 91.90% global
+branch coverage. Exact-candidate native CI is required. Even a pass here is
+two homes on one host with reference storage, not packaged live-cloud parity,
+autonomous hosted-model memory generation, worktree/full settings precedence,
+subagent formats, memory tool-history localization or Codex memory qualification.

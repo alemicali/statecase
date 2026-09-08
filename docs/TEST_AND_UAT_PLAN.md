@@ -852,6 +852,21 @@ notification from the external memory root, daemon root selection and generated
 service permissions; they do not qualify missing-root startup, OS reboot, native
 recall or the packaged/live cross-host workflow.
 
+AD-MEM-008 additionally runs `npm run uat:native-claude -- --memory` with the
+pinned Claude executable only inside a disposable GitHub runner VM. The drill
+requires fresh source, target, return-recall and memory-disabled session IDs;
+startup index markers are independent of prompts and cannot be satisfied by
+assistant/tool history or tool metadata. Topic markers must appear only after a
+native Read; native Edit and Write update the selected memory. Encrypted
+transfer/hydration moves exact bytes from the default source repository directory
+to a different target custom root, preserving target-local settings, preview
+non-mutation and unrelated project memory. Return transfer must be recalled by
+another fresh native session. Evidence-guard unit tests include forbidden
+markers, malformed requests and prompt/history contamination. CI execution and
+its result must be recorded separately; this reference-backend test does not
+qualify autonomous model generation, worktrees, full precedence, subagents,
+history-path localization or the independent-host packaged/cloud workflow.
+
 A release candidate is rejected when:
 
 - a critical/required test is skipped or flaky;

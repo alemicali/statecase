@@ -153,3 +153,10 @@ jobs:
           STATECASE_UAT_PARENT="$GITHUB_WORKSPACE" \
           STATECASE_UAT_CONFIRM=run-native-harness-in-disposable-sandbox \
           npm run uat:native-claude
+      - name: Qualify native memory recall, writes and return transfer
+        shell: bash
+        run: |
+          STATECASE_UAT_CLAUDE="$RUNNER_TEMP/statecase-native-tools/node_modules/.bin/claude" \
+          STATECASE_UAT_PARENT="$GITHUB_WORKSPACE" \
+          STATECASE_UAT_CONFIRM=run-native-harness-in-disposable-sandbox \
+          npm run uat:native-claude -- --memory

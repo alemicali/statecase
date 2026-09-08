@@ -1345,3 +1345,11 @@ fencing and packaged independent-host UAT remain
 required. No automatic harness setup enables or scans memory. The complete
 TDD/UAT obligations remain normative in
 [ADR-0025](adr/0025-memory-identity-and-local-bindings.md).
+
+Native evidence is collected separately by the disposable-runner
+`uat:native-claude -- --memory` fixture: fresh startup context, on-demand topic
+Read, native Edit/Write, exact default-to-custom-root encrypted transfer and
+return recall, plus disabled-memory and unselected-project controls. It does
+not invoke the native harness on the operator machine or copy operator memory.
+Local assertion tests are not a native pass; record exact-candidate CI results
+and keep reference-backend evidence distinct from packaged/live-cloud UAT.

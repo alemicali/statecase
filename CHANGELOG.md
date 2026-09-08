@@ -4,6 +4,12 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Added a disposable-runner Claude memory qualification scenario for fresh
+  recall, native Read/Edit/Write, default-to-custom-root transfer and return
+  recall, with disabled-memory and unselected-project controls. Added local
+  assertion regressions rejecting prompt/history/metadata false positives.
+  Native execution results are tracked separately from fixture implementation.
+
 - Added `memory map/list/remove` with local-only preview, explicit confirmation,
   immutable ownership, safe rebind and no native-file deletion. Exposed memory
   selection to status, restore and conflict commands; added watched/service
