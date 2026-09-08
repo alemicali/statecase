@@ -4,6 +4,36 @@ Status: foreground sync implemented and deployed; release qualification in progr
 production launch
 Last updated: 2026-09-08
 
+## Git preparation before durable admission — 2026-09-08
+
+The preceding native/profile candidate `8840bcc` passed all nine jobs in
+[CI 34232723982](https://github.com/alemicali/statecase/actions/runs/34232723982);
+exact logs and package hashes are attached to PR7. ADR-0032 now separates complete
+workspace/index/reference preparation from native mutation. A real SIGKILL at
+handoff preserves original HEAD, branch, exact index bytes and worktree, with no
+stranded native index lock. Repeated source guards remain usable after the
+consumer acquires its own exclusion. Preparation-only fallback acquisition
+preserves local refs and FETCH_HEAD even under conflicting configured refspecs,
+including shallow and multi-batch acquisition. A missing target baseline is
+rechecked for initialized submodules after acquisition and before admission.
+
+The complete local check passed 1,104 tests in 67 files, including 36 new workspace
+preparation cases, lint, types, build and clean-installed package smoke. Global
+branch coverage is 92.74% (5022/5415); the whole workspace module is 89.67%, still
+below its critical-module target. A second full coverage run also passed all
+1,104 tests. Its JSON evidence covers 45/46 V8 branches starting on added source
+lines (97.82%); this does not waive the module-wide or release gates.
+Earlier local timeout/fault-fixture failures
+were inspected and corrected; unrelated integration timeouts were not increased.
+Exact-candidate hosted CI remains required.
+
+This proves preparation, not applied-Git restart recovery. Persistent reference
+intent/decisions, repository authority, owned native locks, object retention,
+Git CAS/HEAD replay, native activity barriers and normal runtime integration
+remain open. All broader compatibility, co-location, low-level/power-loss/orphan,
+LFS/directory/submodule, cross-host/live-cloud and security/release gates remain
+requirements. No real profile, harness, credentials or cloud resource was changed.
+
 ## Native/profile recovery checkpoint — 2026-09-08
 
 The preceding internal file-replay candidate `00e2f97` passed all nine jobs in

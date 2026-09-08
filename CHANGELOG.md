@@ -4,6 +4,13 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Add an internal pre-mutation Git preparation handoff with separately staged
+  index/files, original/desired reference descriptions and repeated concurrency
+  guards. Preserve operational refs and FETCH_HEAD during preparation-specific
+  baseline fallback acquisition, including shallow clones. Test real process
+  death at handoff without changing HEAD/index/worktree or stranding an index
+  lock. Durable Git mutation/replay and normal runtime integration remain open.
+
 - Add an internal durable native/profile checkpoint: retain exact recovery
   authority, install applied/session-binding metadata last, persist the outer
   decision before forgetting the file journal, and replay after profile-absent

@@ -505,6 +505,12 @@ unit assertion for historical executable evidence.
   fencing, stale proposal invalidation and administrative daemon stop. These
   internal coordinator tests still do not qualify Git participants or enable
   durable recovery in normal sync/daemon/shim reconciliation.
+  ADR-0032 tests pre-mutation Git preparation with a real SIGKILL at handoff:
+  exact original HEAD/index/worktree and no stranded index lock; staged/worktree
+  distinction, unborn/detached/packed/linked/multi-root states, duplicate/writer
+  refusal and repeated guards. Full/shallow/multi-batch fallback acquisition must
+  preserve local refs and FETCH_HEAD even with conflicting configured refspecs.
+  This proves safe preparation, not persistent applied-Git recovery.
 - `RT-007`: two daemons for one profile cannot run concurrently.
 - `RT-008`: sleep/wake and network change trigger reconcile without a storm.
 - `RT-009`: rapid file events debounce but the maximum publish deadline holds.

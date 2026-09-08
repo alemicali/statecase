@@ -114,6 +114,36 @@ export interface WorkspaceReplacementPlan {
   targetHeadRef: string | null;
 }
 
+/** Local-only intent for the outer durable coordinator, never a portable capsule. */
+export interface WorkspaceReferencePlan {
+  root: string;
+  indexPath: string;
+  before: { baseCommit: string | null; headRef: string | null };
+  after: { baseCommit: string | null; headRef: string | null };
+  targetOriginalCommit: string | null;
+}
+
+export interface PreparedWorkspaceTransaction {
+  files: WorkspaceFileTransaction;
+  references: WorkspaceReferencePlan[];
+  /** Observational revalidation, not a replacement for native writer locks. */
+  guard(): Promise<void>;
+}
+
+/** Internal durable-coordinator handoff. Prepares index/worktree content without
+ * changing native HEAD, refs, index or worktree. May acquire approved Git objects.
+ * The consumer must persist intent and acquire native writer exclusion before
+ * mutation; this function never applies refs or recovers a crashed transaction.
+ * Private staging is valid only for the duration of the awaited consumer. */
+export async function withPreparedWorkspaceTransaction(
+  applications: readonly WorkspaceApplication[], initial: WorkspaceFileTransaction,
+  consume: (plan: PreparedWorkspaceTransaction) => Promise<void>,
+): Promise<void> {
+  const roots = applications.map(application => resolve(application.root));
+  if (new Set(roots).size !== roots.length) throw new Error("duplicate workspace transaction root");
+  await applyManagedWorkspaceTransaction(applications, initial, { prepare: consume });
+}
+
 interface GitEntry {
   mode: number;
   oid: string;
@@ -228,8 +258,10 @@ export async function assertWorkspaceReplacement(
   options: { gitFetch?: GitFetchPolicy } = {},
 ): Promise<void> {
   const root = resolve(rootValue);
-  await inspectWorkspaceReplacement(root, captured, options.gitFetch ?? "ask");
-  await assertNoInitializedSubmodule(root, captured);
+  const inspection = await inspectWorkspaceReplacement(root, captured, options.gitFetch ?? "ask");
+  // A missing approved baseline is inspected again after acquisition, before
+  // native mutation. Current-index and explicit capsule gitlinks are known now.
+  await assertNoInitializedSubmodule(root, captured, !inspection.fetch);
 }
 
 /** Applies ordinary files and one or more Git overlays as one filesystem revision. */
@@ -241,7 +273,7 @@ export async function applyWorkspaceTransaction(
   const roots = applications.map((application) => resolve(application.root));
   if (new Set(roots).size !== roots.length) throw new Error("duplicate workspace transaction root");
   if (applications.some((application) => application.expectedCurrent)) {
-    await applyManagedWorkspaceTransaction(applications, initial, options.materialize);
+    await applyManagedWorkspaceTransaction(applications, initial, { materialize: options.materialize });
     return;
   }
   const inspections = await Promise.all(applications.map((application, index) => inspectWorkspaceDestination(
@@ -347,7 +379,7 @@ export async function assertWorkspaceAdvance(
 async function applyManagedWorkspaceTransaction(
   applications: readonly WorkspaceApplication[],
   initial: WorkspaceFileTransaction,
-  materialize: WorkspaceMaterializer,
+  options: { materialize: WorkspaceMaterializer } | { prepare: (plan: PreparedWorkspaceTransaction) => Promise<void> },
 ): Promise<void> {
   const releaseIndexLocks: Array<() => Promise<void>> = [];
   const targetFingerprints = new Map<string, string>();
@@ -377,13 +409,19 @@ async function applyManagedWorkspaceTransaction(
       const current = application.expectedCurrent ?? await captureWorkspace(root);
       const target = application.captured;
       if (target.capsule.baseCommit && !await gitObjectExists(root, target.capsule.baseCommit)) {
-        await fetchWorkspaceBaseline(root, target.capsule.baseCommit);
+        await fetchWorkspaceBaseline(root, target.capsule.baseCommit, "prepare" in options);
       }
       await assertNoInitializedSubmodule(root, target);
       const indexValue = (await gitText(root, ["rev-parse", "--git-path", "index"])).trim();
       const indexPath = isAbsolute(indexValue) ? indexValue : resolve(root, indexValue);
-      releaseIndexLocks.push(await acquireWorkspaceIndexLock(indexPath));
-      const targetOriginalCommit = target.capsule.headRef
+      // The read-only handoff must not strand an unjournaled native writer lock
+      // on SIGKILL. Its outer coordinator acquires exclusion after durable intent.
+      if ("materialize" in options) releaseIndexLocks.push(await acquireWorkspaceIndexLock(indexPath));
+      else {
+        await assertNoPreparedIndexWriter(indexPath);
+        targetFingerprints.set(indexPath, await workspaceTargetFingerprint(indexPath));
+      }
+      const targetOriginalCommit = "prepare" in options ? await preparedTargetRef(root, target.capsule.headRef) : target.capsule.headRef
         ? await gitText(root, ["rev-parse", "--verify", `refs/heads/${target.capsule.headRef}`]).then((value) => value.trim(), () => null)
         : null;
       const directory = await mkdtemp(join(tmpdir(), "statecase-workspace-index-"));
@@ -441,7 +479,32 @@ async function applyManagedWorkspaceTransaction(
     for (const workspace of prepared) {
       if (!await workspaceMatchesCapsule(workspace.root, workspace.current)) throw new Error("managed workspace changed during preparation");
       await assertWorkspaceHeadReference(workspace.root, workspace.captured);
-      targetFingerprints.set(workspace.indexPath, await workspaceTargetFingerprint(workspace.indexPath));
+      if ("materialize" in options) targetFingerprints.set(workspace.indexPath, await workspaceTargetFingerprint(workspace.indexPath));
+    }
+    if ("prepare" in options) {
+      const targets = [...transaction.writes.map(write => write.path), ...(transaction.symlinks ?? []).map(link => link.path), ...transaction.deletes].map(path => resolve(path));
+      if (new Set(targets).size !== targets.length) throw new Error("duplicate prepared workspace target");
+      const references = prepared.map(workspace => ({ root: workspace.root, indexPath: workspace.indexPath,
+        before: { baseCommit: workspace.current.capsule.baseCommit, headRef: workspace.current.capsule.headRef },
+        after: { baseCommit: workspace.captured.capsule.baseCommit, headRef: workspace.captured.capsule.headRef },
+        targetOriginalCommit: workspace.targetOriginalCommit }));
+      const guard = async () => {
+        for (const workspace of prepared) {
+          if (!await workspaceMatchesCapsule(workspace.root, workspace.current) ||
+              await workspaceTargetFingerprint(workspace.indexPath) !== targetFingerprints.get(workspace.indexPath)) {
+            throw new Error("prepared workspace changed before durable admission");
+          }
+          await assertWorkspaceHeadReference(workspace.root, workspace.captured);
+          if (workspace.captured.capsule.headRef !== null) {
+            const currentTarget = await preparedTargetRef(workspace.root, workspace.captured.capsule.headRef);
+            if (currentTarget !== workspace.targetOriginalCommit) throw new Error("prepared workspace target reference changed");
+          }
+        }
+      };
+      await guard();
+      for (const workspace of prepared) await assertNoPreparedIndexWriter(workspace.indexPath);
+      await options.prepare({ files: transaction, references, guard });
+      return;
     }
     for (const workspace of prepared) {
       if (workspace.current.capsule.baseCommit === workspace.captured.capsule.baseCommit &&
@@ -455,7 +518,7 @@ async function applyManagedWorkspaceTransaction(
       await setWorkspaceHeadIdentity(workspace.root, target.baseCommit, target.headRef);
       workspace.headChanged = true;
     }
-    await materialize(transaction);
+    await options.materialize(transaction);
   } catch (cause) {
     const failures: unknown[] = [];
     for (const workspace of [...prepared].reverse()) {
@@ -486,6 +549,31 @@ async function applyManagedWorkspaceTransaction(
       ...releaseIndexLocks.map((release) => release()),
     ]);
   }
+}
+
+async function assertNoPreparedIndexWriter(indexPath: string): Promise<void> {
+  const present = await lstat(`${indexPath}.lock`).then(() => true, error => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  });
+  if (present) throw new Error("prepared workspace has an active native index writer");
+}
+
+/** Ref aliases are not equivalent to direct branch values for a no-deref CAS. */
+async function preparedTargetRef(root: string, headRef: string | null): Promise<string | null> {
+  if (headRef === null) return null;
+  const ref = `refs/heads/${headRef}`;
+  const symbolic = await gitText(root, ["symbolic-ref", "--quiet", ref]).then(() => true, error => {
+    if ((error as { code?: unknown }).code === 1) return false;
+    throw new Error("prepared workspace reference cannot be observed safely");
+  });
+  if (symbolic) throw new Error("prepared workspace reference changed to or contains a symbolic alias");
+  const oid = await gitText(root, ["rev-parse", "--verify", "--quiet", ref]).then(value => value.trim(), error => {
+    if ((error as { code?: unknown }).code === 1) return null;
+    throw new Error("prepared workspace reference cannot be observed safely");
+  });
+  if (oid !== null && !GIT_OID.test(oid)) throw new Error("prepared workspace reference is invalid");
+  return oid;
 }
 
 /** Compare-and-swap even for deletion/creation; never dereference a branch alias. */
@@ -688,10 +776,10 @@ async function workspaceReplacementPaths(
   return [...changed].sort((left, right) => left.localeCompare(right, "en"));
 }
 
-async function assertNoInitializedSubmodule(root: string, captured: CapturedWorkspace): Promise<void> {
+async function assertNoInitializedSubmodule(root: string, captured: CapturedWorkspace, includeBaseline = true): Promise<void> {
   const paths = new Set<string>();
   for (const [path, entry] of await readIndexEntries(root)) if (entry.mode === 0o160000) paths.add(path);
-  if (captured.capsule.baseCommit) {
+  if (includeBaseline && captured.capsule.baseCommit) {
     for (const [path, entry] of await readHeadEntries(root, captured.capsule.baseCommit)) if (entry.mode === 0o160000) paths.add(path);
   }
   for (const record of captured.capsule.records) if (record.index.state === "submodule") paths.add(record.path);
@@ -1101,7 +1189,7 @@ async function removeIntroducedPath(root: string, path: string): Promise<void> {
   }
 }
 
-async function fetchWorkspaceBaseline(root: string, baseCommit: string): Promise<void> {
+async function fetchWorkspaceBaseline(root: string, baseCommit: string, preserveRefs = false): Promise<void> {
   const environment = {
     ...process.env,
     GIT_TERMINAL_PROMPT: "0",
@@ -1114,8 +1202,30 @@ async function fetchWorkspaceBaseline(root: string, baseCommit: string): Promise
     timeout: GIT_FETCH_TIMEOUT_MS,
     killSignal: "SIGKILL",
   }).then(() => true, () => false);
-  if (await execute(["fetch", "--no-tags", "--no-write-fetch-head", "origin", baseCommit])) return;
+  if (await execute(["fetch", "--no-tags", "--no-write-fetch-head", ...(preserveRefs ? ["--refmap="] : []), "origin", baseCommit])) return;
   const shallow = (await gitText(root, ["rev-parse", "--is-shallow-repository"]).catch(() => "false")).trim() === "true";
+  if (preserveRefs) {
+    // The ordinary fallback follows configured refspecs and writes FETCH_HEAD.
+    // Preparation must only acquire objects: explicitly request advertised
+    // branch sources without destinations, overriding even local-head refmaps.
+    const advertised = await run("git", ["-C", root, "ls-remote", "--heads", "--refs", "origin"], {
+      encoding: "utf8", env: environment, maxBuffer: MAX_GIT_OUTPUT, timeout: GIT_FETCH_TIMEOUT_MS, killSignal: "SIGKILL",
+    }).then(result => result.stdout, () => "");
+    const refs = advertised.trim().split("\n").filter(Boolean).map(line => {
+      const [oid, ref, extra] = line.split("\t");
+      if (!GIT_OID.test(oid) || !ref?.startsWith("refs/heads/") || /[\s\0]/u.test(ref) || extra !== undefined) {
+        throw new WorkspaceBaselineUnavailable(baseCommit, "fetch-failed");
+      }
+      return ref;
+    });
+    for (let offset = 0; offset < refs.length; offset += 64) {
+      const fetched = await execute(["fetch", "--no-tags", "--no-write-fetch-head", "--refmap=",
+        ...(shallow && offset === 0 ? ["--unshallow"] : []), "origin", ...refs.slice(offset, offset + 64)]);
+      if (!fetched) break;
+      if (await gitObjectExists(root, baseCommit)) return;
+    }
+    throw new WorkspaceBaselineUnavailable(baseCommit, "fetch-failed");
+  }
   const fetched = shallow
     ? await execute(["fetch", "--no-tags", "--unshallow", "origin"])
     : await execute(["fetch", "--no-tags", "origin"]);

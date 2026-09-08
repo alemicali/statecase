@@ -339,6 +339,15 @@ malicious local writers and full Git/native activity coordination remain outside
 this evidence. Profile/journal co-location, complete fault coverage and runtime
 enablement remain release requirements.
 
+ADR-0032 separates internal Git preparation from mutation: stage the index and
+complete file plan before handing local reference descriptions to a coordinator.
+Ref aliases, unsafe observations, duplicate targets and observed writers refuse
+handoff. Preparation fetch overrides configured refspecs and preserves FETCH_HEAD;
+approved object/shallow-cache acquisition may still occur. No unjournaled native
+index lock is held across handoff. The consumer must persist intent and acquire
+native exclusion before mutation; the descriptions and guards are not durable
+authority, a global snapshot or protection against arbitrary same-user races.
+
 ### Workspace dependency incompleteness
 
 Threats: transcript restores without modified code; missed watcher event;

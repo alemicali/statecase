@@ -768,6 +768,15 @@ fails closed while pending, but administrative daemon stop can use the validated
 original profile. Git metadata/activity participation and normal sync integration
 remain required before this path is enabled for routine materialization.
 
+ADR-0032 adds an internal pre-mutation workspace handoff: prepare the full file
+and worktree-specific index transaction plus original/desired Git reference
+descriptions while retaining native HEAD/index/worktree state. Object acquisition
+on this path suppresses operational ref mappings and FETCH_HEAD updates, including
+fallback/unshallow acquisition. Repeatable guards reject observed concurrent
+changes, but the handoff does not itself acquire mutation authority, persist Git
+intent or replay Git. Durable native-lock/reference participation and ordinary
+runtime integration remain open; the new callback is not a public preview API.
+
 Baseline blobs that conform to the Git LFS pointer format MUST NOT be treated as
 the referenced content. Capture and hydration report
 `GIT_LFS_CONTENT_UNAVAILABLE` with logical paths while the worktree still holds
