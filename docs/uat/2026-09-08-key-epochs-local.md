@@ -5,6 +5,11 @@ Status: automated local qualification passed; live packaged UAT not executed
 Base commit: `f35db843c9777e83f3d336183b93cb389fc35e5c`
 Candidate: the key-epoch changes on `feat/statecase-sync-core`
 
+Subsequent evidence: the separate
+[packaged Daytona/Cloudflare rotation report](2026-09-08-key-rotation-daytona.md)
+records the later live deployment and drill. The local checkpoint below is
+retained with its original evidence boundary.
+
 ## Commands and results
 
 - `npm run check`: 409 tests in 34 files, lint and typecheck passed;

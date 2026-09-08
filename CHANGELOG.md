@@ -4,6 +4,12 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Qualified packaged key rotation and recovery on Daytona against live
+  Cloudflare: two successive rotations, offline epoch catch-up, revoked device
+  and scoped-session denial, stale-kit rejection before membership, current-kit
+  enrollment, scoped reissuance, and cross-epoch historical Drop restore. Fixed
+  the remote D1 trigger parser incompatibility found during migration; the
+  equivalent predicates now use `SELECT RAISE(...) WHERE ...`.
 - Made offline vault-key history ingestion atomic: validate and authenticate the
   entire contiguous history before replacing local credentials. Commands use
   the authoritative current keyring rather than a potentially stale legacy

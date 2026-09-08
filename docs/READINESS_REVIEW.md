@@ -2,7 +2,7 @@
 
 Status: foreground sync implemented and deployed; release qualification in progress; not ready for public
 production launch
-Last updated: 2026-09-07
+Last updated: 2026-09-08
 
 ## Decisions now clear
 
@@ -166,7 +166,7 @@ Persistent installations now keep a stable device ID independent of absolute
 paths and Better Auth session rotation. D1 binds each service session to that
 installation. Device listing and explicit revocation atomically revoke vault
 memberships and all bound sessions; attempts to re-register through a revoked
-session fail. Post-revocation cryptographic rotation is implemented locally:
+session fail. Post-revocation cryptographic rotation is implemented and deployed:
 each rotation creates a fresh root at the next epoch, commits sealed envelopes
 for the exact active-device set in one D1 transaction, revokes existing scoped
 capabilities, rejects stale writes, and lets active devices ingest contiguous
@@ -175,7 +175,11 @@ keyring and reject stale replacement enrollment. Lost mutation responses are
 accepted only after the rotating device decrypts and matches its own envelope;
 an unprovable outcome preserves the candidate kit. Already-decrypted data and
 historical ciphertext copied by a revoked device cannot be remotely withdrawn.
-Packaged live Cloudflare/Daytona UAT remains the release gate for this slice.
+The packaged [live Cloudflare/Daytona rotation UAT](uat/2026-09-08-key-rotation-daytona.md)
+passed multi-epoch offline catch-up, revoked device/scoped-session denial,
+non-mutating stale enrollment, current-kit recovery, scoped reissuance, and
+cross-epoch historical Drop restore. Actual process-reset fault injection and
+independent security review remain unqualified.
 The [2026-09-08 local key-epoch qualification](uat/2026-09-08-key-epochs-local.md)
 records passing offline/restore variants, final coordinator fencing,
 transactional capability/enrollment checks, immutable exchange identities,
@@ -185,7 +189,7 @@ release gates. Additional local CLI tests now cover multi-epoch offline
 catch-up, unchanged credentials/files on incomplete or forged history, and
 lost-response reconciliation after a newer rotation. Download and cleanup
 faults verify derived-key release, discarded temporary merged sessions, and
-unchanged remote revisions; these do not replace the packaged live drill.
+unchanged remote revisions; these complement the packaged live drill.
 
 Full-key devices now merge concurrent appends to the same recognized Codex or
 Claude JSONL session when both branches retain one byte-identical complete

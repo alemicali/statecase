@@ -49,10 +49,13 @@ qualified 2-GiB transfer and concurrent append merge. Daily reachability GC now
 applies 24 hourly, 30 daily, and 12 monthly UTC checkpoints plus protected
 snapshots, Session Capsule pins, and a 30-day grace period. Remaining release
 gates include real-OS service UAT, initialized-submodule hydration, live
-real-version harness restore UAT, live post-revocation rotation qualification,
+real-version harness restore UAT, process-reset rotation fault injection,
 and real-version Codex/Claude fixture certification. Local and workerd coverage
 already exercises fresh vault-key epochs, exact active-device sealed envelopes,
 old-epoch write denial, capability invalidation, and multi-epoch recovery.
+The packaged post-revocation rotation, multi-epoch offline catch-up, clean-device
+recovery, scoped reissuance, and historical Drop restore passed a live Daytona
+drill against Cloudflare.
 This is not yet a public-production release.
 
 The approved direction lives in:
@@ -61,6 +64,7 @@ The approved direction lives in:
 - [Implementation specification](docs/IMPLEMENTATION_SPEC.md)
 - [Test and UAT plan](docs/TEST_AND_UAT_PLAN.md)
 - [Two-GiB Daytona UAT](docs/uat/2026-09-07-two-gib-session-daytona.md)
+- [Key rotation and recovery Daytona UAT](docs/uat/2026-09-08-key-rotation-daytona.md)
 - [Threat model](docs/THREAT_MODEL.md)
 - [Readiness review](docs/READINESS_REVIEW.md)
 - [Operations](docs/OPERATIONS.md)
