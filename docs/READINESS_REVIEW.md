@@ -310,7 +310,7 @@ regression, preview, new-local-edit/history refusal, index-lock ownership,
 selected editor races, and injected materialization rollback. It authenticates
 the prior capsule and stages the index separately (ADR-0020). A valid encrypted
 substitute revision is rejected if it is not the exact prior revision requested.
-The latest complete `npm run check` passed 498 tests with 90.39% global branch
+The latest complete `npm run check` passed 500 tests with 90.39% global branch
 coverage, build, and clean-prefix package smoke. Workspace-package branch
 coverage is still 88.88%, below its critical-code target; file materialization
 is at 96%. New tests reproduced and fixed rollback clobbering independent Git
@@ -328,6 +328,12 @@ interrupted recovery, atomic HEAD and check-to-mutation races,
 managed LFS acquisition, packaged/live cross-host UAT, and broader qualification
 remain unresolved. Do not describe ordinary workspace round-trip sync as fully
 release-qualified yet.
+
+The subsequent artifact case-variant follow-up reproduced and fixed uppercase
+Drop backup publication and upper/mixed-case workspace artifact destinations,
+including parent components. It has the 500-test local check above; its CI must
+qualify that specific candidate independently. Unicode/filesystem alias and
+crash-recovery gates are not waived by this narrow refusal test.
 
 ### Native Claude continuity checkpoint — 2026-09-08
 

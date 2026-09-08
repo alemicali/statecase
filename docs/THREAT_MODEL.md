@@ -219,7 +219,8 @@ foreign HEAD/ref locks. File rollback detects tested post-install writes,
 deletions, and type changes, retains the original backup when restoration would
 clobber local work, and excludes transaction artifacts from sync.
 Workspace capsule path validation also explicitly refuses `.git` components
-case-insensitively and reserved transaction artifacts; trusted encryption does
+case-insensitively and reserved transaction artifacts, including upper/mixed-case
+artifact names and parent components; trusted encryption does
 not grant a remote writer permission to replace device-local Git configuration
 or recovery material. Valid-blob, malicious-destination regressions cover this
 boundary before any workspace mutation.

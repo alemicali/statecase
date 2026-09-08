@@ -84,6 +84,13 @@ installation smoke. Workspace coverage remains 88.88%, below its critical-code
 target; this drill does not waive that gate. CI evidence for the new native job
 must be recorded separately for its actual commit.
 
+The dedicated `native-claude` CI job subsequently passed on
+`f689e32d23dc94a3c78e6257b8a208a8437f15eb` in
+[run 34183506133](https://github.com/alemicali/statecase/actions/runs/34183506133),
+using Node 24 and the pinned native Claude version in a fresh hosted Linux VM.
+The existing native Codex job passed in the same run. These are the same
+reference-backend/deterministic-provider scenarios, not cross-host live UAT.
+
 Not qualified here: packaged CLI enrollment/shims/daemon combined with native
 resume over live Cloudflare; a physical second host; hosted model inference;
 interactive session listing or `--continue`; runtime pre-apply compatibility

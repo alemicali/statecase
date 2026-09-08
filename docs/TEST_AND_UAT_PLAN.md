@@ -308,7 +308,9 @@ policy; they are never uploaded merely because they are present.
   preservation of newer files during rollback, and retention/exclusion of
   recovery artifacts when exact rollback cannot safely complete.
   Valid overlay blobs targeting `.git/config`, `.GIT/config`, or reserved
-  recovery artifacts must be rejected before materialization.
+  recovery artifacts must be rejected before materialization. Upper/mixed-case
+  artifact names, UUIDs, suffixes, and parent components remain reserved even
+  on a case-sensitive sender; Drop publication must also omit these variants.
 
 ## 7. Protocol and cloud contract tests
 

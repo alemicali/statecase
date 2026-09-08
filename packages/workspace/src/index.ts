@@ -982,7 +982,7 @@ function destinationPath(root: string, path: string): string {
 function requireLogicalPath(path: string): void {
   if (path.length === 0 || path.includes("\0") || path.includes("\\") || path.startsWith("/") ||
       path.split("/").some((part) => part.length === 0 || part === "." || part === ".." ||
-        part.toLowerCase() === ".git" || /\.statecase-transaction-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\.(?:staged|backup)$/u.test(part))) {
+        part.toLowerCase() === ".git" || /\.statecase-transaction-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\.(?:staged|backup)$/iu.test(part))) {
     throw new Error("unsafe workspace path");
   }
 }

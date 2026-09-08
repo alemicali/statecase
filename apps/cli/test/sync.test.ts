@@ -49,7 +49,10 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     await mkdir(join(first, "nested"), { recursive: true });
     await writeFile(join(first, "nested", "context.md"), "portable context\n");
     await writeFile(join(first, ".env"), "API_KEY=must-not-leak\n");
-    const recoveryNames = ["backup", "staged"].map((suffix) => `context.md.statecase-transaction-11111111-2222-4333-8444-555555555555.${suffix}`);
+    const recoveryNames = ["backup", "staged"].flatMap((suffix) => {
+      const name = `context.md.statecase-transaction-abcdef12-abcd-4bcd-8bcd-abcdef123456.${suffix}`;
+      return [name, name.toUpperCase()];
+    });
     for (const name of recoveryNames) await writeFile(join(first, "nested", name), "local-only recovery plaintext\n");
     await writeFile(outside, "outside\n");
     await symlink(outside, join(first, "link.txt"));

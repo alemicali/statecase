@@ -4,6 +4,11 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Closed a case-variant bypass of reserved recovery artifacts: upper/mixed-case
+  transaction names and parent components are now excluded from sync and
+  rejected in workspace capsules. Failing-first tests demonstrated unintended
+  Drop publication and accepted incoming workspace writes before the fix.
+
 - Qualified native Claude Code 2.1.263 Read/Edit/Write and original-UUID resume
   after encrypted engine transfer into a fresh home/different Git checkout,
   including exact baseline, untracked content, non-mutating hydration preview,

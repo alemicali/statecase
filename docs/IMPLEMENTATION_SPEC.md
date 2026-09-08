@@ -673,7 +673,9 @@ object ID; changing HEAD identity MUST NOT rewrite an independently advanced
 source branch. File rollback MUST preserve independently changed destinations
 and retain available original backups when exact rollback is unsafe or fails.
 The reserved `.statecase-transaction-<uuid>.staged|backup` artifacts MUST remain
-local and excluded from ordinary sync. Retained ad-hoc backups MUST NOT be
+local and excluded from ordinary sync, including case variants of every path
+component so a case-sensitive sender cannot bypass a case-insensitive receiver.
+Retained ad-hoc backups MUST NOT be
 represented as an authenticated or crash-qualified emergency snapshot.
 
 Baseline blobs that conform to the Git LFS pointer format MUST NOT be treated as

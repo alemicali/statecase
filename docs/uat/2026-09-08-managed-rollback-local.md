@@ -74,3 +74,20 @@ validation now refuses those destinations before mutation. The complete local
 check for that follow-up passed 498 tests, 90.39% global branches (3189/3528),
 88.88% workspace branches, and 96% file-materializer branches. Its CI is separate
 from the earlier run, and the critical workspace target remains unmet.
+
+## Case-variant artifact follow-up
+
+The explicit path guard at `0e788fd` passed its own
+[complete CI](https://github.com/alemicali/statecase/actions/runs/34182534166).
+Subsequent cross-platform review found that reservation of transaction artifact
+names was still case-sensitive. On `f689e32` plus new tests, two otherwise valid
+workspace capsules targeting upper/mixed-case recovery names (including a parent
+component) were accepted rather than rejected. A two-device Drop test published
+three files instead of one because uppercase backup/staging names were copied.
+
+Case-insensitive matching now applies to the complete artifact suffix in both
+workspace validation and ordinary sync exclusion. The final local check passed
+500 tests in 35 files, lint, typecheck, build, and clean-prefix package smoke.
+Coverage remains 90.39% global branches, 88.88% workspace, and 96% materializer.
+The test exercises refusal on a case-sensitive Linux filesystem; it does not
+qualify every Unicode normalization, HFS/NTFS alias, or filesystem race.

@@ -53,7 +53,9 @@ matches that installed state. A new local write, type change, or independently
 recreated deleted file is preserved; the original backup is retained and the
 operation fails with an incomplete-rollback error. Failed rollback cleanup MUST
 NOT delete available recovery backups. Transaction artifact names are reserved
-and excluded from ordinary publication and inbound materialization. These are
+and excluded from ordinary publication and inbound materialization. Reservation
+is case-insensitive for all path components, including the UUID and suffix,
+independently of the sender's filesystem case behavior. These are
 local recovery files, not an authenticated emergency snapshot manifest.
 
 Directory/special-file collisions, unobserved ignored content, unsafe symlinks,
@@ -87,11 +89,12 @@ This is not yet full qualification. Remaining gates include:
 
 These gaps must be closed, not waived by the passing simple return-sync case.
 
-The latest full local check passed 498 tests and 90.39% global branch coverage;
+The latest full local check passed 500 tests and 90.39% global branch coverage;
 the workspace package remains at 88.88% branches, below its critical-code target.
 The file materializer is at 96% branches. The branch/rollback candidate
 `a92a244` passed CI including native Codex return-sync and background sync.
-The later explicit Git-metadata/recovery-path guard has local passing evidence
-and must pass its own CI; prior results do not qualify later changes automatically.
+The explicit Git-metadata/recovery-path guard at `0e788fd` passed its own CI.
+The subsequent artifact case-variant guard has the 500-test local evidence
+above and requires its own CI; prior results do not qualify later changes automatically.
 The executed native bundle and precise isolation limits are recorded in
 `docs/uat/2026-09-08-native-codex-resume.md`.
