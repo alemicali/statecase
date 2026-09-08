@@ -840,7 +840,13 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     temporary.push(base);
     const source = join(base, "home", "project");
     const target = join(base, "srv", "project");
-    await Promise.all([initializeRepository(source), initializeRepository(target)]);
+    await initializeRepository(source);
+    await mkdir(join(base, "srv"));
+    // Independent commits can differ solely by their timestamps. This case
+    // requires the same Git baseline, so acquire it through a real clone.
+    await runFile("git", ["clone", "-q", source, target]);
+    expect((await runFile("git", ["-C", target, "rev-parse", "HEAD"])).stdout)
+      .toBe((await runFile("git", ["-C", source, "rev-parse", "HEAD"])).stdout);
     await writeFile(join(source, "tracked.txt"), "work in progress\n");
     await writeFile(join(source, "new.txt"), "untracked dependency\n");
     const remote = new MemoryRemote();
@@ -943,7 +949,8 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     const source = join(base, "source");
     const target = join(base, "target");
     const ordinary = join(base, "ordinary");
-    await Promise.all([initializeRepository(source), initializeRepository(target), mkdir(ordinary)]);
+    await Promise.all([initializeRepository(source), mkdir(ordinary)]);
+    await runFile("git", ["clone", "-q", source, target]);
     await writeFile(join(source, "tracked.txt"), "remote work\n");
     await writeFile(join(target, "tracked.txt"), "local work\n");
     const remote = new MemoryRemote();

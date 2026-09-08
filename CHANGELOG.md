@@ -4,6 +4,9 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Removed a CI fixture race: Git overlay tests now clone their source baseline
+  instead of assuming independently created commits have identical timestamps
+  and object IDs. Baseline mismatch enforcement is unchanged.
 - Qualified packaged key rotation and recovery on Daytona against live
   Cloudflare: two successive rotations, offline epoch catch-up, revoked device
   and scoped-session denial, stale-kit rejection before membership, current-kit
