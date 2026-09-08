@@ -113,4 +113,19 @@ describe("durable Git index ownership joins the real profile checkpoint (RT-006,
     await expect(f.store.materializeConfig(config, { writes: [{ path, bytes: new Uint8Array([1]) }], deletes: [] }, { workspaceRoots: [f.workspace] })).rejects.toThrow();
     expect(await readFile(path)).toEqual(before);
   });
+  it.each(["backup", "install"])("does not run caught rollback or the next installation after losing native ownership at %s", async phase => {
+    const f = await fixture(), config = await f.store.loadConfig();
+    await expect(f.store.materializeConfig(config, { writes: [{ path: f.indexPath, bytes: f.incomingIndex }], deletes: [] }, {
+      workspaceRoots: [f.workspace], afterBoundary: async (boundary, index) => {
+        if (boundary === phase && index === 0) {
+          await rm(`${f.indexPath}.lock`); await writeFile(`${f.indexPath}.lock`, "foreign writer");
+          if (phase === "install") throw new Error("caught interruption after ownership loss");
+        }
+      },
+    })).rejects.toMatchObject({ code: "PROFILE_RECOVERY_REQUIRED" });
+    if (phase === "backup") await expect(lstat(f.indexPath)).rejects.toMatchObject({ code: "ENOENT" });
+    else expect(await readFile(f.indexPath)).toEqual(f.incomingIndex);
+    expect(await readFile(`${f.indexPath}.lock`, "utf8")).toBe("foreign writer");
+    await expect(f.store.recoverMaterialization()).rejects.toMatchObject({ code: "PROFILE_RECOVERY_REQUIRED" });
+  });
 });
