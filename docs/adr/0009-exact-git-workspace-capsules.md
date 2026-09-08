@@ -39,7 +39,9 @@ An uninitialized staged gitlink can be reproduced without copying nested
 repository bytes. Initialized submodule worktrees fail closed until a separate
 transactional submodule hydration design is implemented.
 
-An ordinary pull still requires a clean destination. Explicit in-place
+The original ordinary pull requires a clean destination. ADR-0020 defines the
+authenticated managed-advance exception needed for subsequent device-to-device
+continuation; its implementation remains under qualification. Explicit in-place
 historical replacement is a separate destructive, Git-aware recovery flow: it
 preserves HEAD, affected refs, the raw index, and exact worktree paths before
 mutation and forks the remote revision forward. See ADR-0018.

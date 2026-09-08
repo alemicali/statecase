@@ -14,6 +14,7 @@ import { createEmergencySnapshot, restoreEmergencySnapshot } from "../src/emerge
 import { SyncConflict, SyncEngine, type VaultKeyring } from "../src/sync.js";
 import * as streamTransfer from "../src/stream-transfer.js";
 import * as appendMerge from "../src/append-merge-file.js";
+import * as materialization from "../src/materialize.js";
 
 const temporary: string[] = [];
 const runFile = promisify(execFile);
@@ -48,6 +49,8 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     await mkdir(join(first, "nested"), { recursive: true });
     await writeFile(join(first, "nested", "context.md"), "portable context\n");
     await writeFile(join(first, ".env"), "API_KEY=must-not-leak\n");
+    const recoveryNames = ["backup", "staged"].map((suffix) => `context.md.statecase-transaction-11111111-2222-4333-8444-555555555555.${suffix}`);
+    for (const name of recoveryNames) await writeFile(join(first, "nested", name), "local-only recovery plaintext\n");
     await writeFile(outside, "outside\n");
     await symlink(outside, join(first, "link.txt"));
 
@@ -66,6 +69,7 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     expect(await readFile(join(second, "nested", "context.md"), "utf8")).toBe("portable context\n");
     await expect(readFile(join(second, ".env"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readFile(join(second, "link.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    for (const name of recoveryNames) await expect(readFile(join(second, "nested", name))).rejects.toMatchObject({ code: "ENOENT" });
     expect((await b.pull(configB)).outcome).toBe("unchanged");
   });
 
@@ -592,6 +596,96 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     await expect(engineFor(missingCapsule).pull(workspaceConfig(join(base, "missing-capsule"))))
       .rejects.toThrow("capsule metadata is missing");
   });
+
+  it("receives a peer's workspace continuation when local dirty bytes still equal the applied capsule (WS-034)", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-workspace-return-"));
+    temporary.push(base);
+    const source = join(base, "source");
+    const target = join(base, "target");
+    await initializeRepository(source);
+    await runFile("git", ["clone", "-q", source, target]);
+    const a: LocalConfig = { ...config(source), mappings: [], workspaces: [{ id: "ws_return", path: source, sync: "git" }] };
+    const b: LocalConfig = { ...config(target), mappings: [], workspaces: [{ id: "ws_return", path: target, sync: "git" }] };
+    const remote = new MemoryRemote();
+    const engine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", await randomKey());
+    await writeFile(join(source, "tracked.txt"), "first staged version\n");
+    await runFile("git", ["-C", source, "add", "tracked.txt"]);
+    await writeFile(join(source, "tracked.txt"), "first worktree version\n");
+    await writeFile(join(source, "untracked.txt"), "original untracked\n");
+    await engine.push(a);
+    await engine.pull(b);
+    await writeFile(join(target, "tracked.txt"), "continued on target\n");
+    await engine.push(b);
+    const before = await readFile(join(source, "tracked.txt"), "utf8");
+    expect(before).toBe("first worktree version\n");
+    const configBefore = structuredClone(a);
+    await expect(engine.pull(a, true)).resolves.toMatchObject({ outcome: "pulled" });
+    expect(a).toEqual(configBefore);
+    expect(await readFile(join(source, "tracked.txt"), "utf8")).toBe(before);
+    const rawIndex = await readFile(join(source, ".git", "index"));
+    const realMaterialize = materialization.applyFileTransaction;
+    const failingMaterialize = vi.spyOn(materialization, "applyFileTransaction").mockImplementationOnce(async (transaction) => {
+      await realMaterialize({ ...transaction, beforeCommit: async (index, path) => {
+        await transaction.beforeCommit?.(index, path);
+        if (index === 1) throw new Error("managed workspace mid-commit fault");
+      } });
+    });
+    await expect(engine.pull(a)).rejects.toThrow("managed workspace mid-commit fault");
+    failingMaterialize.mockRestore();
+    expect(a).toEqual(configBefore);
+    expect(await readFile(join(source, "tracked.txt"), "utf8")).toBe(before);
+    expect(await readFile(join(source, ".git", "index"))).toEqual(rawIndex);
+    await expect(engine.pull(a)).resolves.toMatchObject({ outcome: "pulled" });
+    expect(await readFile(join(source, "tracked.txt"), "utf8")).toBe("continued on target\n");
+    expect((await runFile("git", ["-C", source, "show", ":tracked.txt"])).stdout).toBe("first staged version\n");
+    expect(await readFile(join(source, "untracked.txt"), "utf8")).toBe("original untracked\n");
+  });
+
+  it.each(["worktree", "index", "untracked", "missing-history", "corrupt-history", "substituted-history", "no-applied-marker"])(
+    "preserves unsynchronized work and applied state on managed return refusal: %s (WS-034)", async (failure) => {
+      const base = await mkdtemp(join(tmpdir(), "statecase-managed-refusal-"));
+      temporary.push(base);
+      const source = join(base, "source"), target = join(base, "target");
+      await initializeRepository(source);
+      await runFile("git", ["clone", "-q", source, target]);
+      const a: LocalConfig = { ...config(source), mappings: [], workspaces: [{ id: "ws_return", path: source, sync: "git" }] };
+      const b: LocalConfig = { ...config(target), mappings: [], workspaces: [{ id: "ws_return", path: target, sync: "git" }] };
+      const remote = new MemoryRemote();
+      const engine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", await randomKey());
+      await writeFile(join(source, "tracked.txt"), "last applied\n");
+      await engine.push(a);
+      await engine.pull(b);
+      await writeFile(join(target, "tracked.txt"), "continued on peer\n");
+      await engine.push(b);
+      if (failure === "worktree") await writeFile(join(source, "tracked.txt"), "new unsynced work\n");
+      if (failure === "index") await runFile("git", ["-C", source, "add", "tracked.txt"]);
+      if (failure === "untracked") await writeFile(join(source, "private.txt"), "new unsynced file\n");
+      const prior = remote.namespaceRevisions.get(`workspace:ws_return\0${a.applied["workspace:ws_return"]!.revisionId}`)!;
+      if (failure === "substituted-history") {
+        // A valid encrypted revision with identical bytes is still not the
+        // exact revision requested as the device's last-applied authority.
+        await writeFile(join(target, "tracked.txt"), "last applied\n");
+        await engine.push(b);
+        const substitute = remote.namespaceRevisions.get(`workspace:ws_return\0${b.applied["workspace:ws_return"]!.revisionId}`)!;
+        await writeFile(join(target, "tracked.txt"), "continued on peer\n");
+        await engine.push(b);
+        remote.namespaceRevisions.set(`workspace:ws_return\0${prior.revisionId}`, substitute);
+      }
+      if (failure === "missing-history") remote.namespaceRevisions.delete(`workspace:ws_return\0${prior.revisionId}`);
+      if (failure === "corrupt-history") remote.namespaceObjects.set(`workspace:ws_return\0${prior.manifestObjectId}`, Uint8Array.of(1, 2, 3));
+      if (failure === "no-applied-marker") delete a.applied["workspace:ws_return"];
+      const before = await readFile(join(source, "tracked.txt"));
+      const rawIndex = await readFile(join(source, ".git", "index"));
+      const configBefore = structuredClone(a);
+      const revision = remote.scopedRevisionId;
+      await expect(engine.pull(a)).rejects.toBeInstanceOf(SyncConflict);
+      expect(await readFile(join(source, "tracked.txt"))).toEqual(before);
+      expect(await readFile(join(source, ".git", "index"))).toEqual(rawIndex);
+      expect(a).toEqual(configBefore);
+      expect(remote.scopedRevisionId).toBe(revision);
+      if (failure === "untracked") expect(await readFile(join(source, "private.txt"), "utf8")).toBe("new unsynced file\n");
+    },
+  );
 
   it("pins structured session dependencies to the exact harness, workspace, and Drop revision (WS-019..WS-032)", async () => {
     const base = await mkdtemp(join(tmpdir(), "statecase-session-capsule-"));

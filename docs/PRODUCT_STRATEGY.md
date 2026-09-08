@@ -74,7 +74,9 @@ replication.
    multi-gigabyte histories repeatedly.
 10. **Complete workspace continuity.** A resumable session includes its
     reproducible Git baseline and the non-reproducible working-tree overlay,
-    not only the transcript.
+    not only the transcript. Normal A → B → A continuation must preserve staged
+    and unstaged work without requiring a Git commit or a forced historical
+    restore. New unsynchronized local edits must still be protected.
 11. **Observable and reversible.** Every material operation is inspectable,
     retryable, and restorable.
 

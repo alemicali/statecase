@@ -1,4 +1,4 @@
-import { lstat, mkdir, mkdtemp, readFile, readlink, readdir, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readlink, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -102,6 +102,75 @@ describe("transactional native materialization (BK-008, BK-009, WS-025)", () => 
       symlinks: [],
     })).rejects.toThrow("duplicate transaction target");
     expect(await readFile(path, "utf8")).toBe("untouched");
+  });
+
+  it.each(["replace", "delete", "create"])("preserves an editor's new write and recovery bytes during %s rollback interference (WS-034)", async (operation) => {
+    const root = await mkdtemp(join(tmpdir(), "statecase-rollback-interference-"));
+    temporary.push(root);
+    const first = join(root, "first.txt"), second = join(root, "second.txt");
+    if (operation !== "create") await writeFile(first, "original recovery bytes");
+    await writeFile(second, "second original");
+    const transaction = operation === "delete"
+      ? { writes: [], deletes: [first, second] }
+      : { writes: [first, second].map((path) => ({ path, bytes: new TextEncoder().encode("remote content") })), deletes: [] };
+    await expect(applyFileTransaction({
+      ...transaction,
+      beforeCommit: async (index) => {
+        if (index === 1) {
+          await writeFile(first, "editor's newer local work");
+          throw new Error("injected failure after editor write");
+        }
+      },
+    })).rejects.toBeInstanceOf(AggregateError);
+    expect(await readFile(first, "utf8")).toBe("editor's newer local work");
+    expect(await readFile(second, "utf8")).toBe("second original");
+    const backups = (await readdir(root)).filter((name) => name.endsWith(".backup"));
+    if (operation === "create") expect(backups).toEqual([]);
+    else {
+      expect(backups).toHaveLength(1);
+      expect(await readFile(join(root, backups[0]), "utf8")).toBe("original recovery bytes");
+    }
+  });
+
+  it.each(["directory", "symlink", "removed"])("retains the original backup when a committed file becomes %s before rollback", async (kind) => {
+    const root = await mkdtemp(join(tmpdir(), "statecase-rollback-type-race-"));
+    temporary.push(root);
+    const path = join(root, "first.txt");
+    await writeFile(path, "original recovery bytes");
+    await expect(applyFileTransaction({
+      writes: [{ path, bytes: new TextEncoder().encode("remote version") }],
+      deletes: [join(root, "trigger.txt")],
+      beforeCommit: async (index) => {
+        if (index !== 1) return;
+        await rm(path);
+        if (kind === "directory") await mkdir(path);
+        if (kind === "symlink") await symlink("independent-target", path);
+        throw new Error("injected failure after independent type change");
+      },
+    })).rejects.toBeInstanceOf(AggregateError);
+    if (kind === "directory") expect((await lstat(path)).isDirectory()).toBe(true);
+    if (kind === "symlink") expect(await readlink(path)).toBe("independent-target");
+    if (kind === "removed") await expect(lstat(path)).rejects.toMatchObject({ code: "ENOENT" });
+    const backups = (await readdir(root)).filter((name) => name.endsWith(".backup"));
+    expect(backups).toHaveLength(1);
+    expect(await readFile(join(root, backups[0]), "utf8")).toBe("original recovery bytes");
+  });
+
+  it("rolls back an already-installed symlink without changing either referent", async () => {
+    const root = await mkdtemp(join(tmpdir(), "statecase-installed-link-rollback-"));
+    temporary.push(root);
+    const path = join(root, "link");
+    await writeFile(join(root, "old-target"), "old referent");
+    await writeFile(join(root, "new-target"), "new referent");
+    await symlink("old-target", path);
+    await expect(applyFileTransaction({
+      writes: [], symlinks: [{ path, target: "new-target" }], deletes: [join(root, "trigger")],
+      beforeCommit: (index) => { if (index === 1) throw new Error("installed link failure"); },
+    })).rejects.toThrow("installed link failure");
+    expect(await readlink(path)).toBe("old-target");
+    expect(await readFile(join(root, "old-target"), "utf8")).toBe("old referent");
+    expect(await readFile(join(root, "new-target"), "utf8")).toBe("new referent");
+    expect((await readdir(root)).filter((name) => name.includes(".statecase-transaction-"))).toEqual([]);
   });
 
   it("refuses to replace a directory when optional symlinks are omitted", async () => {

@@ -198,6 +198,31 @@ Controls:
 - validation and optimistic-commit failures restore local Git state before the
   error is returned, while the shared head only advances through a new revision.
 
+### Ordinary managed workspace advancement
+
+Threats: treating already-synchronized Git dirt as arbitrary overwrite consent;
+forged local applied digests; missing historical authority; racing a Git writer
+or editor; erasing ignored content; partial return-sync corrupting index/HEAD.
+
+Controls under qualification (ADR-0020, WS-034):
+
+- authenticate the exact previous namespace and verify the full current capsule;
+- retain conflicts for new edits, absent history, and failed authentication;
+- stage the index separately, hold the native index lock, and preserve foreign locks;
+- reject unknown destination content and require per-target pre-commit guards;
+- rollback file/index failure and restore changed HEAD/ref metadata;
+- keep applied markers unchanged on preview or failure.
+
+Further local fault tests now cover expected-value branch update/rollback,
+independent source/target branch advances, independent HEAD switches, and
+foreign HEAD/ref locks. File rollback detects tested post-install writes,
+deletions, and type changes, retains the original backup when restoration would
+clobber local work, and excludes transaction artifacts from sync.
+
+These controls do not yet prove crash-safe persistent recovery, atomic HEAD
+exclusion, or protection against races inside the check-to-mutation boundaries.
+Those remain release gates; no unconditional concurrent-writer safety claim is made.
+
 ### Workspace dependency incompleteness
 
 Threats: transcript restores without modified code; missed watcher event;

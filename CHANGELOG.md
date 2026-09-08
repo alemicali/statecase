@@ -4,6 +4,22 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Hardened managed workspace rollback against independent source/target branch
+  advances and HEAD changes; branch mutations now use expected-value Git
+  updates. Added creation/deletion, detached/unborn, and foreign-ref-lock tests.
+- Fixed destructive rollback interference: retain a newer local file and its
+  available original backup when exact restoration is unsafe. Added post-install
+  write/delete/type-change tests and excluded transaction recovery artifacts
+  from normal synchronization. Persistent crash recovery is still unqualified.
+
+- Added an unqualified managed-workspace return-sync candidate (WS-034):
+  authenticate the last-applied capsule before advancing a Git-dirty checkout,
+  stage index updates separately, retain Git lock ownership, and guard planned
+  targets against editor mutations before commit. Added preview, rollback,
+  genuine-conflict, missing/corrupt-history, and lock/collision regressions.
+  The native Codex engine-level return-sync rerun passed in a fresh Daytona
+  sandbox. Packaged/live cross-host and remaining ADR-0020 release gates remain open.
+
 - Fixed a CWD-dependent session normalization defect: running sync inside a
   mapped workspace could rewrite native record types, model names, and prose
   as workspace URIs. Only absolute path values are now portabilized. Added a

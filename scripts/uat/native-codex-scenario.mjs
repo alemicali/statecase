@@ -147,8 +147,9 @@ try {
   assert.equal(await harness(target, ["exec", "-C", target.project, "resume", "--skip-git-repo-check", "--json", sessionId,
     "Continue the earlier task: inspect its artifact and append the continuation line."]), sessionId);
   assert.equal(await readFile(join(source.project, "artifact.txt"), "utf8"), `${marker}\n`);
-  phase = "return-sync";
+  phase = "return-publish";
   assert.equal((await engine.push(b)).outcome, "pushed");
+  phase = "return-pull";
   process.chdir(source.project);
   assert.equal((await engine.pull(a)).outcome, "pulled");
   assert.equal(await readFile(join(source.project, "artifact.txt"), "utf8"), `${marker}\ncontinued on target\n`);
@@ -160,7 +161,9 @@ try {
     nativeDatabaseNotCopied: true, patchDependency: true, hydrationPreviewNonMutating: true,
     sourceUnchangedBeforeSync: true, returnSync: true, syncFromMappedCwd: true, encryptedObjects: remote.objectCount() }));
 } catch (error) {
-  console.error(JSON.stringify({ result: "fail", phase, error: error.name, fixtureError: fixtureError?.name }));
+  const conflictKinds = Array.isArray(error.paths) ? [...new Set(error.paths.map((path) =>
+    path.startsWith("harness:codex:default:") ? "codex" : path.startsWith("workspace:ws_native:") ? "workspace" : "other"))] : undefined;
+  console.error(JSON.stringify({ result: "fail", phase, error: error.name, fixtureError: fixtureError?.name, conflictKinds }));
   process.exitCode = 1;
 } finally {
   key?.fill(0);

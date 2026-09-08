@@ -1,8 +1,9 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { chmod, lstat, mkdir, readFile, readlink, rm, rmdir, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, resolve, sep } from "node:path";
+import { chmod, lstat, mkdir, mkdtemp, open, readFile, readlink, rm, rmdir, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
@@ -84,11 +85,7 @@ export interface CapturedWorkspace {
 }
 
 export interface WorkspaceMaterializer {
-  (transaction: {
-    writes: WorkspaceMaterializedWrite[];
-    symlinks?: Array<{ path: string; target: string }>;
-    deletes: string[];
-  }): Promise<void>;
+  (transaction: WorkspaceFileTransaction): Promise<void>;
 }
 
 export type WorkspaceMaterializedWrite = { path: string; mode?: number } & (
@@ -100,12 +97,16 @@ export interface WorkspaceApplication {
   root: string;
   captured: CapturedWorkspace;
   gitFetch?: GitFetchPolicy;
+  /** Authenticated last-applied state, not a newly captured permission to overwrite. */
+  expectedCurrent?: CapturedWorkspace;
 }
 
 export interface WorkspaceFileTransaction {
   writes: WorkspaceMaterializedWrite[];
   symlinks?: Array<{ path: string; target: string }>;
   deletes: string[];
+  /** Materializers must run this guard immediately before replacing each target. */
+  beforeCommit?: (index: number, path: string) => void | Promise<void>;
 }
 
 export interface WorkspaceReplacementPlan {
@@ -239,6 +240,10 @@ export async function applyWorkspaceTransaction(
 ): Promise<void> {
   const roots = applications.map((application) => resolve(application.root));
   if (new Set(roots).size !== roots.length) throw new Error("duplicate workspace transaction root");
+  if (applications.some((application) => application.expectedCurrent)) {
+    await applyManagedWorkspaceTransaction(applications, initial, options.materialize);
+    return;
+  }
   const inspections = await Promise.all(applications.map((application, index) => inspectWorkspaceDestination(
     roots[index]!,
     application.captured,
@@ -317,6 +322,209 @@ export async function applyWorkspaceTransaction(
     if (failures.length > 0) throw new AggregateError([error, ...failures], "workspace apply failed and index rollback was incomplete");
     throw error;
   }
+}
+
+/** Preflight for a managed advance; never treats arbitrary dirty state as permission. */
+export async function assertWorkspaceAdvance(
+  rootValue: string,
+  captured: CapturedWorkspace,
+  expectedCurrent: CapturedWorkspace,
+  gitFetch: GitFetchPolicy = "ask",
+): Promise<void> {
+  const root = resolve(rootValue);
+  validateCaptured(expectedCurrent);
+  if (!await workspaceMatchesCapsule(root, expectedCurrent)) throw new Error("workspace changed since its applied capsule");
+  if (captured.capsule.baseCommit !== expectedCurrent.capsule.baseCommit && gitFetch !== "auto") {
+    throw new WorkspaceBaselineUnavailable(captured.capsule.baseCommit, gitFetch === "ask" ? "approval-required" : "policy-disabled");
+  }
+  await assertWorkspaceReplacement(root, captured, { gitFetch });
+}
+
+/**
+ * Build the new index separately and include it in the same file transaction as
+ * worktree/session writes. No checkout/reset -u touches the old dirty worktree.
+ */
+async function applyManagedWorkspaceTransaction(
+  applications: readonly WorkspaceApplication[],
+  initial: WorkspaceFileTransaction,
+  materialize: WorkspaceMaterializer,
+): Promise<void> {
+  const releaseIndexLocks: Array<() => Promise<void>> = [];
+  const targetFingerprints = new Map<string, string>();
+  const prepared: Array<{
+    root: string; captured: CapturedWorkspace; current: CapturedWorkspace;
+    indexPath: string; directory: string; stagedIndex: string;
+    targetOriginalCommit: string | null; headChanged: boolean; targetRefChanged: boolean;
+  }> = [];
+  const transaction: WorkspaceFileTransaction = {
+    writes: [...initial.writes], symlinks: [...(initial.symlinks ?? [])], deletes: [...initial.deletes],
+    beforeCommit: async (index, path) => {
+      await initial.beforeCommit?.(index, path);
+      const expected = targetFingerprints.get(path);
+      if (expected !== undefined && await workspaceTargetFingerprint(path) !== expected) {
+        throw new Error("managed workspace target changed before commit");
+      }
+    },
+  };
+  try {
+    // Preflight every root before even acquiring a missing object baseline.
+    for (const application of applications) {
+      if (application.expectedCurrent) await assertWorkspaceAdvance(application.root, application.captured, application.expectedCurrent, application.gitFetch);
+      else await inspectWorkspaceDestination(application.root, application.captured, application.gitFetch);
+    }
+    for (const application of applications) {
+      const root = resolve(application.root);
+      const current = application.expectedCurrent ?? await captureWorkspace(root);
+      const target = application.captured;
+      if (target.capsule.baseCommit && !await gitObjectExists(root, target.capsule.baseCommit)) {
+        await fetchWorkspaceBaseline(root, target.capsule.baseCommit);
+      }
+      await assertNoInitializedSubmodule(root, target);
+      const indexValue = (await gitText(root, ["rev-parse", "--git-path", "index"])).trim();
+      const indexPath = isAbsolute(indexValue) ? indexValue : resolve(root, indexValue);
+      releaseIndexLocks.push(await acquireWorkspaceIndexLock(indexPath));
+      const targetOriginalCommit = target.capsule.headRef
+        ? await gitText(root, ["rev-parse", "--verify", `refs/heads/${target.capsule.headRef}`]).then((value) => value.trim(), () => null)
+        : null;
+      const directory = await mkdtemp(join(tmpdir(), "statecase-workspace-index-"));
+      const stagedIndex = join(directory, "index");
+      prepared.push({ root, captured: target, current, indexPath, directory, stagedIndex, targetOriginalCommit, headChanged: false, targetRefChanged: false });
+      const environment = { GIT_INDEX_FILE: stagedIndex };
+      await gitText(root, target.capsule.baseCommit ? ["read-tree", target.capsule.baseCommit] : ["read-tree", "--empty"], environment);
+      const blobs = new Map(target.blobs.map((blob) => [blobKey(blob.layer, blob.path), blob]));
+      for (const record of target.capsule.records) await applyIndexRecord(root, record, blobs, environment);
+      const oldHead = current.capsule.baseCommit ? await readHeadEntries(root, current.capsule.baseCommit) : new Map<string, GitEntry>();
+      const newHead = target.capsule.baseCommit ? await readHeadEntries(root, target.capsule.baseCommit) : new Map<string, GitEntry>();
+      const records = new Map(target.capsule.records.map((record) => [record.path, record]));
+      const oldRecords = new Set(current.capsule.records.map((record) => record.path));
+      const paths = new Set([...oldRecords, ...records.keys()]);
+      for (const path of new Set([...oldHead.keys(), ...newHead.keys()])) {
+        const before = oldHead.get(path), after = newHead.get(path);
+        if (before?.oid !== after?.oid || before?.mode !== after?.mode) paths.add(path);
+      }
+      for (const path of paths) {
+        const destination = destinationPath(root, path);
+        const info = await lstat(destination).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? undefined : Promise.reject(error));
+        if (info && !info.isFile() && !info.isSymbolicLink()) throw new Error("managed workspace refuses a non-file destination");
+        if (info && !oldRecords.has(path) && !oldHead.has(path)) throw new Error("managed workspace destination contains unobserved local content");
+        const record = records.get(path);
+        if (record?.worktree.state === "submodule" || (!record && newHead.get(path)?.mode === 0o160000)) continue;
+        targetFingerprints.set(destination, await workspaceTargetFingerprint(destination));
+        let blob: { bytes: Uint8Array; mode: number } | undefined;
+        if (record?.worktree.state === "content") blob = requireBlob(blobs, "worktree", path, record.worktree.oid);
+        else if (record?.worktree.state === "index" && record.index.state === "content") blob = requireBlob(blobs, "index", path, record.index.oid);
+        else if (record?.worktree.state !== "absent") {
+          const entry = newHead.get(path);
+          if (entry) {
+            const size = Number((await gitText(root, ["cat-file", "-s", entry.oid])).trim());
+            if (!Number.isSafeInteger(size) || size < 0 || size > MAX_FILE_BYTES) throw new Error("managed baseline blob exceeds safety limit");
+            const bytes = new Uint8Array(await gitBuffer(root, ["cat-file", "blob", entry.oid]));
+            // Never mistake an LFS pointer for the file. Existing materialized
+            // bytes may satisfy it; otherwise explicit acquisition is required.
+            const pointer = parseLfsPointer(bytes);
+            if (pointer) {
+              if (!info?.isFile() || info.size !== pointer.size || await sha256File(destination) !== pointer.oid) {
+                throw new GitLfsContentUnavailable([path], "missing");
+              }
+              blob = { bytes: new Uint8Array(await readFile(destination)), mode: entry.mode };
+            } else blob = { bytes, mode: entry.mode };
+          }
+        }
+        if (!blob) transaction.deletes.push(destination);
+        else if (blob.mode === 0o120000) transaction.symlinks!.push({ path: destination, target: safeSymlinkTarget(root, destination, blob.bytes) });
+        else transaction.writes.push({ path: destination, bytes: blob.bytes, mode: filesystemMode(blob.mode) });
+      }
+      transaction.writes.push({ path: indexPath, bytes: new Uint8Array(await readFile(stagedIndex)), mode: 0o600 });
+    }
+    // Staging may take time. Never use the earlier equality check as authority
+    // after an editor/Git process has changed the source while preparing it.
+    for (const workspace of prepared) {
+      if (!await workspaceMatchesCapsule(workspace.root, workspace.current)) throw new Error("managed workspace changed during preparation");
+      await assertWorkspaceHeadReference(workspace.root, workspace.captured);
+      targetFingerprints.set(workspace.indexPath, await workspaceTargetFingerprint(workspace.indexPath));
+    }
+    for (const workspace of prepared) {
+      if (workspace.current.capsule.baseCommit === workspace.captured.capsule.baseCommit &&
+          workspace.current.capsule.headRef === workspace.captured.capsule.headRef) continue;
+      const target = workspace.captured.capsule;
+      if (target.headRef !== null) {
+        await compareAndSwapWorkspaceRef(workspace.root, `refs/heads/${target.headRef}`, target.baseCommit, workspace.targetOriginalCommit);
+        workspace.targetRefChanged = target.baseCommit !== workspace.targetOriginalCommit;
+      }
+      // Switching HEAD must not also rewrite the branch we are leaving.
+      await setWorkspaceHeadIdentity(workspace.root, target.baseCommit, target.headRef);
+      workspace.headChanged = true;
+    }
+    await materialize(transaction);
+  } catch (cause) {
+    const failures: unknown[] = [];
+    for (const workspace of [...prepared].reverse()) {
+      if (!workspace.headChanged && !workspace.targetRefChanged) continue;
+      try {
+        // A rollback may revert our write, never a newer independent Git write.
+        // Keep the current HEAD untouched when another process has selected or
+        // advanced it, and surface incomplete recovery instead of clobbering it.
+        if (workspace.headChanged) {
+          const headRef = await gitText(workspace.root, ["symbolic-ref", "--quiet", "--short", "HEAD"]).then((value) => value.trim(), () => null);
+          const commit = await gitText(workspace.root, ["rev-parse", "--verify", "HEAD"]).then((value) => value.trim(), () => null);
+          if (headRef !== workspace.captured.capsule.headRef || commit !== workspace.captured.capsule.baseCommit) {
+            throw new Error("managed workspace HEAD advanced independently; refusing rollback");
+          }
+        }
+        const targetRef = workspace.captured.capsule.headRef;
+        if (targetRef !== null && workspace.targetRefChanged) {
+          await compareAndSwapWorkspaceRef(workspace.root, `refs/heads/${targetRef}`, workspace.targetOriginalCommit, workspace.captured.capsule.baseCommit);
+        }
+        if (workspace.headChanged) await setWorkspaceHeadIdentity(workspace.root, workspace.current.capsule.baseCommit, workspace.current.capsule.headRef);
+      } catch (error) { failures.push(error); }
+    }
+    if (failures.length) throw new AggregateError([cause, ...failures], "managed workspace reference rollback failed");
+    throw cause;
+  } finally {
+    await Promise.all([
+      ...prepared.map((workspace) => rm(workspace.directory, { recursive: true, force: true })),
+      ...releaseIndexLocks.map((release) => release()),
+    ]);
+  }
+}
+
+/** Compare-and-swap even for deletion/creation; never dereference a branch alias. */
+async function compareAndSwapWorkspaceRef(root: string, ref: string, replacement: string | null, expected: string | null): Promise<void> {
+  if (replacement === null && expected === null) {
+    await gitInput(root, ["update-ref", "--no-deref", "--stdin"], new TextEncoder().encode(`verify ${ref}\n`));
+  } else {
+    await gitText(root, ["update-ref", "--no-deref", ref, replacement ?? "0".repeat(expected!.length), expected ?? ""]);
+  }
+}
+
+/** Change only HEAD identity; an original branch may have advanced independently. */
+async function setWorkspaceHeadIdentity(root: string, baseCommit: string | null, headRef: string | null): Promise<void> {
+  if (headRef !== null) await gitText(root, ["symbolic-ref", "HEAD", `refs/heads/${headRef}`]);
+  else {
+    if (!baseCommit) throw new Error("an unborn workspace requires a symbolic head reference");
+    await gitText(root, ["update-ref", "--no-deref", "HEAD", baseCommit]);
+  }
+}
+
+async function workspaceTargetFingerprint(path: string): Promise<string> {
+  const info = await lstat(path).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? undefined : Promise.reject(error));
+  if (!info) return "absent";
+  if (!info.isFile() && !info.isSymbolicLink()) throw new Error("managed workspace target changed to a non-file");
+  const content = info.isSymbolicLink() ? await readlink(path) : await sha256File(path);
+  return JSON.stringify([info.dev, info.ino, info.mode, info.size, info.mtimeMs, info.ctimeMs, content]);
+}
+
+/** Respect Git's writer exclusion without breaking or stealing an existing lock. */
+async function acquireWorkspaceIndexLock(indexPath: string): Promise<() => Promise<void>> {
+  const lockPath = `${indexPath}.lock`;
+  const handle = await open(lockPath, "wx", 0o600);
+  const identity = await handle.stat();
+  return async () => {
+    try {
+      const current = await lstat(lockPath).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? undefined : Promise.reject(error));
+      if (current && current.dev === identity.dev && current.ino === identity.ino) await rm(lockPath);
+    } finally { await handle.close(); }
+  };
 }
 
 interface BaselineInspection {
@@ -594,10 +802,10 @@ async function captureWorktreeLayer(
   return { state: "content", mode, oid };
 }
 
-async function applyIndexRecord(root: string, record: WorkspaceRecord, blobs: Map<string, WorkspaceBlob>): Promise<void> {
+async function applyIndexRecord(root: string, record: WorkspaceRecord, blobs: Map<string, WorkspaceBlob>, environment?: Record<string, string>): Promise<void> {
   if (record.index.state === "base") return;
   if (record.index.state === "absent") {
-    await gitText(root, ["update-index", "--force-remove", "--", record.path]);
+    await gitText(root, ["update-index", "--force-remove", "--", record.path], environment);
     return;
   }
   if (!record.index.oid || !record.index.mode) throw new Error(`capsule index metadata is incomplete: ${record.path}`);
@@ -606,7 +814,7 @@ async function applyIndexRecord(root: string, record: WorkspaceRecord, blobs: Ma
     const oid = (await gitInput(root, ["hash-object", "-w", "--stdin"], blob.bytes)).toString("utf8").trim();
     if (oid !== record.index.oid) throw new Error(`capsule index blob digest mismatch: ${record.path}`);
   }
-  await gitText(root, ["update-index", "--add", "--cacheinfo", record.index.mode.toString(8), record.index.oid, record.path]);
+  await gitText(root, ["update-index", "--add", "--cacheinfo", record.index.mode.toString(8), record.index.oid, record.path], environment);
 }
 
 function workspaceOverlayTransaction(
@@ -1135,8 +1343,8 @@ function gitLfsFilterFailure(error: unknown): boolean {
   return /git-lfs|lfs (?:filter|smudge)/u.test(stderr);
 }
 
-async function gitText(root: string, args: string[]): Promise<string> {
-  return (await run("git", ["-C", root, ...args], { encoding: "utf8", maxBuffer: MAX_GIT_OUTPUT })).stdout;
+async function gitText(root: string, args: string[], environment?: Record<string, string>): Promise<string> {
+  return (await run("git", ["-C", root, ...args], { encoding: "utf8", maxBuffer: MAX_GIT_OUTPUT, env: { ...process.env, ...environment } })).stdout;
 }
 
 async function gitBuffer(root: string, args: string[]): Promise<Buffer> {

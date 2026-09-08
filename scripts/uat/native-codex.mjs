@@ -26,7 +26,14 @@ try {
   process.stdout.write(result.stdout);
 } catch (error) {
   // Do not expose native diagnostics, command arguments, or fixture transcripts.
-  process.stderr.write(`${JSON.stringify({ result: "fail", error: error.name, code: error.code })}\n`);
+  let phase;
+  for (const line of String(error.stderr ?? "").split("\n")) {
+    try {
+      const record = JSON.parse(line);
+      if (["setup", "native-source", "encrypted-transfer", "native-resume", "return-publish", "return-pull"].includes(record.phase)) phase = record.phase;
+    } catch { /* Only explicitly allowlisted phase metadata may leave the child. */ }
+  }
+  process.stderr.write(`${JSON.stringify({ result: "fail", phase, error: error.name, code: error.code })}\n`);
   process.exitCode = 1;
 } finally {
   await rm(directory, { recursive: true, force: true });

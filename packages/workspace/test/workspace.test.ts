@@ -10,13 +10,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   applyWorkspaceCapsule,
   applyWorkspaceTransaction,
+  assertWorkspaceAdvance,
   assertWorkspaceDestination,
   assertWorkspaceReplacement,
   captureWorkspace,
   replaceWorkspaceCapsule,
   WorkspaceBaselineUnavailable,
   workspaceMatchesCapsule,
-  type WorkspaceMaterializedWrite,
+  type WorkspaceFileTransaction,
 } from "../src/index.js";
 
 const run = promisify(execFile);
@@ -1128,6 +1129,294 @@ describe("exact Git workspace capsules (WS-010..WS-018, WS-025..WS-026)", () => 
   });
 });
 
+describe("authenticated managed workspace advancement (WS-034)", () => {
+  it("advances staged/worktree state and restores paths removed from the overlay", async () => {
+    const source = await repository("advance-source");
+    const target = await repository("advance-target");
+    await writeFile(join(source, "tracked.txt"), "old staged\n");
+    await git(source, "add", "tracked.txt");
+    await writeFile(join(source, "tracked.txt"), "old worktree\n");
+    await writeFile(join(source, "temporary.txt"), "old untracked\n");
+    await git(source, "rm", "deleted.txt");
+    const previous = await captureWorkspace(source);
+    await applyWorkspaceCapsule(target, previous, { materialize });
+    await git(source, "restore", "--source=HEAD", "--staged", "--worktree", "tracked.txt", "deleted.txt");
+    await rm(join(source, "temporary.txt"));
+    await writeFile(join(source, "new.txt"), "new staged\n");
+    await git(source, "add", "new.txt");
+    await writeFile(join(source, "new.txt"), "new worktree\n");
+    const next = await captureWorkspace(source);
+    await applyWorkspaceTransaction([{ root: target, captured: next, expectedCurrent: previous }], { writes: [], deletes: [] }, { materialize });
+    expect(await workspaceMatchesCapsule(target, next)).toBe(true);
+    expect(await readFile(join(target, "deleted.txt"), "utf8")).toBe("baseline deleted\n");
+    expect(await readFile(join(target, "tracked.txt"), "utf8")).toBe("baseline tracked\n");
+    await expect(readFile(join(target, "temporary.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("refuses a changed local overlay before calling the materializer", async () => {
+    const root = await repository("advance-local-edit");
+    const next = await captureWorkspace(root);
+    await writeFile(join(root, "tracked.txt"), "last applied\n");
+    const previous = await captureWorkspace(root);
+    await writeFile(join(root, "tracked.txt"), "new local work\n");
+    const index = await readFile(join(root, ".git", "index"));
+    let called = false;
+    await expect(applyWorkspaceTransaction([{ root, captured: next, expectedCurrent: previous }], { writes: [], deletes: [] }, {
+      materialize: async () => { called = true; },
+    })).rejects.toThrow("changed since its applied capsule");
+    expect(called).toBe(false);
+    expect(await readFile(join(root, "tracked.txt"), "utf8")).toBe("new local work\n");
+    expect(await readFile(join(root, ".git", "index"))).toEqual(index);
+  });
+
+  it("honors baseline approval and rolls HEAD/ref back when materialization fails", async () => {
+    const root = await repository("advance-baseline");
+    const oldCommit = (await git(root, "rev-parse", "HEAD")).trim();
+    const oldRef = (await git(root, "symbolic-ref", "--short", "HEAD")).trim();
+    await writeFile(join(root, "tracked.txt"), "committed on peer\n");
+    await git(root, "add", "tracked.txt");
+    await git(root, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "next baseline");
+    await git(root, "checkout", "-qb", "peer");
+    const next = await captureWorkspace(root);
+    await git(root, "checkout", "-q", "--detach", oldCommit);
+    await writeFile(join(root, "tracked.txt"), "last applied overlay\n");
+    const previous = await captureWorkspace(root);
+    const index = await readFile(join(root, ".git", "index"));
+    await expect(assertWorkspaceAdvance(root, next, previous, "ask")).rejects.toMatchObject({ reason: "approval-required" });
+    await expect(assertWorkspaceAdvance(root, next, previous, "never")).rejects.toMatchObject({ reason: "policy-disabled" });
+    await expect(applyWorkspaceTransaction([{ root, captured: next, expectedCurrent: previous, gitFetch: "auto" }], { writes: [], deletes: [] }, {
+      materialize: async () => { throw new Error("injected materializer failure"); },
+    })).rejects.toThrow("injected materializer failure");
+    expect(await workspaceMatchesCapsule(root, previous)).toBe(true);
+    expect(await readFile(join(root, ".git", "index"))).toEqual(index);
+    expect((await git(root, "rev-parse", "peer")).trim()).toBe(next.capsule.baseCommit);
+    expect((await git(root, "rev-parse", oldRef)).trim()).toBe(next.capsule.baseCommit);
+    await applyWorkspaceTransaction([{ root, captured: next, expectedCurrent: previous, gitFetch: "auto" }], { writes: [], deletes: [] }, { materialize });
+    expect(await workspaceMatchesCapsule(root, next)).toBe(true);
+    expect(await readFile(join(root, "tracked.txt"), "utf8")).toBe("committed on peer\n");
+  });
+
+  it("does not steal another Git writer's index lock", async () => {
+    const root = await repository("advance-index-lock");
+    const next = await captureWorkspace(root);
+    await writeFile(join(root, "tracked.txt"), "last applied\n");
+    const previous = await captureWorkspace(root);
+    const index = await readFile(join(root, ".git", "index"));
+    await writeFile(join(root, ".git", "index.lock"), "owned by another writer");
+    await expect(applyWorkspaceTransaction([{ root, captured: next, expectedCurrent: previous }], { writes: [], deletes: [] }, { materialize }))
+      .rejects.toThrow();
+    expect(await readFile(join(root, ".git", "index.lock"), "utf8")).toBe("owned by another writer");
+    expect(await readFile(join(root, ".git", "index"))).toEqual(index);
+    expect(await readFile(join(root, "tracked.txt"), "utf8")).toBe("last applied\n");
+  });
+
+  it.each(["target", "source"])("preserves an independently advanced %s branch during failed managed apply", async (changedBranch) => {
+    const root = await repository(`advance-ref-race-${changedBranch}`);
+    const originalRef = (await git(root, "symbolic-ref", "--short", "HEAD")).trim();
+    await git(root, "checkout", "-qb", "peer");
+    await writeFile(join(root, "tracked.txt"), "peer baseline\n");
+    await git(root, "add", "tracked.txt");
+    await git(root, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid", "commit", "-qm", "peer");
+    const next = await captureWorkspace(root);
+    const concurrentCommit = (await git(root, "-c", "user.name=Statecase Test", "-c", "user.email=test@statecase.invalid",
+      "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "independent concurrent commit")).trim();
+    await git(root, "checkout", "-q", originalRef);
+    // The receiving peer branch predates the incoming revision.
+    await git(root, "branch", "-f", "peer", "HEAD");
+    await writeFile(join(root, "tracked.txt"), "last applied dirty overlay\n");
+    const previous = await captureWorkspace(root);
+    const index = await readFile(join(root, ".git", "index"));
+    const ref = `refs/heads/${changedBranch === "target" ? "peer" : originalRef}`;
+    await expect(applyWorkspaceTransaction([{ root, captured: next, expectedCurrent: previous, gitFetch: "auto" }], { writes: [], deletes: [] }, {
+      materialize: async () => {
+        await git(root, "update-ref", ref, concurrentCommit);
+        throw new Error("injected failure after independent commit");
+      },
+    })).rejects.toThrow();
+    expect((await git(root, "rev-parse", ref)).trim()).toBe(concurrentCommit);
+    expect(await readFile(join(root, "tracked.txt"), "utf8")).toBe("last applied dirty overlay\n");
+    expect(await readFile(join(root, ".git", "index"))).toEqual(index);
+    await expect(lstat(join(root, ".git", "index.lock"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each(["new-branch", "detached", "unborn", "different-unborn"])("restores exact HEAD/ref state after a failed %s transition and permits retry", async (transition) => {
+    const root = transition === "different-unborn" ? await unbornRepository("advance-ref-empty") : await repository(`advance-ref-${transition}`);
+    const next = await captureWorkspace(root);
+    if (transition === "new-branch" || transition === "different-unborn") next.capsule.headRef = "new-peer";
+    if (transition === "detached") next.capsule.headRef = null;
+    if (transition === "unborn") next.capsule.baseCommit = null;
+    await writeFile(join(root, "tracked.txt"), "last applied dirty state\n");
+    const previous = await captureWorkspace(root);
+    const applications = [{ root, captured: next, expectedCurrent: previous, gitFetch: "auto" as const }];
+    await expect(applyWorkspaceTransaction(applications, { writes: [], deletes: [] }, {
+      materialize: async () => { throw new Error("injected transition failure"); },
+    })).rejects.toThrow("injected transition failure");
+    expect(await workspaceMatchesCapsule(root, previous)).toBe(true);
+    if (transition === "new-branch" || transition === "different-unborn") {
+      await expect(git(root, "show-ref", "--verify", "refs/heads/new-peer")).rejects.toThrow();
+    }
+    await applyWorkspaceTransaction(applications, { writes: [], deletes: [] }, { materialize });
+    expect(await workspaceMatchesCapsule(root, next)).toBe(true);
+  });
+
+  it.each(["HEAD", "refs/heads/new-peer"])("preserves existing %s locks and undoes only a completed ref update", async (lockedRef) => {
+    const root = await repository("advance-head-lock");
+    const next = await captureWorkspace(root);
+    next.capsule.headRef = "new-peer";
+    await writeFile(join(root, "tracked.txt"), "last applied\n");
+    const previous = await captureWorkspace(root);
+    const lock = join(root, ".git", `${lockedRef}.lock`);
+    await writeFile(lock, "foreign writer lock");
+    let called = false;
+    await expect(applyWorkspaceTransaction([{ root, captured: next, expectedCurrent: previous }], { writes: [], deletes: [] }, {
+      materialize: async () => { called = true; },
+    })).rejects.toThrow();
+    expect(called).toBe(false);
+    expect(await workspaceMatchesCapsule(root, previous)).toBe(true);
+    expect(await readFile(lock, "utf8")).toBe("foreign writer lock");
+    await expect(git(root, "show-ref", "--verify", "refs/heads/new-peer")).rejects.toThrow();
+  });
+
+  it("does not undo an independent symbolic HEAD switch during materialization failure", async () => {
+    const root = await repository("advance-head-race");
+    const next = await captureWorkspace(root);
+    next.capsule.headRef = "new-peer";
+    await writeFile(join(root, "tracked.txt"), "last applied\n");
+    const previous = await captureWorkspace(root);
+    await expect(applyWorkspaceTransaction([{ root, captured: next, expectedCurrent: previous }], { writes: [], deletes: [] }, {
+      materialize: async () => {
+        await git(root, "symbolic-ref", "HEAD", "refs/heads/independent");
+        throw new Error("injected error after independent switch");
+      },
+    })).rejects.toBeInstanceOf(AggregateError);
+    expect((await git(root, "symbolic-ref", "HEAD")).trim()).toBe("refs/heads/independent");
+    expect(await readFile(join(root, "tracked.txt"), "utf8")).toBe("last applied\n");
+  });
+
+  it("holds the Git index lock through materialization and releases it after failure", async () => {
+    const root = await repository("advance-held-lock");
+    const next = await captureWorkspace(root);
+    await writeFile(join(root, "tracked.txt"), "last applied\n");
+    const previous = await captureWorkspace(root);
+    await expect(applyWorkspaceTransaction([{ root, captured: next, expectedCurrent: previous }], { writes: [], deletes: [] }, {
+      materialize: async () => {
+        await expect(git(root, "add", "tracked.txt")).rejects.toThrow();
+        throw new Error("injected failure while locked");
+      },
+    })).rejects.toThrow("injected failure while locked");
+    await expect(lstat(join(root, ".git", "index.lock"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await workspaceMatchesCapsule(root, previous)).toBe(true);
+    await git(root, "add", "tracked.txt");
+  });
+
+  it.each(["write", "delete", "directory", "symlink"])("detects an editor %s after preparation at the materializer commit boundary", async (change) => {
+    const root = await repository("advance-editor-race");
+    const next = await captureWorkspace(root);
+    await writeFile(join(root, "tracked.txt"), "last applied\n");
+    const previous = await captureWorkspace(root);
+    await expect(applyWorkspaceTransaction([{ root, captured: next, expectedCurrent: previous }], { writes: [], deletes: [] }, {
+      materialize: async (transaction) => {
+        const path = join(root, "tracked.txt");
+        if (change === "write") await writeFile(path, "editor wrote during materialization\n");
+        else {
+          await rm(path);
+          if (change === "directory") await mkdir(path);
+          if (change === "symlink") await symlink("deleted.txt", path);
+        }
+        // Mirror the production materializer's per-target pre-commit boundary.
+        for (const [index, write] of transaction.writes.entries()) await transaction.beforeCommit?.(index, write.path);
+        await materialize(transaction);
+      },
+    })).rejects.toThrow("managed workspace target changed");
+    if (change === "write") expect(await readFile(join(root, "tracked.txt"), "utf8")).toBe("editor wrote during materialization\n");
+    if (change === "delete") await expect(lstat(join(root, "tracked.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    if (change === "directory") expect((await lstat(join(root, "tracked.txt"))).isDirectory()).toBe(true);
+    if (change === "symlink") expect(await readlink(join(root, "tracked.txt"))).toBe("deleted.txt");
+    await expect(lstat(join(root, ".git", "index.lock"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each(["removed", "replaced"])("does not delete a %s owned lock's successor", async (mutation) => {
+    const root = await repository(`advance-lock-${mutation}`);
+    const next = await captureWorkspace(root);
+    await writeFile(join(root, "tracked.txt"), "last applied\n");
+    const previous = await captureWorkspace(root);
+    const lock = join(root, ".git", "index.lock");
+    await expect(applyWorkspaceTransaction([{ root, captured: next, expectedCurrent: previous }], { writes: [], deletes: [] }, {
+      materialize: async () => {
+        await rm(lock);
+        if (mutation === "replaced") await writeFile(lock, "another writer's successor lock");
+        throw new Error("lock ownership changed");
+      },
+    })).rejects.toThrow("lock ownership changed");
+    if (mutation === "replaced") expect(await readFile(lock, "utf8")).toBe("another writer's successor lock");
+    else await expect(lstat(lock)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("prepares a managed and a clean root together without applying either when a later lock is busy", async () => {
+    const root = await repository("advance-multiple-first");
+    const second = await repository("advance-multiple-second");
+    const next = await captureWorkspace(root);
+    const clean = await captureWorkspace(second);
+    await writeFile(join(root, "tracked.txt"), "last applied\n");
+    const previous = await captureWorkspace(root);
+    await writeFile(join(second, ".git", "index.lock"), "busy");
+    let called = false;
+    const applications = [{ root, captured: next, expectedCurrent: previous }, { root: second, captured: clean }];
+    await expect(applyWorkspaceTransaction(applications, { writes: [], deletes: [] }, {
+      materialize: async () => { called = true; },
+    })).rejects.toThrow();
+    expect(called).toBe(false);
+    expect(await workspaceMatchesCapsule(root, previous)).toBe(true);
+    expect(await workspaceMatchesCapsule(second, clean)).toBe(true);
+    await expect(lstat(join(root, ".git", "index.lock"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(join(second, ".git", "index.lock"), "utf8")).toBe("busy");
+    await rm(join(second, ".git", "index.lock"));
+    await applyWorkspaceTransaction(applications, { writes: [], deletes: [] }, { materialize });
+    expect(await workspaceMatchesCapsule(root, next)).toBe(true);
+    expect(await workspaceMatchesCapsule(second, clean)).toBe(true);
+  });
+
+  it("advances unborn repositories with index additions, worktree deletions, and symlinks", async () => {
+    const source = await unbornRepository("advance-unborn-source");
+    const target = await unbornRepository("advance-unborn-target");
+    await writeFile(join(source, "gone.txt"), "untracked\n");
+    const previous = await captureWorkspace(source);
+    await applyWorkspaceCapsule(target, previous, { materialize });
+    await rm(join(source, "gone.txt"));
+    await writeFile(join(source, "staged.txt"), "staged but missing from worktree\n");
+    await symlink("staged.txt", join(source, "staged-link"));
+    await git(source, "add", "staged.txt", "staged-link");
+    await rm(join(source, "staged.txt"));
+    await symlink("staged-link", join(source, "untracked-link"));
+    const next = await captureWorkspace(source);
+    await applyWorkspaceTransaction([{ root: target, captured: next, expectedCurrent: previous }], { writes: [], deletes: [] }, { materialize });
+    expect(await workspaceMatchesCapsule(target, next)).toBe(true);
+    expect(await readlink(join(target, "staged-link"))).toBe("staged.txt");
+    expect(await readlink(join(target, "untracked-link"))).toBe("staged-link");
+    await expect(readFile(join(target, "staged.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each(["ignored", "directory"])("refuses an incoming path colliding with local %s content", async (kind) => {
+    const source = await repository(`advance-collision-source-${kind}`);
+    const target = await repository(`advance-collision-target-${kind}`);
+    await writeFile(join(source, "tracked.txt"), "managed dirty\n");
+    const previous = await captureWorkspace(source);
+    await applyWorkspaceCapsule(target, previous, { materialize });
+    // Device-local exclusions never grant permission to destroy hidden data.
+    await writeFile(join(target, ".git", "info", "exclude"), "collision\n");
+    if (kind === "directory") await mkdir(join(target, "collision"));
+    else await writeFile(join(target, "collision"), "private unsynced\n");
+    await writeFile(join(source, "collision"), "peer file\n");
+    const next = await captureWorkspace(source);
+    await expect(applyWorkspaceTransaction([{ root: target, captured: next, expectedCurrent: previous }], { writes: [], deletes: [] }, { materialize }))
+      .rejects.toThrow(kind === "directory" ? "non-file destination" : "unobserved local content");
+    expect(await workspaceMatchesCapsule(target, previous)).toBe(true);
+    if (kind === "directory") expect((await lstat(join(target, "collision"))).isDirectory()).toBe(true);
+    else expect(await readFile(join(target, "collision"), "utf8")).toBe("private unsynced\n");
+    await expect(lstat(join(target, ".git", "index.lock"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+});
+
 async function repository(name: string): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), `statecase-workspace-${name}-`));
   temporary.push(root);
@@ -1172,19 +1461,21 @@ async function git(root: string, ...args: string[]): Promise<string> {
   })).stdout;
 }
 
-async function materialize(transaction: {
-  writes: WorkspaceMaterializedWrite[];
-  deletes: string[];
-  symlinks?: Array<{ path: string; target: string }>;
-}): Promise<void> {
-  for (const path of transaction.deletes) await rm(path, { force: true });
+async function materialize(transaction: WorkspaceFileTransaction): Promise<void> {
+  let index = 0;
+  for (const path of transaction.deletes) {
+    await transaction.beforeCommit?.(index++, path);
+    await rm(path, { force: true });
+  }
   for (const write of transaction.writes) {
+    await transaction.beforeCommit?.(index++, write.path);
     await mkdir(dirname(write.path), { recursive: true });
     if (write.sourcePath !== undefined) await copyFile(write.sourcePath, write.path);
     else await writeFile(write.path, write.bytes);
     if (write.mode !== undefined) await chmod(write.path, write.mode);
   }
   for (const link of transaction.symlinks ?? []) {
+    await transaction.beforeCommit?.(index++, link.path);
     await mkdir(dirname(link.path), { recursive: true });
     await symlink(link.target, link.path);
   }

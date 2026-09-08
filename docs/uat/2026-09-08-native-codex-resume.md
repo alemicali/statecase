@@ -1,6 +1,7 @@
 # Native Codex session continuity — 2026-09-08
 
-Status: passed; engine-level native-harness qualification, not full product UAT
+Status: initial and managed return-sync drills passed; engine-level native-harness
+qualification, not full product UAT
 Test IDs: AD-CX-007, WS-022, UAT-02 subset
 
 ## Candidate and environment
@@ -136,3 +137,59 @@ checkouts and publishes the resumed target changes back to the origin. These
 extensions are separate from the earlier Daytona bundle/hash and must be
 qualified by their own CI run. The destination-resume requirement and all
 reference-storage/loopback-model limitations remain unchanged.
+
+The extended [native CI job](https://github.com/alemicali/statecase/actions/runs/34179670847/job/101916018432)
+failed. A second dedicated Daytona sandbox,
+`5522de78-09ef-4542-910e-1db5dc934971`, reproduced `SyncConflict` specifically at
+`return-pull`; native source, encrypted transfer/hydration, target resume, and
+target publication had completed. The original workspace was still Git-dirty
+from its already-synchronized overlay. The ordinary pull preflight rejects all
+Git-dirty destinations rather than comparing them to their last-applied
+authenticated capsule. A focused WS-034 regression with distinct staged and
+worktree bytes reproduces the same failure locally at `sync.ts`'s workspace
+preflight. That run exposed a product defect, not a passing complete
+round-trip UAT. No reset, forced overwrite, or workaround was used to pass it.
+
+The second sandbox's generated fixtures were cleaned by the scenario. The
+exact sandbox was then deleted; subsequent inventory verification is recorded
+by its absence from the filtered inventory, which showed only the pre-existing
+unrelated sandbox. Neither run touched real harness state or Cloudflare.
+
+## Managed return-sync rerun — 2026-09-08
+
+The current WS-034 candidate fixes the managed-dirty false conflict using exact
+authenticated prior-namespace verification, separate index staging, native Git
+index exclusion, and per-target pre-commit stability guards (ADR-0020).
+
+- Source: `fef9e7d` plus the WS-034 worktree candidate, not a released package.
+- Dedicated sandbox: `0eeaf742-4e7b-4cf4-8137-92cd5ebd8bcb`, freshly created
+  from `daytona-small`; it did not reuse either earlier test sandbox.
+- Executed scenario bundle SHA-256:
+  `d6add162811cde477c286cfea6d5c29355fd41d83be4a6feb21533c80a42ab50`.
+- Pinned Codex `0.153.4`, Node `22.22.3`.
+- Exit code 0; result `pass`; encrypted object count 67.
+- Passed assertions: same original session UUID, original history/tool output,
+  native read/write, mapped CWD, no native SQLite transfer, patch dependency,
+  non-mutating hydration preview, unchanged source before explicit sync,
+  return-sync of the resumed file changes, and sync executed from each mapping.
+
+This is still the actual engine/crypto/adapters with an in-memory reference
+backend and deterministic loopback Responses fixture. Two generated homes and
+Git workspaces are on one disposable host. It is not a packaged/live-Cloudflare,
+two-host, hosted-inference, Claude, or interactive-picker qualification.
+The isolation follows the official [Codex command safety guidance](https://learn.chatgpt.com/docs/developer-commands):
+native unrestricted execution is confined to the dedicated disposable sandbox,
+with explicit synthetic HOME/CODEX_HOME/SQLite paths and whitelisted environment.
+No real provider credential, native session, or production Cloudflare state is
+used. Skill used for this qualification: `openai-docs`.
+
+The corresponding local `npm run check` completed successfully: 479 tests in
+35 files; 90.18% global branch coverage (3143/3485); typecheck, lint, build, and
+clean-prefix package installation smoke passed. The workspace package's
+87.98% branch coverage and ADR-0020's remaining race/crash/LFS gates are not
+waived by this result. The existing remote CI still refers to the earlier
+commit and is not evidence for this local candidate.
+
+The driver removed the generated fixtures. The sandbox was deleted by its
+exact ID after the successful run; final absence is verified with an ID/name/state-only
+inventory, without displaying sandbox environment variables or credentials.

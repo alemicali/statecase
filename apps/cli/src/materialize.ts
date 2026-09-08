@@ -1,4 +1,6 @@
-import { chmod, constants, copyFile, lstat, mkdir, open, rename, rm, symlink } from "node:fs/promises";
+import { chmod, constants, copyFile, lstat, mkdir, open, readlink, rename, rm, symlink } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
 
 import { assertTemporarySpace } from "./disk-space.js";
@@ -28,6 +30,8 @@ interface PreparedTarget {
   installed: boolean;
   mode?: number;
   symbolic?: boolean;
+  installedFingerprint?: string;
+  preserveBackup?: boolean;
 }
 
 /** Applies one remote revision as an all-or-rollback local filesystem transaction. */
@@ -64,6 +68,10 @@ export async function applyFileTransaction(transaction: FileTransaction): Promis
         const copied = await open(target.staging, "r");
         try { await copied.sync(); } finally { await copied.close(); }
       }
+      // Prepare permissions before installation, so no chmod failure can leave
+      // an installed destination whose ownership has not been recorded yet.
+      if (target.mode !== undefined) await chmod(target.staging, target.mode);
+      target.installedFingerprint = await targetFingerprint(target.staging);
     }
     for (let index = 0; index < (transaction.symlinks?.length ?? 0); index += 1) {
       const link = transaction.symlinks![index];
@@ -71,6 +79,7 @@ export async function applyFileTransaction(transaction: FileTransaction): Promis
       await mkdir(dirname(target.path), { recursive: true, mode: 0o700 });
       target.staging = `${target.path}.statecase-transaction-${transactionId}.staged`;
       await symlink(link.target, target.staging);
+      target.installedFingerprint = await targetFingerprint(target.staging);
     }
 
     for (let index = 0; index < targets.length; index += 1) {
@@ -81,25 +90,30 @@ export async function applyFileTransaction(transaction: FileTransaction): Promis
         throw new Error(`refusing to replace non-regular file: ${target.path}`);
       }
       if (existing) {
-        target.backup = `${target.path}.statecase-transaction-${transactionId}.backup`;
-        await rename(target.path, target.backup);
+        const backup = `${target.path}.statecase-transaction-${transactionId}.backup`;
+        await rename(target.path, backup);
+        target.backup = backup;
       }
       if (target.staging) await rename(target.staging, target.path);
-      if (target.staging && !target.symbolic && target.mode !== undefined) await chmod(target.path, target.mode);
       target.installed = true;
     }
   } catch (cause) {
     const rollbackErrors: unknown[] = [];
     for (const target of [...targets].reverse()) {
       try {
+        if ((target.installed || target.backup) &&
+            await targetFingerprint(target.path) !== (target.installed ? target.installedFingerprint ?? "absent" : "absent")) {
+          throw new Error("destination changed independently; preserving local work and recovery backup");
+        }
         if (target.installed && target.staging) await rm(target.path, { force: true });
         if (target.backup) await rename(target.backup, target.path);
       } catch (error) {
+        target.preserveBackup = true;
         rollbackErrors.push(error);
       }
     }
     await cleanupTemporary(targets);
-    if (rollbackErrors.length > 0) throw new AggregateError([cause, ...rollbackErrors], "materialization failed and rollback was incomplete");
+    if (rollbackErrors.length > 0) throw new AggregateError([cause, ...rollbackErrors], "materialization failed and rollback was incomplete; available recovery backups retained");
     throw cause;
   }
 
@@ -107,9 +121,24 @@ export async function applyFileTransaction(transaction: FileTransaction): Promis
 }
 
 async function cleanupTemporary(targets: readonly PreparedTarget[]): Promise<void> {
-  await Promise.all(targets.flatMap((target) => [target.staging, target.backup]
+  await Promise.all(targets.flatMap((target) => [target.staging, target.preserveBackup ? undefined : target.backup]
     .filter((path): path is string => Boolean(path))
     .map((path) => rm(path, { force: true }))));
+}
+
+/** Rename preserves inode, content, mode, and mtime, but may change ctime. */
+async function targetFingerprint(path: string): Promise<string> {
+  const info = await optionalLstat(path);
+  if (!info) return "absent";
+  if (!info.isFile() && !info.isSymbolicLink()) return "non-file";
+  let content: string;
+  if (info.isSymbolicLink()) content = await readlink(path);
+  else {
+    const hash = createHash("sha256");
+    for await (const bytes of createReadStream(path)) hash.update(bytes);
+    content = hash.digest("hex");
+  }
+  return JSON.stringify([info.dev, info.ino, info.mode, info.size, info.mtimeMs, content]);
 }
 
 async function optionalLstat(path: string): Promise<Awaited<ReturnType<typeof lstat>> | undefined> {

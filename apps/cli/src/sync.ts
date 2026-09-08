@@ -22,6 +22,7 @@ import { appendOnlyViolations, mergeNamespace, namespaceStateEquals, type Namesp
 import {
   applyWorkspaceTransaction,
   assertWorkspaceReplacement,
+  assertWorkspaceAdvance,
   captureWorkspace,
   GitLfsContentUnavailable,
   inspectWorkspaceDestination,
@@ -1285,21 +1286,30 @@ export class SyncEngine {
       });
     }
 
-    const readyWorkspaces: Array<{ mapping: RootMapping; captured: CapturedWorkspace; gitFetch: GitFetchPolicy }> = [];
+    const readyWorkspaces: Array<{ mapping: RootMapping; captured: CapturedWorkspace; gitFetch: GitFetchPolicy; expectedCurrent?: CapturedWorkspace }> = [];
     for (const payload of workspacePayloads.values()) {
       if (!payload.capsule) throw new Error("workspace capsule metadata is missing");
       const captured = { capsule: payload.capsule, blobs: payload.blobs };
       if (await workspaceMatchesCapsule(payload.mapping.path, captured)) continue;
       const workspaceId = payload.mapping.namespace.slice("workspace:".length);
       const gitFetch = config.workspaces.find((workspace) => workspace.id === workspaceId)?.gitFetch ?? "ask";
+      let expectedCurrent: CapturedWorkspace | undefined;
       try {
         if (options.replaceWorkspaces) await assertWorkspaceReplacement(payload.mapping.path, captured, { gitFetch });
-        else await inspectWorkspaceDestination(payload.mapping.path, captured, gitFetch);
+        else {
+          try { await inspectWorkspaceDestination(payload.mapping.path, captured, gitFetch); }
+          catch (error) {
+            if (error instanceof WorkspaceBaselineUnavailable || error instanceof GitLfsContentUnavailable) throw error;
+            expectedCurrent = await this.#verifiedAppliedWorkspace(config, payload.mapping);
+            if (!expectedCurrent) throw error;
+            await assertWorkspaceAdvance(payload.mapping.path, captured, expectedCurrent, gitFetch);
+          }
+        }
       } catch (error) {
         if (error instanceof WorkspaceBaselineUnavailable || error instanceof GitLfsContentUnavailable) throw error;
         throw new SyncConflict([payload.mapping.path]);
       }
-      readyWorkspaces.push({ mapping: payload.mapping, captured, gitFetch });
+      readyWorkspaces.push({ mapping: payload.mapping, captured, gitFetch, expectedCurrent });
     }
 
     assertDistinctMaterializationPaths(materialized, deletions);
@@ -1351,7 +1361,7 @@ export class SyncEngine {
       }
     } else {
       await applyWorkspaceTransaction(
-        readyWorkspaces.map((workspace) => ({ root: workspace.mapping.path, captured: workspace.captured, gitFetch: workspace.gitFetch })),
+        readyWorkspaces.map((workspace) => ({ root: workspace.mapping.path, captured: workspace.captured, gitFetch: workspace.gitFetch, expectedCurrent: workspace.expectedCurrent })),
         {
           writes: materialized.map(materializedWrite),
           deletes: deletions.map((item) => item.path),
@@ -1375,6 +1385,37 @@ export class SyncEngine {
     return { outcome: "pulled", revisionId: remoteRevisionId, files: materialized.length + deletions.length + workspaceFiles, objects: objectCount, bytes: byteCount };
     } finally {
       await Promise.all(stagedDisposers.map((dispose) => dispose()));
+    }
+  }
+
+  async #verifiedAppliedWorkspace(config: LocalConfig, mapping: RootMapping): Promise<CapturedWorkspace | undefined> {
+    const applied = config.applied[mapping.namespace];
+    if (!applied) return undefined;
+    // Resolve the exact authenticated prior namespace, not the latest head or
+    // an unverified local digest map. Missing history is never overwrite consent.
+    const pointer = await this.client.namespaceRevision(this.vaultId, mapping.namespace, applied.revisionId);
+    if (pointer.namespace !== mapping.namespace || pointer.revisionId !== applied.revisionId) {
+      throw new Error("applied workspace revision pointer does not match its request");
+    }
+    const { manifest } = await this.#resolveNamespaceManifest(pointer);
+    const current = await captureWorkspace(mapping.path, { gitFetch: "never" });
+    const scanned = capturedWorkspaceEntries(mapping, current);
+    if (scanned.length !== manifest.entries.length) return undefined;
+    const entries = new Map(manifest.entries.map((entry) => [entry.logicalPath, entry]));
+    const epochKeys = new Map<number, { encryptionKey: Uint8Array; dedupKey: Uint8Array }>();
+    try {
+      for (const file of scanned) {
+        const prior = entries.get(file.logicalPath);
+        if (!prior || prior.entryType !== file.entryType || prior.workspacePath !== file.workspacePath ||
+            prior.workspaceLayer !== file.workspaceLayer || prior.fileMode !== file.fileMode) return undefined;
+        const epoch = prior.keyEpoch ?? 1;
+        let keys = epochKeys.get(epoch);
+        if (!keys) { keys = await this.#scopeKeys(mapping.namespace, epoch); epochKeys.set(epoch, keys); }
+        if (await computeScannedDigest(keys.dedupKey, file) !== prior.contentDigest) return undefined;
+      }
+      return current;
+    } finally {
+      for (const keys of epochKeys.values()) { keys.encryptionKey.fill(0); keys.dedupKey.fill(0); }
     }
   }
 
@@ -2091,14 +2132,18 @@ async function scanGitOverlay(mapping: RootMapping, workspaces: LocalConfig["wor
   const captured = await captureWorkspace(mapping.path, { gitFetch });
   const allowedPaths = new Set(captured.capsule.records.filter((record) => !excludedBuiltIn(record.path)).map((record) => record.path));
   const capsule = { ...captured.capsule, records: captured.capsule.records.filter((record) => allowedPaths.has(record.path)) };
+  return capturedWorkspaceEntries(mapping, { capsule, blobs: captured.blobs.filter((blob) => allowedPaths.has(blob.path)) });
+}
+
+function capturedWorkspaceEntries(mapping: RootMapping, captured: CapturedWorkspace): ScannedEntry[] {
   return [
     {
       namespace: mapping.namespace,
       logicalPath: "$statecase/workspace/capsule.json",
       entryType: "workspace-capsule",
-      bytes: encoder.encode(canonicalJson(capsule)),
+      bytes: encoder.encode(canonicalJson(captured.capsule)),
     },
-    ...captured.blobs.filter((blob) => allowedPaths.has(blob.path)).map((blob): ScannedEntry => ({
+    ...captured.blobs.map((blob): ScannedEntry => ({
       namespace: mapping.namespace,
       logicalPath: `$statecase/workspace/blob/${blob.layer}/${blob.oid}/${Buffer.from(blob.path).toString("base64url")}`,
       entryType: "workspace-blob",
@@ -2398,6 +2443,7 @@ function excludedBuiltIn(path: string): boolean {
   const parts = path.split("/");
   const basename = parts.at(-1) ?? "";
   return parts.some((part) => part === ".git" || part === "node_modules" || part === ".statecase") ||
+    parts.some((part) => /\.statecase-transaction-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\.(?:staged|backup)$/u.test(part)) ||
     basename === ".env" || basename.startsWith(".env.") || basename === "auth.json" ||
     /(?:^|[._-])credentials?(?:[._-]|$)/iu.test(basename) || /\.(?:pem|key|p12|pfx)$/iu.test(basename);
 }

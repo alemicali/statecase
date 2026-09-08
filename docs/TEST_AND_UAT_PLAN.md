@@ -284,6 +284,22 @@ policy; they are never uploaded merely because they are present.
 - `WS-033`: local workspace capsule preview reports only bounded Git
   baseline/ref and overlay size/count metadata, performs no network or config
   mutation, emits no captured file bytes, and rejects identity-only mappings.
+- `WS-034`: ordinary return sync accepts a peer continuation when the current
+  workspace still exactly matches its authenticated last-applied capsule,
+  including staged/worktree divergence and untracked files. Truly new local
+  changes remain conflicts. Preview, missing/corrupt applied history,
+  source races, baseline changes, multiple-workspace rollback, and interrupted
+  recovery must be covered before automatic replacement is release-qualified.
+  The initial regression now passes locally; new tests cover index-lock
+  exclusion/ownership, ignored/directory collisions, unborn/symlink overlays,
+  editor mutations at the materializer boundary, and authenticated but
+  substituted prior revisions. The fresh native engine-level return-sync rerun
+  passed on Daytona. Packaged/live cross-host testing, persistent interruption
+  recovery, broader races, and workspace critical coverage remain gates.
+  Further fault cases cover independent source/target branch advancement,
+  foreign HEAD/ref locks, creation/deletion/detached/unborn transitions,
+  preservation of newer files during rollback, and retention/exclusion of
+  recovery artifacts when exact rollback cannot safely complete.
 
 ## 7. Protocol and cloud contract tests
 

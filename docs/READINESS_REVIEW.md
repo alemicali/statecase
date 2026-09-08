@@ -299,3 +299,28 @@ coverage. Complete coverage reporting for opaque tool execution remains required
 before an unconditional complete-context claim. Packaged/live-cloud cross-host
 resume, Claude resume, interactive pickers, the full compatibility matrix, and
 sleep/reboot remain open qualification work.
+
+An extended native return-sync drill subsequently reproduced a release-blocking
+false conflict: a Git-dirty source workspace is rejected even when it still
+equals the work already published/applied through Statecase. The target's
+continued session and files publish, but normal pull back to the source stops
+at `inspectWorkspaceDestination`'s unconditional dirty check. No overwrite or
+data loss was observed. A local WS-034 candidate now passes the initial return
+regression, preview, new-local-edit/history refusal, index-lock ownership,
+selected editor races, and injected materialization rollback. It authenticates
+the prior capsule and stages the index separately (ADR-0020). A valid encrypted
+substitute revision is rejected if it is not the exact prior revision requested.
+The latest complete `npm run check` passed 495 tests with 90.38% global branch
+coverage, build, and clean-prefix package smoke. Workspace-package branch
+coverage is still 88.85%, below its critical-code target; file materialization
+is at 96%. New tests reproduced and fixed rollback clobbering independent Git
+branch advances and post-install editor writes. Available original backups are
+retained when exact rollback is unsafe and excluded from ordinary sync.
+The fresh Daytona native drill now also passed the mapped-CWD return sync
+with 67 encrypted objects; it remains a two-home, one-host, reference-backend,
+deterministic-provider test of the preceding candidate. The subsequent
+branch/rollback hardening requires its own native CI rerun. Persistent
+interrupted recovery, atomic HEAD and check-to-mutation races,
+managed LFS acquisition, packaged/live cross-host UAT, and broader qualification
+remain unresolved. Do not describe ordinary workspace round-trip sync as fully
+release-qualified yet.

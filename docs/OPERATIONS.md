@@ -165,6 +165,21 @@ Wrangler directory.
 
 ## Rollback and recovery
 
+If local sync reports incomplete materialization rollback, stop the affected
+daemon and harness before retrying or cleaning anything. A newer editor write
+may have been deliberately preserved instead of being replaced by older data.
+Available original versions remain next to the affected files as
+`<filename>.statecase-transaction-<uuid>.backup`; they contain local plaintext
+and retain the original file's permissions. Preserve both versions, inspect
+the exact affected paths, and copy recovery material to a private location
+outside synchronized roots before deciding which version to keep. Never run a
+wildcard cleanup over these backups. Statecase excludes transaction artifacts
+from ordinary sync, but Git and other tools may still enumerate them.
+
+These individual backup files are not emergency snapshot manifests: do not
+pass them to `emergency rollback`. Automated recovery after process/power loss
+and an operator-facing transaction recovery command remain release gates.
+
 Cloudflare Worker versions can be rolled back from deployment history. Do not
 roll D1 backward destructively; ship a forward migration. R2 objects and
 Durable Object revisions are immutable/append-only in the current release. If a deploy is

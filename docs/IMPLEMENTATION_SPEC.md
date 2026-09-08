@@ -657,6 +657,25 @@ preflighted first. Acquired checkouts and indexes roll back in reverse order if
 any later acquisition or materialization fails. Existing divergent local
 changes produce a previewable conflict and are never overwritten.
 
+For subsequent sync, a Git-dirty destination MAY advance only after its full
+current capsule is verified against the authenticated last-applied namespace
+revision (ADR-0020). Local digest claims alone MUST NOT authorize replacement.
+The implementation MUST preserve independent staged/worktree state, revert
+obsolete overlay entries correctly, respect Git's index lock, recheck source
+stability, and materialize workspace/index/session changes transactionally.
+Missing history, new local edits, ignored-file collisions, or failed validation
+MUST leave applied markers unchanged. Preview MUST NOT mutate files or markers.
+Crash recovery and concurrent-writer qualification remain release requirements,
+not implied by the initial successful return-sync regression.
+
+Managed branch movement and rollback MUST compare the expected previous Git
+object ID; changing HEAD identity MUST NOT rewrite an independently advanced
+source branch. File rollback MUST preserve independently changed destinations
+and retain available original backups when exact rollback is unsafe or fails.
+The reserved `.statecase-transaction-<uuid>.staged|backup` artifacts MUST remain
+local and excluded from ordinary sync. Retained ad-hoc backups MUST NOT be
+represented as an authenticated or crash-qualified emergency snapshot.
+
 Baseline blobs that conform to the Git LFS pointer format MUST NOT be treated as
 the referenced content. Capture and hydration report
 `GIT_LFS_CONTENT_UNAVAILABLE` with logical paths while the worktree still holds
