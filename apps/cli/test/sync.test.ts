@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
@@ -391,6 +391,10 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     recoveryNames.push("daemon.lock.statecase-lock.sqlite", "DAEMON.LOCK.STATECASE-LOCK.SQLITE",
       "daemon.lock.statecase-lock.sqlite-journal", "daemon.lock.statecase-lock.sqlite.owned.tmp");
     for (const name of recoveryNames) await writeFile(join(first, "nested", name), "local-only recovery plaintext\n");
+    const recoveryDirectory = "session.statecase-transaction-11111111-2222-4333-8444-555555555555.staged";
+    await mkdir(join(first, "nested", recoveryDirectory));
+    await writeFile(join(first, "nested", recoveryDirectory, "backup"), "private pre-crash original\n");
+    await writeFile(join(first, "nested", recoveryDirectory, "prepared"), "private uncommitted data\n");
     await writeFile(outside, "outside\n");
     await symlink(outside, join(first, "link.txt"));
 
@@ -410,6 +414,7 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     await expect(readFile(join(second, ".env"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readFile(join(second, "link.txt"))).rejects.toMatchObject({ code: "ENOENT" });
     for (const name of recoveryNames) await expect(readFile(join(second, "nested", name))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lstat(join(second, "nested", recoveryDirectory))).rejects.toMatchObject({ code: "ENOENT" });
     expect((await b.pull(configB)).outcome).toBe("unchanged");
   });
 
