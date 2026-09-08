@@ -500,6 +500,11 @@ unit assertion for historical executable evidence.
   cleanup, changed original descriptors, corrupt journals and bounded approved
   paths. This is not ordinary CLI/Git/profile crash qualification; those outer
   transaction and full fault-injection requirements remain open.
+  ADR-0031 adds paired native/profile SIGKILL replay, profile-absent recovery,
+  final metadata ordering, outer/inner decision agreement, pending-reader/writer
+  fencing, stale proposal invalidation and administrative daemon stop. These
+  internal coordinator tests still do not qualify Git participants or enable
+  durable recovery in normal sync/daemon/shim reconciliation.
 - `RT-007`: two daemons for one profile cannot run concurrently.
 - `RT-008`: sleep/wake and network change trigger reconcile without a storm.
 - `RT-009`: rapid file events debounce but the maximum publish deadline holds.

@@ -7,10 +7,11 @@ import type { LocalConfig } from "./config.js";
 export const PROFILE_MAGIC = "STATECASE-PROFILE/2\n";
 export const MAX_PROFILE_BYTES = 16 * 1024 * 1024;
 export class ProfileFormatError extends Error {
-  constructor(readonly code: "PROFILE_INVALID" | "PROFILE_UPGRADE_REQUIRED" | "PROFILE_UNSUPPORTED" | "PROFILE_WRITE_FAILED" = "PROFILE_INVALID") {
+  constructor(readonly code: "PROFILE_INVALID" | "PROFILE_UPGRADE_REQUIRED" | "PROFILE_UNSUPPORTED" | "PROFILE_WRITE_FAILED" | "PROFILE_RECOVERY_REQUIRED" = "PROFILE_INVALID") {
     super(code === "PROFILE_UPGRADE_REQUIRED" ? "local profile requires explicit migration; stop Statecase processes and run statecase profile upgrade --dry-run"
       : code === "PROFILE_UNSUPPORTED" ? "local profile requires a compatible Statecase release; do not downgrade or rewrite it"
       : code === "PROFILE_WRITE_FAILED" ? "local profile update could not be confirmed; inspect profile status before retrying"
+      : code === "PROFILE_RECOVERY_REQUIRED" ? "local materialization recovery is required; existing state was preserved"
       : "local profile is invalid or cannot be observed safely; existing state was preserved");
     this.name = "ProfileFormatError";
   }

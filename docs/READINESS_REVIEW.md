@@ -4,6 +4,26 @@ Status: foreground sync implemented and deployed; release qualification in progr
 production launch
 Last updated: 2026-09-08
 
+## Native/profile recovery checkpoint — 2026-09-08
+
+The preceding internal file-replay candidate `00e2f97` passed all nine jobs in
+CI `34228346060`, including 1,022 tests plus 12 workerd tests; exact job-log
+evidence is attached to PR7. ADR-0031 now adds internal paired native/profile
+publication and recovery. Actual SIGKILL tests restore the exact profile with
+native files even while `config.json` is absent, retain matching committed
+bindings/files, and resume recovery after restoring the profile first.
+Current profile operations are fenced during pending work; daemon stop uses the
+validated original metadata, without turning it into a save observation.
+
+The complete local check passes 1,068 tests in 66 files, lint, types, build and
+clean-installed package smoke. Branch coverage: profile checkpoint 91.35%, config
+94.62%, file replay 92.15%, materializer 95.72%, global 92.67% (4963/5355).
+Hosted exact-candidate qualification remains required. Git HEAD/refs/index and
+native activity participants, normal runtime enablement, capability fencing,
+profile/journal co-location, full low-level faults/power loss, orphan cleanup,
+cross-host/live-cloud UAT and the other release gates remain open. No real user
+profile, credentials, harness data, native service or cloud resource was changed.
+
 ## Internal persistent file replay checkpoint — 2026-09-08
 
 Artifact-ownership candidate `d5b7199` passed all nine jobs in CI `34225382601`;

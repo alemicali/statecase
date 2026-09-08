@@ -329,6 +329,16 @@ does not add a user-facing recovery command. Do not treat it as an available
 remedy for a real partially applied Git/profile transaction; preserve the affected
 state under the procedure above until the complete recovery workflow is qualified.
 
+ADR-0031 adds an internal paired file/profile coordinator. If current commands
+report `PROFILE_RECOVERY_REQUIRED` (exit 6), preserve `profile-materialization.json`,
+the `materialization/active.jsonl` journal and all sibling transaction artifacts.
+Do not rewrite `config.json`, upgrade the profile or remove a journal to bypass
+the fence. Daemon stop retains access through the validated original profile;
+daemon start remains blocked. There is still no public recovery command and no
+normal-sync enablement: complete Git/activity integration must precede that
+workflow. The original-profile checkpoint is private local plaintext and must
+not be uploaded as a diagnostic attachment.
+
 Cloudflare Worker versions can be rolled back from deployment history. Do not
 roll D1 backward destructively; ship a forward migration. R2 objects and
 Durable Object revisions are immutable/append-only in the current release. If a deploy is

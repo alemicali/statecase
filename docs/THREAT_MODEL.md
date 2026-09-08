@@ -327,6 +327,18 @@ Normal CLI/Git/profile integration, full low-level fault coverage, ancestry and
 check-to-mutation races, power loss, orphan cleanup and malicious local tampering
 remain open; the primitive is not an active-writer safety guarantee.
 
+ADR-0031 adds a bounded private original-profile checkpoint and settled decision
+receipt. It restricts coordinated profile changes to applied/session-binding
+state, installs metadata last, and derives recovery authority from the original
+profile when the live file is absent. Exact-file metadata grants do not grant the
+profile directory or credential siblings; identity-only workspaces grant no data
+authority. Lost journals and mismatched receipts fail closed. Current normal
+profile operations are fenced, stale proposals invalidated, and daemon stop uses
+validated administrative metadata without authorizing a save. Older binaries,
+malicious local writers and full Git/native activity coordination remain outside
+this evidence. Profile/journal co-location, complete fault coverage and runtime
+enablement remain release requirements.
+
 ### Workspace dependency incompleteness
 
 Threats: transcript restores without modified code; missed watcher event;

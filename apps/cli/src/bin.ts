@@ -1364,7 +1364,7 @@ function daemonServiceDefinition(store: ConfigStore, argv: string[], allowLegacy
   }
   const platform: "linux" | "darwin" = process.platform;
   const statecaseExecutable = resolve(argv[1] ?? "statecase");
-  return store.loadConfig({ allowLegacy }).then((raw) => {
+  return (allowLegacy ? store.loadServiceControlConfig() : store.loadConfig()).then((raw) => {
     const config = normalizeConfig(raw);
     return serviceDefinition({
       platform,

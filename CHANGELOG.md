@@ -4,6 +4,14 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Add an internal durable native/profile checkpoint: retain exact recovery
+  authority, install applied/session-binding metadata last, persist the outer
+  decision before forgetting the file journal, and replay after profile-absent
+  crashes. Fence pending profile operations with integrity exit 6, invalidate
+  stale proposals and preserve administrative daemon stop. Qualify paired
+  SIGKILL/restart cases without operator data. Git/activity coordination and
+  ordinary sync/daemon/shim enablement remain open.
+
 - Implement an internal persistent file-materialization replay coordinator with
   bounded private journals, ordered fsynced intents, explicit commit decisions
   and guarded restart rollback/cleanup. Qualify selected boundaries with actual

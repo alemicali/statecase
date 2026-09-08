@@ -16,6 +16,8 @@ export type MaterializedWrite = MaterializedWriteBase & (
 
 export interface FileTransaction {
   writes: readonly MaterializedWrite[];
+  /** Device-local metadata installed after every native write/link/deletion. */
+  finalWrites?: readonly MaterializedWrite[];
   symlinks?: ReadonlyArray<{ path: string; target: string }>;
   deletes: readonly string[];
   /** Fault-injection boundary used by isolated recovery tests. */
@@ -52,14 +54,16 @@ export async function applyFileTransaction(transaction: FileTransaction): Promis
     ...transaction.writes.map((write) => ({ path: resolve(write.path), installed: false, mode: write.mode })),
     ...(transaction.symlinks ?? []).map((link) => ({ path: resolve(link.path), installed: false, symbolic: true })),
     ...transaction.deletes.map((path) => ({ path: resolve(path), installed: false })),
+    ...(transaction.finalWrites ?? []).map((write) => ({ path: resolve(write.path), installed: false, mode: write.mode })),
   ];
   const unique = new Set(targets.map((target) => target.path));
   if (unique.size !== targets.length) throw new Error("duplicate transaction target");
 
   try {
-    for (let index = 0; index < transaction.writes.length; index += 1) {
-      const write = transaction.writes[index];
-      const target = targets[index];
+    const finalOffset = transaction.writes.length + (transaction.symlinks?.length ?? 0) + transaction.deletes.length;
+    const writes = [...transaction.writes.map((write, index) => ({ write, target: targets[index] })),
+      ...(transaction.finalWrites ?? []).map((write, index) => ({ write, target: targets[finalOffset + index] }))];
+    for (const { write, target } of writes) {
       await mkdir(dirname(target.path), { recursive: true, mode: 0o700 });
       await reserveArtifact(target, transactionId);
       target.staging = join(target.artifact!.path, "prepared");

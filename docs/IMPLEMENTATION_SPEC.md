@@ -760,6 +760,14 @@ file mutation and recovery boundaries, including two approved roots. This primit
 is not yet used by ordinary CLI sync: the outer Git HEAD/refs/index and applied
 profile/session-binding transaction must be coordinated before enabling it.
 
+ADR-0031 now coordinates native files with the final applied-profile/session-
+binding write through an internal ConfigStore checkpoint API. The exact original
+profile supplies restart authority; a durable prepared/applying/settled record
+must agree with the file journal before its removal. Current profile access
+fails closed while pending, but administrative daemon stop can use the validated
+original profile. Git metadata/activity participation and normal sync integration
+remain required before this path is enabled for routine materialization.
+
 Baseline blobs that conform to the Git LFS pointer format MUST NOT be treated as
 the referenced content. Capture and hydration report
 `GIT_LFS_CONTENT_UNAVAILABLE` with logical paths while the worktree still holds

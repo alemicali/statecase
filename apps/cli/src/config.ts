@@ -9,6 +9,8 @@ import { memoryMappings } from "./memory-bindings.js";
 import { decodeProfile, encodeProfile, MAX_PROFILE_BYTES, ProfileFormatError } from "./profile-format.js";
 import { captureFileGuard } from "./file-guard.js";
 import { HarnessActivityRegistry, type ActivityHandle } from "./activity.js";
+import { applyProfileCheckpoint, assertNoProfileCheckpoint, recoverProfileCheckpoint, serviceControlProfile, type ProfileCheckpointOptions } from "./profile-checkpoint.js";
+import type { FileTransaction } from "./materialize.js";
 
 export type MappingKind = "drop" | "codex" | "claude";
 export type MappingMode = "two-way" | "publish" | "consume" | "append";
@@ -78,7 +80,7 @@ export interface LocalSecrets {
 export class ConfigStore {
   readonly home: string;
   readonly #credentials: CredentialFile;
-  readonly #observed = new WeakMap<LocalConfig, string | null>();
+  #observed = new WeakMap<LocalConfig, string | null>();
 
   constructor(home = process.env.STATECASE_HOME ?? join(homedir(), ".statecase"), options: CredentialFileOptions = {}) {
     this.home = resolve(home);
@@ -86,7 +88,9 @@ export class ConfigStore {
   }
 
   async loadConfig(options: { allowLegacy?: boolean } = {}): Promise<LocalConfig> {
+    await assertNoProfileCheckpoint(this.home);
     const text = await readConfigText(join(this.home, "config.json"));
+    await assertNoProfileCheckpoint(this.home);
     const decoded = text === null ? undefined : decodeProfile(text);
     if (decoded?.format === 1 && !options.allowLegacy) throw new ProfileFormatError("PROFILE_UPGRADE_REQUIRED");
     const config: LocalConfig = text === null ? {
@@ -108,6 +112,7 @@ export class ConfigStore {
     try { lock = await ProfileLock.acquire(join(this.home, "config.lock")); }
     catch { throw new ConfigStateChanged(); }
     try {
+      await assertNoProfileCheckpoint(this.home);
       const path = join(this.home, "config.json");
       const current = await readConfigText(path);
       if (current !== null && decodeProfile(current).format === 1) throw new ProfileFormatError("PROFILE_UPGRADE_REQUIRED");
@@ -121,14 +126,17 @@ export class ConfigStore {
   }
 
   async profileStatus(): Promise<{ exists: boolean; format: 1 | 2; migrationRequired: boolean }> {
+    await assertNoProfileCheckpoint(this.home);
     const text = await readConfigText(join(this.home, "config.json"));
     const format = text === null ? 2 : decodeProfile(text).format;
+    await assertNoProfileCheckpoint(this.home);
     return { exists: text !== null, format, migrationRequired: format === 1 };
   }
 
   async upgradeProfile(options: { dryRun: boolean; beforeCommit?: () => Promise<void> }): Promise<{
     fromFormat: 1 | 2; toFormat: 2; changed: boolean; dryRun: boolean; backupPath?: string;
   }> {
+    await assertNoProfileCheckpoint(this.home);
     const path = join(this.home, "config.json"), original = await readConfigText(path);
     const decoded = original === null ? undefined : decodeProfile(original);
     const result = { fromFormat: decoded?.format ?? 2, toFormat: 2 as const, changed: decoded?.format === 1, dryRun: options.dryRun };
@@ -167,6 +175,51 @@ export class ConfigStore {
     return this.#credentials.read();
   }
 
+  /** Internal coordinator: normal runtime integration also needs durable Git and
+   * activity participants. This method never reads or moves credentials. */
+  async materializeConfig(config: LocalConfig, transaction: FileTransaction, options: ProfileCheckpointOptions = {}): Promise<void> {
+    memoryMappings(config);
+    const after = encodeProfile(config);
+    let lock: ProfileLock;
+    try { lock = await ProfileLock.acquire(join(this.home, "config.lock")); } catch { throw new ConfigStateChanged(); }
+    try {
+      await assertNoProfileCheckpoint(this.home);
+      const before = await readConfigText(join(this.home, "config.json"));
+      if (before === null || fingerprint(before) !== this.#observed.get(config)) throw new ConfigStateChanged();
+      if (decodeProfile(before).format === 1) throw new ProfileFormatError("PROFILE_UPGRADE_REQUIRED");
+      await applyProfileCheckpoint(this.home, before, after, transaction, materializationRoots,
+        { read: readConfigText, write: atomicJson }, options);
+      this.#observed.set(config, fingerprint(after));
+    } catch (error) {
+      this.#observed.delete(config);
+      await assertNoProfileCheckpoint(this.home);
+      throw error;
+    }
+    finally { await lock.release(); }
+  }
+
+  async recoverMaterialization(options: ProfileCheckpointOptions = {}) {
+    if (options.dryRun) return recoverProfileCheckpoint(this.home, materializationRoots, { read: readConfigText, write: atomicJson }, options);
+    let lock: ProfileLock;
+    try { lock = await ProfileLock.acquire(join(this.home, "config.lock")); } catch { throw new ConfigStateChanged(); }
+    try {
+      const result = await recoverProfileCheckpoint(this.home, materializationRoots, { read: readConfigText, write: atomicJson }, options);
+      if (result.pending) this.#observed = new WeakMap();
+      return result;
+    } catch (error) { this.#observed = new WeakMap(); throw error; }
+    finally { await lock.release(); }
+  }
+
+  async loadServiceControlConfig(): Promise<LocalConfig> {
+    const text = await serviceControlProfile(this.home, { read: readConfigText, write: atomicJson });
+    // This object is deliberately absent from #observed: administrative stop
+    // cannot turn a recovery snapshot into authority for a configuration save.
+    if (text !== null) return decodeProfile(text).config;
+    const current = await this.loadConfig({ allowLegacy: true });
+    this.#observed.delete(current);
+    return current;
+  }
+
   async saveSecrets(secrets: LocalSecrets): Promise<void> {
     await this.#credentials.write(secrets);
   }
@@ -187,6 +240,10 @@ export function configuredSyncRoots(config: LocalConfig): string[] {
   ].map((path) => resolve(path)))];
 }
 
+function materializationRoots(config: LocalConfig): string[] {
+  return configuredSyncRoots({ ...config, workspaces: config.workspaces.filter((workspace) => workspace.sync !== "identity-only") });
+}
+
 export class ConfigStateChanged extends Error {
   readonly code = "CONFIG_STATE_CHANGED";
   constructor() { super("local configuration changed or is being updated; reload and retry"); this.name = "ConfigStateChanged"; }
@@ -196,7 +253,7 @@ function fingerprint(text: string | null): string | null {
   return text === null ? null : createHash("sha256").update(text).digest("hex");
 }
 
-async function readConfigText(path: string): Promise<string | null> {
+async function readConfigText(path: string, options: { maximumBytes?: number; private?: boolean } = {}): Promise<string | null> {
   let handle: Awaited<ReturnType<typeof open>> | undefined, bytes: Buffer | undefined;
   try {
     const parent = await lstat(dirname(path)).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return undefined; throw error; });
@@ -204,7 +261,7 @@ async function readConfigText(path: string): Promise<string | null> {
     try { handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
     const before = await handle.stat();
-    if (!before.isFile() || before.nlink !== 1 || before.size > MAX_PROFILE_BYTES || (before.mode & 0o022) !== 0 ||
+    if (!before.isFile() || before.nlink !== 1 || before.size > (options.maximumBytes ?? MAX_PROFILE_BYTES) || (before.mode & (options.private ? 0o077 : 0o022)) !== 0 ||
       (process.getuid && before.uid !== process.getuid())) throw new ProfileFormatError();
     bytes = Buffer.alloc(before.size + 1); let length = 0;
     while (length < bytes.length) {
