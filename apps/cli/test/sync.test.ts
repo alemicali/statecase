@@ -73,6 +73,30 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     expect(current.applied).toBe(originalApplied); expect(Object.hasOwn(current, "sessionBindings")).toBe(false);
     await expect(readFile(join(target, "note.txt"))).rejects.toMatchObject({ code: "ENOENT" });
   });
+  it("materializes only advanced namespaces without rewriting an unchanged harness beside an independent Drop (SY-011, RT-006)", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-independent-pull-")); temporary.push(base);
+    const sourceHarness = join(base, "source-harness"), targetHarness = join(base, "target-harness"), sourceDrop = join(base, "source-drop"), targetDrop = join(base, "target-drop");
+    await mkdir(join(sourceHarness, "sessions"), { recursive: true }); await mkdir(sourceDrop); await mkdir(targetHarness); await mkdir(targetDrop);
+    await writeFile(join(sourceHarness, "sessions", "native.jsonl"), JSON.stringify({ type: "session_meta", payload: { cwd: join(base, "project") } }) + "\n");
+    await writeFile(join(sourceDrop, "brief.md"), "initial brief");
+    const a = harnessConfig(sourceHarness, join(base, "project")); a.mappings.push(config(sourceDrop).mappings[0]);
+    const b = harnessConfig(targetHarness, join(base, "project")); b.mappings.push(config(targetDrop).mappings[0]);
+    const remote = new MemoryRemote(), client = new StatecaseClient("https://remote.test", "token", remote.fetch), key = await randomKey();
+    const sender = new SyncEngine(client, "vlt_test", key); await sender.push(a); await sender.pull(b);
+    const originalHarnessMarker = b.applied["harness:codex:default"];
+    const localPath = join(targetHarness, Object.values(b.sessionBindings!)[0]); await writeFile(localPath, await readFile(localPath, "utf8") + '{"local":"still writing"}\n');
+    const original = await readFile(localPath), originalStat = await lstat(localPath);
+    await writeFile(join(sourceDrop, "brief.md"), "advanced brief"); await sender.push(a);
+    let called = false;
+    const receiver = new SyncEngine(client, "vlt_test", key, { commitMaterialization: async (proposal, workspaces, files) => {
+      called = true; expect(workspaces).toEqual([]); expect(files.writes.map(write => write.path)).toEqual([join(targetDrop, "brief.md")]);
+      expect(proposal.applied["harness:codex:default"]).toBe(originalHarnessMarker);
+      await materialization.applyFileTransaction(files);
+    } });
+    await receiver.pull(b); expect(called).toBe(true);
+    expect(await readFile(localPath)).toEqual(original); expect((await lstat(localPath)).ino).toBe(originalStat.ino);
+    expect(await readFile(join(targetDrop, "brief.md"), "utf8")).toBe("advanced brief");
+  });
   it("hands the engine's complete changed-branch workspace and source guards to the profile coordinator (WS-034)", async () => {
     const base = await mkdtemp(join(tmpdir(), "statecase-engine-workspace-")); temporary.push(base);
     for (const [name, value] of Object.entries({ GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: join(base, "empty-config"), GIT_OPTIONAL_LOCKS: "0" })) vi.stubEnv(name, value);
