@@ -1,6 +1,6 @@
 # ADR 0023: Portable preferences as guarded, per-field native-file edits
 
-Status: implemented locally; native/package/cloud qualification in progress
+Status: implemented; selected native preferences qualified; full release qualification in progress
 Date: 2026-09-08
 Test IDs: AD-CFG-001 through AD-CFG-012, SY-011
 
@@ -140,4 +140,7 @@ fresh destination sessions and CLI-override precedence. Target configuration is
 prepared locally before hydration and is not rewritten afterward. Only those
 two preferences are observed in requests: this driver does not qualify the
 whole allowlist, UI settings, provider model availability or all precedence
-layers. Its execution is recorded separately from the local engine tests.
+layers. Both pinned native jobs pass on `239a21b` in CI `34196810044`; the
+[execution report](../uat/2026-09-08-native-effective-preferences.md) records
+fixture first-use trust setup, forced-GC mutex correction and remaining gates
+separately from the local engine tests.

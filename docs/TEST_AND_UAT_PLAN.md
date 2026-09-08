@@ -159,7 +159,10 @@ regression ID.
   wrong/missing-model and wrong/missing-effort negative controls.
 
 AD-CFG-001 through 011 cover local implementation. AD-CFG-012 is a native
-qualification driver whose exact execution evidence is recorded separately.
+qualification driver whose [passing selected-preference execution evidence](uat/2026-09-08-native-effective-preferences.md)
+is recorded separately. Disposable Codex projects receive their own explicit
+local trust during setup, before transfer, so first-use trust initialization
+cannot be mistaken for a preference mutation. Source trust must not transfer.
 Before release, repeat effective-preference checks with the exact packed CLI on
 two independent hosts, native precedence, background writes, revocation/scopes,
 mixed-client upgrade/downgrade refusal, SIGKILL/sleep/reboot and the remaining

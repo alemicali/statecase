@@ -13,7 +13,9 @@ All notable changes to Statecase will be documented here.
   model/effort in provider requests, fresh target sessions and CLI-override
   precedence. Removed fixture config rewrites/model arguments that could mask
   a broken preference transfer. Added negative controls and redacted mismatch
-  categories; native execution evidence is tracked separately (AD-CFG-012).
+  categories. Pinned native Codex/Claude model/effort qualification now passes
+  with device-local setup trust and unchanged post-hydration config; exact
+  execution limits are tracked separately (AD-CFG-012).
 
 - Added filtered Codex/Claude user preference sync with canonical per-field
   encrypted objects, independent-field merge, field-only deletion and guarded

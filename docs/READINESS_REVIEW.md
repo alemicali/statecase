@@ -97,15 +97,19 @@ workspace continuity, arbitrary file synchronization, concurrency, recovery,
 automation, schema evolution, and major operating environments are sufficiently clear
 to begin TDD implementation.
 
-## Implementation checkpoint — 2026-09-06
+## Native preferences and mutex checkpoint — 2026-09-08
 
-Latest qualification exception (2026-09-08): CI `34195140316` is not green.
-Native Claude's expanded effective-preference check passes, but Codex reports
-`NATIVE_CONFIG_CHANGED` after its first fresh-session preference probe. Two
-other jobs reproduce lost mutex exclusion at a suspended publication boundary.
-Forced native GC now reproduces the latter locally at both checkpoints;
-ADR-0022 explicitly roots mutex ownership until release/process exit. Updated
-exact-candidate CI and Codex diagnosis are required before closing these gates.
+CI `34195140316` exposed two issues: suspended mutex ownership could be lost
+to native GC, and the Codex fixture confused first-use project-trust creation
+with a sync mutation. Explicit mutex rooting now passes forced-GC/SIGKILL
+regressions; fixture trust is prepared device-locally before transfer, retaining
+byte-preservation checks. On `239a21b`, both pinned native harness jobs in
+CI `34196810044` pass fresh-session model/effort, CLI override, native resume
+and workspace-return assertions. The local check passes 671 tests. See the
+[bounded qualification report](uat/2026-09-08-native-effective-preferences.md).
+This is not whole-allowlist, cross-host/live-cloud, memory or release readiness.
+
+## Implementation checkpoint — 2026-09-06
 
 The first usable vertical slice is complete: manual first-device and
 second-device enrollment, encrypted recovery kit, account-scoped vaults,

@@ -134,3 +134,8 @@ project path/trust never crosses into target config. Native execution remains
 restricted to disposable runner VMs, with no operator harness state accessed.
 Byte equality, fresh identity, actual request model/effort and override checks
 remain mandatory; the updated native result is still pending.
+
+Both native jobs now pass on `239a21b` in CI `34196810044`. The separate
+[effective-preference report](2026-09-08-native-effective-preferences.md)
+records exact jobs, versions, assertions and limits. This supersedes the pending
+native result above for model/effort only, not the broader release gates.
