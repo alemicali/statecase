@@ -9,6 +9,7 @@ export interface ServiceSource {
   platform: "linux" | "darwin";
   home: string;
   statecaseExecutable: string;
+  nodeExecutable?: string;
   statecaseHome: string;
   roots: readonly string[];
   uid?: number;
@@ -25,10 +26,17 @@ export interface ServiceDefinition {
 type CommandRunner = (file: string, args: readonly string[]) => Promise<unknown>;
 
 export function serviceDefinition(source: ServiceSource): ServiceDefinition {
+  const nodeExecutable = source.nodeExecutable ?? process.execPath;
+  for (const path of [source.home, source.statecaseExecutable, nodeExecutable, source.statecaseHome, ...source.roots]) {
+    if ([...path].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)) {
+      throw new Error("service paths must not contain control characters");
+    }
+  }
   const normalized: ServiceSource = {
     ...source,
     home: resolve(source.home),
     statecaseExecutable: resolve(source.statecaseExecutable),
+    nodeExecutable: resolve(nodeExecutable),
     statecaseHome: resolve(source.statecaseHome),
     roots: [...new Set(source.roots.map((root) => resolve(root)))],
   };
@@ -90,7 +98,9 @@ function systemdDefinition(source: ServiceSource): ServiceDefinition {
     "",
     "[Service]",
     "Type=simple",
-    `ExecStart=${systemdQuote(source.statecaseExecutable)} daemon foreground`,
+    // ':' disables systemd's own environment substitution (including ${...}
+    // embedded in literal paths); this is not shell quoting.
+    `ExecStart=:${systemdQuote(source.nodeExecutable!)} ${systemdQuote(source.statecaseExecutable)} daemon foreground`,
     `Environment=${systemdQuote(`STATECASE_HOME=${source.statecaseHome}`)}`,
     "Restart=on-failure",
     "RestartSec=5s",
@@ -135,6 +145,7 @@ function launchdDefinition(source: ServiceSource): ServiceDefinition {
     `  <string>${xml(label)}</string>`,
     "  <key>ProgramArguments</key>",
     "  <array>",
+    `    <string>${xml(source.nodeExecutable!)}</string>`,
     `    <string>${xml(source.statecaseExecutable)}</string>`,
     "    <string>daemon</string>",
     "    <string>foreground</string>",

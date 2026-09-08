@@ -1,10 +1,11 @@
 # Statecase operations
 
 Status: deployed service
-Last verified: 2026-09-07
+Last deployment verified: 2026-09-08
 
-Current Worker version: `e9b7158e-b05a-441a-a807-412d40661858`.
-Remote D1 migrations through `0004_capabilities.sql` are applied. The live
+Last verified Worker version: `9d4c611d-ad57-485c-a627-bb6c26892710`
+(see the [live rotation report](uat/2026-09-08-key-rotation-daytona.md)).
+Remote D1 migrations through `0005_vault_key_epochs.sql` are applied. The live
 health endpoint advertises scoped protocol `1.1` and legacy migration protocol
 `1.0`.
 
@@ -82,6 +83,23 @@ decrypting data first written under the new epoch, but cannot erase plaintext,
 old keys, or ciphertext it already copied.
 
 ## Local verification
+
+### Native service runtime
+
+`statecase daemon install` pins the current Node executable. Reinstall the
+definition after replacing/removing that Node installation; the service manager
+does not load nvm or your interactive shell startup files. Linux definitions
+retain their filesystem hardening and require configured writable roots to be
+available. `statecase daemon status` uses owner-only local IPC.
+
+The [Linux lifecycle drill](uat/2026-09-08-native-systemd.md) passed with isolated
+fixtures. macOS, authenticated background convergence, and sleep/boot behavior
+remain release gates. The current CLI supports install, foreground, status,
+and uninstall; dedicated start/stop commands are still pending. Until then,
+Linux operators can use `systemctl --user start|stop statecase.service` after
+installation. Do not use the fixture drill on a manager with an existing unit.
+
+### Automated suites
 
 ```bash
 npm ci

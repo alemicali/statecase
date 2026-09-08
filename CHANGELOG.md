@@ -4,6 +4,12 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Pinned the installing Node interpreter in Linux/macOS service definitions,
+  preserved literal systemd environment-like paths, and rejected path control
+  characters. Qualified real systemd-user start/stop, filesystem notifications,
+  private IPC, duplicate-writer denial, SIGKILL recovery, and temporary-service
+  cleanup using isolated unauthenticated fixtures. macOS and authenticated
+  background synchronization remain separate release gates.
 - Removed a CI fixture race: Git overlay tests now clone their source baseline
   instead of assuming independently created commits have identical timestamps
   and object IDs. Baseline mismatch enforcement is unchanged.

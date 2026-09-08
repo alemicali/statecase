@@ -18,7 +18,29 @@ afterEach(async () => {
   await Promise.all(temporary.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
-describe("native daemon service definitions (RT-008, RT-010, RT-012)", () => {
+describe("native daemon service definitions (RT-010, RT-012, RT-013)", () => {
+  it.each(["linux", "darwin"] as const)("pins the Node interpreter without relying on the login-shell PATH (%s)", (platform) => {
+    const source = { platform, home: "/tmp/service-home", statecaseExecutable: "/tmp/app ${UNSET}/statecase",
+      nodeExecutable: "/tmp/node runtime/bin/node", statecaseHome: "/tmp/service-home/state", roots: [], uid: 501 };
+    const definition = serviceDefinition(source);
+    if (platform === "linux") {
+      expect(definition.contents).toContain('ExecStart=:"/tmp/node runtime/bin/node" "/tmp/app ${UNSET}/statecase" daemon foreground');
+    } else {
+      expect(definition.contents).toContain('<string>/tmp/node runtime/bin/node</string>\n    <string>/tmp/app ${UNSET}/statecase</string>');
+    }
+  });
+
+  it.each(["linux", "darwin"] as const)("rejects control characters in every service path before serialization (%s)", (platform) => {
+    const source = { platform, home: "/tmp/service-home", statecaseExecutable: "/tmp/statecase",
+      nodeExecutable: "/tmp/node", statecaseHome: "/tmp/state", roots: ["/tmp/drop"], uid: 501 };
+    for (const field of ["home", "statecaseExecutable", "nodeExecutable", "statecaseHome", "roots"] as const) {
+      for (const control of ["\n", "\r", "\0", "\t", "\u007f"]) {
+        const injected = `/tmp/path${control}ExecStart=/tmp/unexpected`;
+        expect(() => serviceDefinition({ ...source, [field]: field === "roots" ? [injected] : injected })).toThrow("control characters");
+      }
+    }
+  });
+
   it("renders and installs a hardened systemd user unit without shell interpolation", async () => {
     const home = await mkdtemp(join(tmpdir(), "statecase-systemd-"));
     temporary.push(home);

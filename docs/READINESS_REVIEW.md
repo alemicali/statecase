@@ -133,8 +133,12 @@ crash-recoverable lock, recursive filesystem hints, periodic source-of-truth
 reconciliation, remote polling, serialized execution, bounded exponential
 retry, no-op revision suppression, and owner-only Unix-socket status. Native
 systemd-user and launchd installers are implemented with safe ownership and
-uninstall semantics; actual Linux/macOS lifecycle UAT plus sleep/network-change
-integration are still required before background steady state is claimed.
+uninstall semantics. The [native Linux lifecycle UAT](uat/2026-09-08-native-systemd.md)
+passed real systemd-user start/stop, private IPC, filesystem notifications,
+duplicate-writer denial, and SIGKILL restart with an isolated unauthenticated
+profile. Definitions now pin the installing Node interpreter. macOS lifecycle,
+sleep/reboot/network-change integration, and authenticated multi-device
+background convergence are still required before background steady state is claimed.
 
 Exact workspace capsules now reproduce staged and unstaged bytes separately,
 deletions, additions, modes, safe symlinks, detached and unborn repositories,
@@ -253,9 +257,9 @@ pre-restore Git state. The drill exposed and fixed detached-HEAD convergence in
 ordinary baseline acquisition. See the
 [workspace restore UAT](uat/2026-09-07-workspace-in-place-restore-daytona.md).
 
-Automated background steady state is not yet claimed. Real-OS daemon/service
-UAT, real-version harness restore UAT, packaged live post-revocation rotation
-UAT, and real harness-version compatibility remain
+Automated background steady state is not yet claimed. macOS daemon/service
+UAT, authenticated background convergence, sleep/reboot qualification,
+real-version harness restore UAT, and real harness-version compatibility remain
 blocking work for a public or unattended release.
 
 The design is intentionally not called production-complete. Crypto selection,

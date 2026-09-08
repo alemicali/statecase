@@ -121,6 +121,15 @@ service on Linux. The daemon MUST:
 - wake and reconcile after sleep;
 - expose a local status endpoint or IPC channel without opening a public port.
 
+Native service definitions invoke the installing `process.execPath` explicitly
+before the CLI entrypoint. They do not assume that a GUI/user service manager
+loads a login-shell PATH. Definition paths reject ASCII controls; systemd
+specifier escaping and disabled ExecStart environment expansion preserve
+literal `%` and `${...}` in local paths. After replacing/removing the pinned
+Node runtime, reinstall the service. Linux native lifecycle evidence is recorded
+in `uat/2026-09-08-native-systemd.md`; this does not qualify macOS lifecycle,
+machine reboot/sleep, or authenticated background convergence.
+
 Proposed defaults: 2-second debounce, 30-second maximum push interval,
 20-second remote-head poll, and exponential retry from 1 second to 5 minutes.
 All are configurable.

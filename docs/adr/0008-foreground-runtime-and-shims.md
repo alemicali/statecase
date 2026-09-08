@@ -3,7 +3,7 @@
 Status: accepted
 Date: 2026-09-06
 Owners: Statecase maintainers
-Test IDs: RT-001 through RT-006, RT-011, RT-012, BK-008, BK-009
+Test IDs: RT-001 through RT-006, RT-011, RT-012, RT-013, BK-008, BK-009
 
 ## Context
 
@@ -52,8 +52,14 @@ Ephemeral systems can use foreground supervision without a service manager.
 The daemon core supplies locking, filesystem hints, authoritative periodic
 reconciliation, remote polling, retry, and private local status for IDE and
 non-shim launches. Statecase atomically manages a hardened systemd user unit or
-macOS LaunchAgent without invoking a shell; release still requires real-OS
-lifecycle UAT. The current journal records reconciliation intent; future capsule work will pin the
+macOS LaunchAgent without invoking a shell. Both definitions pin the installing
+Node interpreter instead of relying on the service manager's PATH. Linux
+disables systemd environment substitution in ExecStart and escapes specifiers;
+both platforms reject path control characters before serialization. Replacing
+or removing that Node installation requires reinstalling the service definition.
+Linux start/stop, filesystem notification, private IPC, duplicate-writer denial,
+and SIGKILL restart passed native UAT; macOS and authenticated background
+convergence remain release gates. The current journal records reconciliation intent; future capsule work will pin the
 exact immutable checkpoint associated with each queued publish.
 
 ## Security and privacy impact
