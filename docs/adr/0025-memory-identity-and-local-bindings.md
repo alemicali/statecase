@@ -111,6 +111,13 @@ clean-package checks exercise that contract. Local
 unit/integration evidence does not close full AD-MEM-008..010, native format/location
 qualification, complete reference localization or independent-host/live GC UAT.
 
+The first pinned Claude native memory drill passed on `cd73673`: four fresh
+sessions with default/custom-root startup recall, native topic Read/Edit and
+index Write, exact encrypted transfer/return and a disabled-memory control.
+See [executed evidence](../uat/2026-09-08-native-claude-memory.md) for its
+reference-backend boundaries and the pending worktree/subdirectory/unrelated
+startup extension. This is an AD-MEM-008 subset, not all native-memory support.
+
 ## Sources
 
 Fetched 2026-09-08: [Codex memories](https://learn.chatgpt.com/docs/customization/memories)

@@ -600,3 +600,13 @@ branch coverage. Exact-candidate native CI is required. Even a pass here is
 two homes on one host with reference storage, not packaged live-cloud parity,
 autonomous hosted-model memory generation, worktree/full settings precedence,
 subagent formats, memory tool-history localization or Codex memory qualification.
+
+The native-claude job `102007136705` in CI `34209586836` on `cd73673` subsequently
+passed, including the explicit four-session memory step. Its redacted pass
+record confirms default/custom-root fresh recall, native topic Read/Edit and
+index Write, strict non-mutating preview, exact transfer/return bytes, preserved
+local settings and the disabled-memory/unselected-project controls. See
+[the executed report](uat/2026-09-08-native-claude-memory.md). An extension adds
+worktree, subdirectory and actual unrelated-project startup cases; those cases
+require a new native run and are not covered by the first pass.
+The entire `34209586836` run also completed successfully in all nine jobs.

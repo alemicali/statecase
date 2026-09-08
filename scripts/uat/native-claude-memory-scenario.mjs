@@ -60,8 +60,9 @@ const provider = createServer(async (request, response) => {
     check(active && ++requestCount <= (active.write ? 4 : 1), "unexpected-model-turn");
     if (requestCount === 1) {
       assertClaudeMemoryContext(body, {
-        prompt, required: active.disabled ? [] : [indexMarkers[active.generation], active.machine.memory],
-        forbidden: [...indexMarkers.filter((_, i) => active.disabled || i !== active.generation), ...topicMarkers, unrelatedMarker],
+        prompt, required: active.disabled ? [] : [active.unrelated ? unrelatedMarker : indexMarkers[active.generation], active.machine.memory],
+        forbidden: [...indexMarkers.filter((_, i) => active.disabled || active.unrelated || i !== active.generation),
+          ...topicMarkers, ...(active.unrelated ? [] : [unrelatedMarker])],
       });
     } else {
       const result = body.messages.flatMap((message) => Array.isArray(message.content) ? message.content : [])
@@ -121,7 +122,7 @@ try {
   await new Promise((accept, reject) => { provider.once("error", reject); provider.listen(0, "127.0.0.1", accept); });
   const ids = new Set();
   phase = "memory-source";
-  ids.add(await harness(source, 0, true));
+  ids.add(await harness(source, 0, { write: true }));
   const written = await memoryBytes(source);
   assert.ok(written.topic.includes(topicMarkers[1]));
   assert.ok(!written.topic.includes(topicMarkers[0]));
@@ -145,7 +146,7 @@ try {
   assert.deepEqual(await memoryBytes(target), written);
   assert.equal(await readFile(join(target.home, "claude", "settings.json"), "utf8"), targetSettings);
   phase = "memory-target";
-  const fresh = await harness(target, 1, true);
+  const fresh = await harness(target, 1, { write: true });
   assert.ok(!ids.has(fresh)); ids.add(fresh);
   const returned = await memoryBytes(target);
   assert.ok(returned.topic.includes(topicMarkers[2]));
@@ -158,10 +159,28 @@ try {
   assert.deepEqual(await memoryBytes(source), returned);
   phase = "memory-recall";
   for (const disabled of [false, true]) {
-    const id = await harness(source, 2, false, disabled);
+    const id = await harness(source, 2, { disabled });
     assert.ok(!ids.has(id)); ids.add(id);
     assert.deepEqual(await memoryBytes(source), returned);
   }
+  phase = "memory-worktree";
+  const worktree = { ...source, project: join(root, "linked-worktree") };
+  await execute("git", ["-C", source.project, "worktree", "add", "--detach", worktree.project, "HEAD"], { env: environment(source) });
+  const worktreeId = await harness(worktree, 2);
+  assert.ok(!ids.has(worktreeId)); ids.add(worktreeId);
+  assert.deepEqual(await memoryBytes(source), returned);
+  phase = "memory-subdirectory";
+  const subdirectory = { ...source, project: join(source.project, "nested", "directory") };
+  await mkdir(subdirectory.project, { recursive: true, mode: 0o700 });
+  const subdirectoryId = await harness(subdirectory, 2);
+  assert.ok(!ids.has(subdirectoryId)); ids.add(subdirectoryId);
+  assert.deepEqual(await memoryBytes(source), returned);
+  phase = "memory-unrelated";
+  const unrelated = { ...source, project: join(source.home, "unrelated-repository") };
+  unrelated.memory = join(claudeProjectDirectory(join(source.home, "claude"), unrelated.project), "memory");
+  await execute("git", ["init", "-q", unrelated.project], { env: environment(source) });
+  const unrelatedId = await harness(unrelated, undefined, { unrelated: true });
+  assert.ok(!ids.has(unrelatedId)); ids.add(unrelatedId);
   for (const machine of [source, target]) {
     const unselected = join(claudeProjectDirectory(join(machine.home, "claude"), join(machine.home, "unrelated-repository")), "memory");
     assert.equal(await readFile(join(unselected, "MEMORY.md"), "utf8"), unrelatedMarker);
@@ -171,6 +190,7 @@ try {
     topology: "two-homes-one-host", inference: "deterministic-loopback", freshSessions: ids.size,
     nativeDefaultMemoryRoot: true, nativeCustomMemoryRoot: true, startupIndexRecall: true, topicReadOnDemand: true,
     nativeMemoryEditWrite: true, disabledMemoryNegativeControl: true, unselectedMemoryPreserved: true,
+    worktreeSharedRecall: true, subdirectorySharedRecall: true, unrelatedProjectIsolatedRecall: true,
     exactMemoryTransfer: true, memoryDependencyResolved: true, hydrationPreviewNonMutating: true,
     localMemorySettingsPreserved: true, returnTransferAndFreshRecall: true, encryptedObjects: remote.objectCount() }));
 } catch (error) {
@@ -186,8 +206,8 @@ try {
 async function memoryBytes(machine) {
   return { index: await readFile(join(machine.memory, "MEMORY.md"), "utf8"), topic: await readFile(join(machine.memory, "project_context.md"), "utf8") };
 }
-async function harness(machine, generation, write, disabled = false) {
-  active = { machine, generation, write, disabled }; requestCount = 0;
+async function harness(machine, generation, { write = false, disabled = false, unrelated = false } = {}) {
+  active = { machine, generation, write, disabled, unrelated }; requestCount = 0;
   const args = ["--setting-sources", "user", "--disable-slash-commands", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
     "--no-chrome", "--tools", "Read,Write,Edit", "--allowedTools", "Read,Write,Edit", "--permission-mode", "acceptEdits",
     "--max-turns", "5", "--output-format", "json", "-p", prompt];

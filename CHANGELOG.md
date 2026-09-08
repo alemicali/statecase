@@ -9,6 +9,10 @@ All notable changes to Statecase will be documented here.
   recall, with disabled-memory and unselected-project controls. Added local
   assertion regressions rejecting prompt/history/metadata false positives.
   Native execution results are tracked separately from fixture implementation.
+- Recorded a successful pinned native Claude memory run; extend location
+  qualification to shared Git worktree/subdirectory memory and distinct-project
+  startup isolation. Keep reference-backend evidence separate from live-cloud
+  and autonomous model generation claims.
 
 - Added `memory map/list/remove` with local-only preview, explicit confirmation,
   immutable ownership, safe rebind and no native-file deletion. Exposed memory
