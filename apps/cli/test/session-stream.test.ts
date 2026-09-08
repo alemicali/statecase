@@ -2,7 +2,7 @@ import { access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { inspectPortableSessionActivity, localizePortableSession, stagePortableSession } from "../src/session-stream.js";
 
@@ -13,6 +13,34 @@ afterEach(async () => {
 });
 
 describe("streamed session staging (AD-CX-008, PERF-003)", () => {
+  it("does not turn native record types or prose into paths when sync runs inside the workspace (AD-CX-007)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "statecase-session-cwd-"));
+    temporary.push(root);
+    const workspace = join(root, "project");
+    await mkdir(workspace);
+    const source = join(root, "source.jsonl");
+    const records = [
+      { type: "session_meta", payload: { cwd: workspace, model: "fixture-model" } },
+      { type: "response_item", payload: { type: "message", role: "assistant", content: [
+        { type: "output_text", text: "Keep this text unchanged." },
+      ] } },
+      { type: "tool_call", name: "read_file", arguments: { path: "relative.txt", absolute: join(workspace, "absolute.txt") } },
+    ];
+    await writeFile(source, `${records.map((record) => JSON.stringify(record)).join("\n")}\n`);
+    const cwd = vi.spyOn(process, "cwd").mockReturnValue(workspace);
+    try {
+      const staged = await stagePortableSession(source, [{ id: "ws_test", path: workspace }]);
+      try {
+        const portable = (await readFile(staged!.path, "utf8")).trimEnd().split("\n").map((line) => JSON.parse(line));
+        expect(portable[0]).toEqual({ type: "session_meta", payload: { cwd: "statecase://workspace/ws_test", model: "fixture-model" } });
+        expect(portable[1]).toEqual(records[1]);
+        expect(portable[2]).toEqual({ type: "tool_call", name: "read_file", arguments: {
+          path: "relative.txt", absolute: "statecase://workspace/ws_test/absolute.txt",
+        } });
+      } finally { await staged?.dispose(); }
+    } finally { cwd.mockRestore(); }
+  });
+
   it("captures only complete records, portabilizes paths, and resolves relative activity", async () => {
     const root = await mkdtemp(join(tmpdir(), "statecase-session-stage-test-"));
     temporary.push(root);

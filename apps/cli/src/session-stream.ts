@@ -253,6 +253,7 @@ function longestContainingWorkspace(workspaces: readonly SessionWorkspace[], cwd
 }
 
 function portablePathValue(value: string, workspace: SessionWorkspace): string {
+  if (!isAbsolute(value)) return value;
   const root = resolve(workspace.path);
   if (!within(root, value)) return value;
   const suffix = relative(root, normalize(value)).split(sep).join("/");

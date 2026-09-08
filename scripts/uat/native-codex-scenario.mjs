@@ -23,6 +23,7 @@ if (externalIsolation) {
   assert.equal(process.env.STATECASE_UAT_CONFIRM, "run-native-harness-in-disposable-sandbox");
 }
 const root = await mkdtemp(join(parent, "statecase-native-codex-"));
+const originalCwd = process.cwd();
 const marker = `native-canary-${randomBytes(12).toString("hex")}`;
 const source = { home: join(root, "source-home"), project: join(root, "source-project") };
 const target = { home: join(root, "target-home"), project: join(root, "different", "target-project") };
@@ -119,7 +120,9 @@ try {
   const engine = new SyncEngine(new StatecaseClient("https://native-fixture.invalid", "synthetic", remote.fetch), "vlt_native", key);
   const a = config(source);
   const b = config(target);
+  process.chdir(source.project);
   assert.equal((await engine.push(a)).outcome, "pushed");
+  process.chdir(target.project);
   const reports = await engine.dependencies();
   assert.equal(reports.length, 1);
   assert.ok(reports[0].dependencies.some((dependency) => dependency.logicalPath === "artifact.txt"
@@ -144,11 +147,18 @@ try {
   assert.equal(await harness(target, ["exec", "-C", target.project, "resume", "--skip-git-repo-check", "--json", sessionId,
     "Continue the earlier task: inspect its artifact and append the continuation line."]), sessionId);
   assert.equal(await readFile(join(source.project, "artifact.txt"), "utf8"), `${marker}\n`);
+  phase = "return-sync";
+  assert.equal((await engine.push(b)).outcome, "pushed");
+  process.chdir(source.project);
+  assert.equal((await engine.pull(a)).outcome, "pulled");
+  assert.equal(await readFile(join(source.project, "artifact.txt"), "utf8"), `${marker}\ncontinued on target\n`);
+  assert.equal(Object.keys(a.sessionBindings).length, 1);
+  assert.equal(Object.keys(b.sessionBindings).length, 1);
   console.log(JSON.stringify({ result: "pass", harness: version, node: process.version,
     backend: "in-memory-reference", topology: "two-homes-one-host", inference: "deterministic-loopback",
     sameSessionId: true, originalHistory: true, nativeReadWrite: true, mappedCwd: true,
     nativeDatabaseNotCopied: true, patchDependency: true, hydrationPreviewNonMutating: true,
-    sourceUnchanged: true, encryptedObjects: remote.objectCount() }));
+    sourceUnchangedBeforeSync: true, returnSync: true, syncFromMappedCwd: true, encryptedObjects: remote.objectCount() }));
 } catch (error) {
   console.error(JSON.stringify({ result: "fail", phase, error: error.name, fixtureError: fixtureError?.name }));
   process.exitCode = 1;
@@ -156,6 +166,7 @@ try {
   key?.fill(0);
   provider.closeAllConnections();
   await new Promise((accept) => provider.close(accept));
+  process.chdir(originalCwd);
   await rm(root, { recursive: true, force: true });
 }
 

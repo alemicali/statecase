@@ -209,6 +209,10 @@ policy; they are never uploaded merely because they are present.
   non-mutating hydration preview, mapped CWD, original history, same UUID, and
   the freeform patch dependency. The loopback provider and reference transport
   do not qualify hosted inference, live Cloudflare, or a physical second host.
+  Regression coverage also runs normalization with the process CWD inside the
+  mapped workspace: ordinary strings, native event types, model names, and
+  relative arguments remain unchanged while absolute workspace paths relocate.
+  The native drill exercises both source/target sync CWDs and return sync.
 - `AD-CX-008`: very large sparse/session files stream in bounded memory.
 
 ### 5.2 Claude

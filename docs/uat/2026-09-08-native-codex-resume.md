@@ -119,3 +119,20 @@ remaining. This also removed the exploratory native probes and test-only
 installed binaries; those disposable remote files are not recoverable. No
 unrelated sandbox, process, real session, provider credential, or Statecase
 profile was changed. Local non-secret test driver/bundle artifacts may remain.
+
+## Follow-up: sync launched inside the mapped checkout
+
+The first CI native job passed at `7785e62`:
+[native Codex job](https://github.com/alemicali/statecase/actions/runs/34179467005/job/101915404316).
+Subsequent review found a separate CWD-dependent defect in streamed path
+normalization. `path.resolve` was applied to every string; when the process
+already ran inside the mapped workspace, even `session_meta` and model names
+could become portable path URIs. A new regression reproduced that corruption
+before the one-line absolute-path guard was added. Local `npm run check` then
+passed 456 tests with 90.40% branch coverage.
+
+The current native scenario additionally runs sync from inside both mapped
+checkouts and publishes the resumed target changes back to the origin. These
+extensions are separate from the earlier Daytona bundle/hash and must be
+qualified by their own CI run. The destination-resume requirement and all
+reference-storage/loopback-model limitations remain unchanged.

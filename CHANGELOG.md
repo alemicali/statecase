@@ -4,6 +4,11 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Fixed a CWD-dependent session normalization defect: running sync inside a
+  mapped workspace could rewrite native record types, model names, and prose
+  as workspace URIs. Only absolute path values are now portabilized. Added a
+  failing-first regression and extended native UAT to sync from each mapped
+  checkout and return the resumed work to its origin.
 - Qualified native Codex 0.153.4 session-ID resume after encrypted engine
   transfer to a fresh home, SQLite root, and differently mapped Git workspace
   in Daytona, using a deterministic loopback provider. Added a reproducible
