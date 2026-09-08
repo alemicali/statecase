@@ -29,7 +29,7 @@ afterEach(async () => {
 });
 
 describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, WS-003, WS-004)", () => {
-  it.each(["commit", "rollback", "dry-run"])("joins an authenticated engine pull and its profile decision: %s (RT-006)", async mode => {
+  it.each(["commit", "rollback", "concurrent", "dry-run"])("joins an authenticated engine pull and its profile decision: %s (RT-006)", async mode => {
     const base = await mkdtemp(join(tmpdir(), "statecase-engine-profile-")); temporary.push(base);
     const source = join(base, "source"), target = join(base, "target"), home = join(base, "profile");
     await mkdir(source); await mkdir(target); await writeFile(join(source, "note.txt"), "remote work");
@@ -41,21 +41,37 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
       commitMaterialization: async (proposal: LocalConfig, workspaces: readonly WorkspaceApplication[], files: WorkspaceFileTransaction) => {
         called = true; expect(proposal).toBe(current); expect(proposal.applied[current.mappings[0].namespace].revisionId).toBeTruthy();
         expect(await readFile(join(home, "config.json"))).toEqual(original);
+        if (mode === "concurrent") await writeFile(join(target, "note.txt"), "uncaptured local edit");
         await store.materializeWorkspaceConfig(proposal, workspaces, files, { afterBoundary: phase => {
           if (mode === "rollback" && phase === "install") throw new Error("synthetic interrupted engine pull");
         } });
       },
     });
-    if (mode === "rollback") {
+    if (mode === "rollback" || mode === "concurrent") {
       await expect(engine.pull(current)).rejects.toThrow(); expect(called).toBe(true); expect(current).toEqual(before);
       expect(await readFile(join(home, "config.json"))).toEqual(original);
-      await expect(readFile(join(target, "note.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+      if (mode === "concurrent") expect(await readFile(join(target, "note.txt"), "utf8")).toBe("uncaptured local edit");
+      else await expect(readFile(join(target, "note.txt"))).rejects.toMatchObject({ code: "ENOENT" });
       await expect(store.saveConfig(current)).rejects.toThrow();
     } else {
       await engine.pull(current, mode === "dry-run"); expect(called).toBe(mode === "commit");
       if (mode === "dry-run") { expect(current).toEqual(before); expect(await readFile(join(home, "config.json"))).toEqual(original); }
       else { expect((await store.loadConfig()).applied).toEqual(current.applied); expect(await readFile(join(target, "note.txt"), "utf8")).toBe("remote work"); await store.saveConfig(current); }
     }
+  });
+  it("restores an originally absent bindings property and original marker identity after handoff refusal", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-engine-refusal-")); temporary.push(base);
+    const source = join(base, "source"), target = join(base, "target"); await mkdir(source); await mkdir(target);
+    await writeFile(join(source, "note.txt"), "incoming");
+    const remote = new MemoryRemote(), client = new StatecaseClient("https://remote.test", "token", remote.fetch), key = await randomKey();
+    await new SyncEngine(client, "vlt_test", key).push(config(source));
+    const current = config(target), originalApplied = current.applied;
+    const engine = new SyncEngine(client, "vlt_test", key, { commitMaterialization: async proposal => {
+      expect(proposal.applied).not.toBe(originalApplied); expect(proposal.sessionBindings).toEqual({}); throw new Error("handoff refused");
+    } });
+    await expect(engine.pull(current)).rejects.toThrow("handoff refused");
+    expect(current.applied).toBe(originalApplied); expect(Object.hasOwn(current, "sessionBindings")).toBe(false);
+    await expect(readFile(join(target, "note.txt"))).rejects.toMatchObject({ code: "ENOENT" });
   });
   it("hands the engine's complete changed-branch workspace and source guards to the profile coordinator (WS-034)", async () => {
     const base = await mkdtemp(join(tmpdir(), "statecase-engine-workspace-")); temporary.push(base);
