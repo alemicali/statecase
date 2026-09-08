@@ -82,9 +82,16 @@ describe("persistent file materialization replay (RT-006, BK-009)", () => {
 
   it.each(["relative","journal-child","journal-parent","too-many"])("refuses %s exact-file grants before mutation",async kind=>{
     const {root,files,options}=await fixture();
-    const granted=kind==="relative"?["relative"]:kind==="journal-child"?[join(options.directory,"active.jsonl")]:kind==="journal-parent"?[root]:Array.from({length:129},(_,index)=>join(root,`metadata-${index}`));
+    const granted=kind==="relative"?["relative"]:kind==="journal-child"?[join(options.directory,"active.jsonl")]:kind==="journal-parent"?[root]:Array.from({length:513},(_,index)=>join(root,`metadata-${index}`));
     await expect(applyRecoverableFileTransaction({writes:[{path:join(files,"first"),bytes:new Uint8Array([1])}],deletes:[]},{...options,files:granted})).rejects.toThrow("recovery");
     expect(await readFile(join(files,"first"),"utf8")).toBe("first original");
+  });
+
+  it("supports a bounded full-workspace metadata grant set without granting parent directories", async () => {
+    const { root, options } = await fixture(), files = Array.from({ length: 512 }, (_, index) => join(root, `metadata-${index}`));
+    await applyRecoverableFileTransaction({ writes: [{ path: files[511], bytes: new Uint8Array([1]) }], deletes: [] }, { ...options, roots: [], files });
+    expect(await readFile(files[511])).toEqual(Buffer.from([1]));
+    await expect(applyRecoverableFileTransaction({ writes: [{ path: join(root, "not-granted"), bytes: new Uint8Array([1]) }], deletes: [] }, { ...options, roots: [], files })).rejects.toThrow("recovery");
   });
 
   it("a persisted commit survives process death and recovery only cleans backups", async () => {
