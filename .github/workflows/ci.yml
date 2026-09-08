@@ -52,3 +52,23 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+
+  native-macos:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Qualify isolated launchd lifecycle
+        shell: bash
+        run: |
+          fixture_root=$(mktemp -d /tmp/statecase-launchd-XXXXXX)
+          STATECASE_UAT_CONFIRM=temporary-native-service \
+          STATECASE_UAT_ROOT="$fixture_root" \
+          STATECASE_UAT_CLI="$GITHUB_WORKSPACE/apps/cli/dist/bin.js" \
+          node scripts/uat/native-launchd.mjs

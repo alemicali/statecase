@@ -14,6 +14,9 @@ Branch protection should require these logical checks on pull requests:
    GitHub code scanning is available for the repository.
 4. `Dependency Review` — blocks newly introduced vulnerable dependencies once
    GitHub dependency review is available for the repository.
+5. `native-macos` — real launchd start/stop, private IPC, duplicate-writer denial,
+   profile isolation, filesystem notification, SIGKILL restart, and cleanup on
+   a disposable hosted macOS runner with synthetic unauthenticated state only.
 
 Jobs use `npm ci`, minimum permissions, dependency caching, concurrency
 cancellation, timeouts, and no production credentials. CI forks receive no
@@ -46,7 +49,7 @@ and owner approval; it must not be used to merge untested new code.
 
 ### Pull request
 
-Run quality and runtime compatibility. Add dependency review and CodeQL to the
+Run quality, runtime compatibility, and native macOS lifecycle. Add dependency review and CodeQL to the
 required set as soon as GitHub exposes them for the repository. Core integration
 tests use local Cloudflare emulation and fake identity; no network account or
 personal harness directory.

@@ -4,6 +4,11 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Added profile-safe `daemon start` / `daemon stop`, idempotent service startup,
+  and manager-loaded definition checks. Installation/removal now refuse another
+  profile's service; uninstall verifies ownership before stopping anything.
+  Linux CLI lifecycle and profile-isolation UAT passed. Added an isolated real
+  launchd CI job; macOS qualification depends on that job passing.
 - Pinned the installing Node interpreter in Linux/macOS service definitions,
   preserved literal systemd environment-like paths, and rejected path control
   characters. Qualified real systemd-user start/stop, filesystem notifications,

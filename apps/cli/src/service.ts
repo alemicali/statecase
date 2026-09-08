@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { chmod, lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readFile, realpath, rename, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
@@ -23,7 +23,11 @@ export interface ServiceDefinition {
   disableCommands: Array<[string, string[]]>;
 }
 
-type CommandRunner = (file: string, args: readonly string[]) => Promise<unknown>;
+export type ServiceCommandRunner = (file: string, args: readonly string[]) => Promise<{ stdout: string }>;
+export type ServiceAction = "enable" | "disable" | "start" | "stop";
+const runManager: ServiceCommandRunner = (file, args) => promisify(execFile)(file, [...args], {
+  encoding: "utf8", timeout: 20_000, maxBuffer: 256 * 1024,
+});
 
 export function serviceDefinition(source: ServiceSource): ServiceDefinition {
   const nodeExecutable = source.nodeExecutable ?? process.execPath;
@@ -49,6 +53,7 @@ export async function installServiceDefinition(definition: ServiceDefinition): P
   const existing = await optionalContents(definition.path);
   if (existing !== undefined) {
     if (!owned(existing)) throw new Error(`refusing to replace non-Statecase service definition: ${definition.path}`);
+    assertProfile(definition, existing);
     if (existing === definition.contents) return { created: false, path: definition.path };
   }
   await mkdir(dirname(definition.path), { recursive: true, mode: 0o700 });
@@ -74,17 +79,82 @@ export async function removeServiceDefinition(definition: ServiceDefinition): Pr
   const existing = await optionalContents(definition.path);
   if (existing === undefined) return false;
   if (!owned(existing)) throw new Error(`refusing to remove non-Statecase service definition: ${definition.path}`);
+  assertProfile(definition, existing);
   await rm(definition.path);
   return true;
 }
 
 export async function activateService(
   definition: ServiceDefinition,
-  action: "enable" | "disable",
-  runner: CommandRunner = async (file, args) => promisify(execFile)(file, [...args]),
+  action: ServiceAction,
+  runner: ServiceCommandRunner = runManager,
 ): Promise<void> {
-  const commands = action === "enable" ? definition.enableCommands : definition.disableCommands;
-  for (const [file, args] of commands) await runner(file, args);
+  const existing = await optionalContents(definition.path);
+  if (existing === undefined) throw new Error("Statecase service is not installed; run daemon install first");
+  if (!owned(existing)) throw new Error("refusing to control non-Statecase service definition");
+  assertProfile(definition, existing);
+  const commands: Array<[string, string[]]> = [];
+  if (definition.source.platform === "linux") {
+    const loaded = (await manager(runner, "systemctl", ["--user", "show", "statecase.service", "--property=FragmentPath", "--value"])).trim();
+    if (loaded) await assertLoadedPath(definition, loaded);
+    if (action === "enable") commands.push(...definition.enableCommands);
+    else if (action === "disable") commands.push(...definition.disableCommands);
+    else {
+      if (action === "start") commands.push(["systemctl", ["--user", "daemon-reload"]]);
+      if (loaded || action === "start") commands.push(["systemctl", ["--user", action, "statecase.service"]]);
+    }
+  } else {
+    const domain = definition.enableCommands[0]![1][1]!;
+    const target = `${domain}/com.statecase.daemon`;
+    let loaded = false;
+    let printed: string | undefined;
+    try {
+      printed = (await runner("launchctl", ["print", target])).stdout;
+    } catch (error) {
+      // Only an explicit missing-service response means stopped. Permission,
+      // missing domain, timeout, and other failures must not trigger bootstrap.
+      const failure = error as { code?: unknown; stderr?: unknown };
+      if (failure.code !== 113 || typeof failure.stderr !== "string" ||
+          !failure.stderr.includes('Could not find service "com.statecase.daemon"')) {
+        throw new Error("native service manager inspection failed");
+      }
+    }
+    if (printed !== undefined) {
+      const paths = [...printed.matchAll(/^\tpath = (.+)$/gm)];
+      if (paths.length !== 1) throw new Error("unrecognized native service manager response; refusing service control");
+      await assertLoadedPath(definition, paths[0]![1]!);
+      loaded = true;
+    }
+    if (action === "enable" || action === "start") {
+      commands.push(["launchctl", ["enable", target]]);
+      if (!loaded) commands.push(["launchctl", ["bootstrap", domain, definition.path]]);
+      // Without -k: a repeated start must not kill a healthy writer.
+      commands.push(["launchctl", ["kickstart", target]]);
+    } else {
+      // KeepAlive would restart a killed process; bootout unloads it instead.
+      if (loaded) commands.push(["launchctl", ["bootout", target]]);
+      if (action === "disable") commands.push(["launchctl", ["disable", target]]);
+    }
+  }
+  for (const [file, args] of commands) await manager(runner, file, args);
+}
+
+async function manager(runner: ServiceCommandRunner, file: string, args: string[]): Promise<string> {
+  try { return (await runner(file, args)).stdout; }
+  catch { throw new Error("native service manager command failed; inspect the local service manager"); }
+}
+
+async function assertLoadedPath(definition: ServiceDefinition, path: string): Promise<void> {
+  if (await realpath(path) !== await realpath(definition.path)) {
+    throw new Error("native manager loaded a different service definition; refusing service control");
+  }
+}
+
+function assertProfile(definition: ServiceDefinition, contents: string): void {
+  const profile = definition.source.platform === "linux"
+    ? `Environment=${systemdQuote(`STATECASE_HOME=${definition.source.statecaseHome}`)}\n`
+    : `  <dict><key>STATECASE_HOME</key>\n    <string>${xml(definition.source.statecaseHome)}</string></dict>\n`;
+  if (!contents.includes(profile)) throw new Error("Statecase service belongs to another profile; refusing to modify it");
 }
 
 function systemdDefinition(source: ServiceSource): ServiceDefinition {

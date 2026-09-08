@@ -130,6 +130,15 @@ Node runtime, reinstall the service. Linux native lifecycle evidence is recorded
 in `uat/2026-09-08-native-systemd.md`; this does not qualify macOS lifecycle,
 machine reboot/sleep, or authenticated background convergence.
 
+`daemon start|stop` MUST verify the installed Statecase marker and profile
+binding before invoking a manager. A loaded manager definition MUST resolve to
+the expected file. One native service slot exists per OS user; changing
+STATECASE_HOME does not authorize replacing/stopping another profile's slot.
+Repeated start must not kill a healthy writer. Linux stop preserves its enabled
+state; launchd stop unloads the job to defeat KeepAlive. Unknown inspection
+errors never count as an absent job. JSON returns `action`, `platform`, and
+`requested: true`; callers use `daemon status` to check readiness separately.
+
 Proposed defaults: 2-second debounce, 30-second maximum push interval,
 20-second remote-head poll, and exponential retry from 1 second to 5 minutes.
 All are configurable.

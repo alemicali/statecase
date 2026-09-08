@@ -21,6 +21,43 @@ afterEach(async () => {
 });
 
 describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
+  it("controls only its own native profile through JSON start/stop and safe uninstall (RT-012, RT-014)", async () => {
+    const home = await mkdtemp(join(tmpdir(), "statecase-cli-service-"));
+    temporary.push(home);
+    process.env.HOME = home;
+    process.env.STATECASE_HOME = join(home, "profile");
+    const output: string[] = [];
+    const errors: string[] = [];
+    const calls: string[][] = [];
+    let definitionPath = "";
+    const io: CliIO = { stdout: (value) => output.push(value), stderr: (value) => errors.push(value), fetch,
+      serviceRunner: async (_file, args) => {
+        calls.push([...args]);
+        return { stdout: args.includes("show") ? `${definitionPath}\n`
+          : args[0] === "print" ? `\tpath = ${definitionPath}\n` : "" };
+      },
+    };
+    expect(await command(io, "--json", "daemon", "install", "--no-start")).toBe(0);
+    definitionPath = JSON.parse(output.at(-1)!).path;
+    expect(calls).toHaveLength(0);
+    for (const action of ["start", "stop"] as const) {
+      expect(await command(io, "--json", "daemon", action)).toBe(0);
+      expect(JSON.parse(output.at(-1)!)).toMatchObject({ action, platform: process.platform, requested: true });
+    }
+    calls.length = 0;
+    process.env.STATECASE_HOME = join(home, "other-profile");
+    expect(await command(io, "--json", "daemon", "uninstall", "--yes")).not.toBe(0);
+    expect(calls).toHaveLength(0);
+    expect(errors.at(-1)).toContain("another profile");
+    process.env.STATECASE_HOME = join(home, "profile");
+    expect(await command(io, "--json", "daemon", "uninstall", "--yes")).toBe(0);
+    expect(JSON.parse(output.at(-1)!)).toMatchObject({ removed: true, stopped: true });
+    calls.length = 0;
+    expect(await command(io, "--json", "daemon", "uninstall", "--yes")).toBe(0);
+    expect(calls).toHaveLength(0);
+    expect(JSON.parse(output.at(-1)!)).toMatchObject({ removed: false, stopped: false });
+  });
+
   it("creates, exports, joins, maps, pushes, and pulls a vault without revealing credentials", async () => {
     const base = await mkdtemp(join(tmpdir(), "statecase-cli-uat-"));
     temporary.push(base);

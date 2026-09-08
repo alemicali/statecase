@@ -332,6 +332,11 @@ deployed Worker test environment.
 - `RT-011`: ephemeral `statecase run` needs no systemd/launchd.
 - `RT-012`: uninstall removes only Statecase-owned shims/services and restores
   prior PATH behavior.
+- `RT-014`: start/stop preserve the active profile boundary, never restart an
+  already running writer, and refuse foreign/unknown definitions before any
+  manager mutation. Missing launchd services are distinguished from permission,
+  missing-domain, timeout, and unknown-format errors. CLI JSON reports a manager
+  request, not successful remote synchronization.
 - `RT-013`: native services pin the installing Node interpreter, preserve
   literal special-character paths, reject control-character injection, and
   survive a real manager-driven SIGKILL/restart without duplicate writers.

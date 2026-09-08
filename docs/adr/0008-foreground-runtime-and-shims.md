@@ -3,7 +3,7 @@
 Status: accepted
 Date: 2026-09-06
 Owners: Statecase maintainers
-Test IDs: RT-001 through RT-006, RT-011, RT-012, RT-013, BK-008, BK-009
+Test IDs: RT-001 through RT-006, RT-011, RT-012, RT-013, RT-014, BK-008, BK-009
 
 ## Context
 
@@ -57,6 +57,17 @@ Node interpreter instead of relying on the service manager's PATH. Linux
 disables systemd environment substitution in ExecStart and escapes specifiers;
 both platforms reject path control characters before serialization. Replacing
 or removing that Node installation requires reinstalling the service definition.
+`daemon start` and `daemon stop` operate only on the installed definition for
+the selected local profile. The current product has one native service slot
+per OS user: a different STATECASE_HOME cannot take over that slot. Ownership
+and the serialized profile binding are checked before replacement, removal,
+or manager mutation; a loaded manager path must resolve to the same definition.
+Linux stop preserves autostart. macOS stop unloads the job so KeepAlive cannot
+respawn it; start enables/bootstrap-loads only when absent and kickstarts
+without killing an existing process. Manager inspection failures fail closed.
+The launchd diagnostic path parser is deliberately strict and requires native
+CI evidence for supported OS versions. CLI JSON acknowledges the request;
+`daemon status` establishes process readiness, not successful remote sync.
 Linux start/stop, filesystem notification, private IPC, duplicate-writer denial,
 and SIGKILL restart passed native UAT; macOS and authenticated background
 convergence remain release gates. The current journal records reconciliation intent; future capsule work will pin the

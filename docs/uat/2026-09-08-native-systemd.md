@@ -63,6 +63,21 @@ Run only on a user manager without an existing Statecase unit. The script
 does not reboot the machine, change login lingering, or authorize any account.
 It qualifies lifecycle, not successful encrypted background transfer. macOS
 launchd, authenticated multi-device convergence, sleep/network transitions,
-boot/login startup, and the planned CLI start/stop surface remain follow-up
+boot/login startup remain follow-up
 release work. Fixture contents remain disposable; the driver removes service
 definitions and links but does not recursively delete the supplied directory.
+
+## CLI lifecycle follow-up
+
+The subsequent candidate adds `daemon start|stop` and guards every service
+operation against another local profile or a different manager-loaded file.
+The native driver passed again using those CLI commands instead of direct
+systemctl start/stop. It additionally verifies that repeated start preserves
+the PID, repeated stop succeeds, and another STATECASE_HOME cannot stop the
+running writer. It still uses direct systemctl only for the runtime-only link,
+ownership inspection, deliberate crash injection, and fixture cleanup.
+
+Local `npm run check` passed with **446 tests**, **90.29%** overall branch
+coverage, and **100%** service-module branch coverage. The launchd command
+branches have local contract tests; a new real `native-macos` CI job is the
+separate OS-level qualification gate, not implied by this Linux result.

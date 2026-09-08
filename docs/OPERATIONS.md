@@ -87,17 +87,21 @@ old keys, or ciphertext it already copied.
 ### Native service runtime
 
 `statecase daemon install` pins the current Node executable. Reinstall the
-definition after replacing/removing that Node installation; the service manager
+definition and stop/start the service after replacing/removing that Node installation; the service manager
 does not load nvm or your interactive shell startup files. Linux definitions
 retain their filesystem hardening and require configured writable roots to be
 available. `statecase daemon status` uses owner-only local IPC.
 
 The [Linux lifecycle drill](uat/2026-09-08-native-systemd.md) passed with isolated
 fixtures. macOS, authenticated background convergence, and sleep/boot behavior
-remain release gates. The current CLI supports install, foreground, status,
-and uninstall; dedicated start/stop commands are still pending. Until then,
-Linux operators can use `systemctl --user start|stop statecase.service` after
-installation. Do not use the fixture drill on a manager with an existing unit.
+remain release gates. Use `statecase daemon start|stop|status` after installation.
+Start/stop are idempotent and verify the installed profile and loaded definition.
+Linux stop preserves autostart; macOS stop unloads the job so KeepAlive cannot
+respawn it. A different STATECASE_HOME cannot control the single native service
+slot for this OS user. To switch profiles, uninstall from the old profile first.
+JSON `requested: true` acknowledges a manager operation, not synchronization
+success. Use status to inspect the daemon. Do not use the fixture drill on a
+manager with an existing unit.
 
 ### Automated suites
 

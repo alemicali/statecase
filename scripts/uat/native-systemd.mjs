@@ -24,6 +24,7 @@ await writeFile(join(profile, "config.json"), JSON.stringify({ version: 1, apiUr
   { id: "drop_native", namespace: "drop:drop_native", kind: "drop", path: drop, mode: "two-way", name: "Native service fixture" },
 ], workspaces: [], applied: {} }), { mode: 0o600, flag: "wx" });
 const env = { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), STATECASE_HOME: profile,
+  XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS,
   CODEX_HOME: join(home, "codex"), CODEX_SQLITE_HOME: join(home, "codex-sqlite"), CLAUDE_CONFIG_DIR: join(home, "claude") };
 let linked = false;
 let definition;
@@ -35,13 +36,17 @@ try {
   await manager("link", "--runtime", definition);
   linked = true;
   await assertOwned();
-  await manager("start", unit);
+  assert.deepEqual(await command("daemon", "start"), { action: "start", platform: "linux", requested: true });
   const initial = await waitForStatus((status) => status.running && status.roots === 1);
   const socket = await stat(join(profile, "daemon.sock"));
   assert.ok(socket.isSocket());
   assert.equal(socket.mode & 0o777, 0o600);
   assert.equal((await stat(profile)).mode & 0o777, 0o700);
   assert.equal(initial.queued, true, "unauthenticated fixture should remain visibly queued");
+  await command("daemon", "start");
+  assert.equal((await command("daemon", "status")).pid, initial.pid, "repeated start restarted the writer");
+  await assert.rejects(commandWithEnv({ ...env, STATECASE_HOME: join(root, "other-profile") }, "daemon", "stop"));
+  assert.equal((await command("daemon", "status")).pid, initial.pid, "another profile stopped the writer");
   await assert.rejects(command("daemon", "foreground", "--once"), "a second daemon acquired the profile lock");
   assert.equal((await command("daemon", "status")).pid, initial.pid);
 
@@ -51,10 +56,11 @@ try {
   await manager("kill", "--signal=SIGKILL", "--kill-whom=main", unit);
   const recovered = await waitForStatus((status) => status.running && status.pid !== initial.pid);
   await assertOwned();
-  await manager("stop", unit);
+  await command("daemon", "stop");
   await assert.rejects(command("daemon", "status"));
   await assert.rejects(readFile(join(profile, "daemon.lock")), { code: "ENOENT" });
-  await manager("start", unit);
+  await command("daemon", "stop");
+  await command("daemon", "start");
   const restarted = await waitForStatus((status) => status.running && status.pid !== recovered.pid);
   assert.equal(restarted.roots, 1);
 } finally {
@@ -70,7 +76,8 @@ try {
 }
 console.log(JSON.stringify({ result: "pass", nativeManager: "systemd-user", pinnedNodeRuntime: true,
   literalSpecialCharacterPaths: true, privateIpc: true, duplicateWriterDenied: true,
-  filesystemEvents: true, sigkillRecovery: true, explicitStopStart: true, cleanupVerified: true,
+  filesystemEvents: true, sigkillRecovery: true, explicitStopStart: true, profileIsolation: true,
+  idempotentStartStop: true, cleanupVerified: true,
   boundary: "isolated unauthenticated fixture; no remote sync or machine reboot claimed" }));
 
 async function manager(...args) {
@@ -83,7 +90,10 @@ async function assertOwned() {
     "service ownership changed; refusing further service operations");
 }
 async function command(...args) {
-  const result = await execute(process.execPath, [cli, "--json", ...args], { env, encoding: "utf8", timeout: 20_000 });
+  return commandWithEnv(env, ...args);
+}
+async function commandWithEnv(commandEnv, ...args) {
+  const result = await execute(process.execPath, [cli, "--json", ...args], { env: commandEnv, encoding: "utf8", timeout: 20_000 });
   return JSON.parse(result.stdout.trim().split("\n").filter(Boolean).at(-1));
 }
 async function waitForStatus(predicate) {

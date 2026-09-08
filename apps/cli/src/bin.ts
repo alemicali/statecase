@@ -25,7 +25,7 @@ import { readRecoveryKeyringKit, writeRecoveryKeyringKit } from "./recovery.js";
 import { DurableReconciler } from "./reconciler.js";
 import { createEmergencySnapshot, inspectEmergencySnapshot, restoreEmergencySnapshot, type EmergencySnapshot } from "./emergency.js";
 import { exitCodeFor, requireSession, selectedVault, StatecaseUsageError } from "./runtime.js";
-import { activateService, installServiceDefinition, removeServiceDefinition, serviceDefinition } from "./service.js";
+import { activateService, installServiceDefinition, removeServiceDefinition, serviceDefinition, type ServiceCommandRunner } from "./service.js";
 import { installHarnessShim, removeHarnessShim, verifyHarnessShim } from "./shims.js";
 import { installSkill, uninstallSkill, verifySkill } from "./skills.js";
 import { HarnessSupervisor, resolveHarnessExecutable, type HarnessName, type ReconcileReason } from "./supervisor.js";
@@ -36,6 +36,7 @@ export interface CliIO {
   stdout(value: string): void;
   stderr(value: string): void;
   fetch: typeof fetch;
+  serviceRunner?: ServiceCommandRunner;
 }
 
 const defaultIo: CliIO = {
@@ -1011,7 +1012,7 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
     .action(async (options: { start: boolean }) => {
       const definition = await daemonServiceDefinition(store, argv);
       const result = await installServiceDefinition(definition);
-      if (options.start) await activateService(definition, "enable");
+      if (options.start) await activateService(definition, "enable", io.serviceRunner);
       emit(io, program, { ...result, platform: definition.source.platform, activated: options.start }, `${result.created ? "Installed" : "Verified"} ${definition.path}${options.start ? " and started the daemon" : ""}`);
     });
   daemon.command("uninstall")
@@ -1020,10 +1021,22 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
     .option("--no-stop", "remove the definition without invoking the service manager")
     .action(async (options: { stop: boolean }) => {
       const definition = await daemonServiceDefinition(store, argv);
-      if (options.stop) await activateService(definition, "disable");
+      let stopped = false;
+      if (options.stop && await lstat(definition.path).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? undefined : Promise.reject(error))) {
+        await activateService(definition, "disable", io.serviceRunner);
+        stopped = true;
+      }
       const removed = await removeServiceDefinition(definition);
-      emit(io, program, { removed, platform: definition.source.platform, stopped: options.stop }, removed ? `Removed ${definition.path}` : "Statecase daemon service was not installed");
+      emit(io, program, { removed, platform: definition.source.platform, stopped }, removed ? `Removed ${definition.path}` : "Statecase daemon service was not installed");
     });
+
+  for (const action of ["start", "stop"] as const) {
+    daemon.command(action).description(`${action} the installed service for this profile`).action(async () => {
+      const definition = await daemonServiceDefinition(store, argv);
+      await activateService(definition, action, io.serviceRunner);
+      emit(io, program, { action, platform: definition.source.platform, requested: true }, `Statecase daemon ${action} requested`);
+    });
+  }
 
   const skills = program.command("skills").description("install the agent-native Statecase skill");
   skills.command("install").option("--target <path>").action(async (options: { target?: string }) => {
