@@ -106,3 +106,23 @@ jobs:
           STATECASE_UAT_CODEX_SANDBOX=externally-isolated \
           STATECASE_UAT_CONFIRM=run-native-harness-in-disposable-sandbox \
           npm run uat:native-codex
+
+  native-claude:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Install the qualified native harness version
+        run: npm install --prefix "$RUNNER_TEMP/statecase-native-tools" --no-audit --no-fund @anthropic-ai/claude-code@2.1.263
+      - name: Qualify native session continuity in the disposable runner VM
+        shell: bash
+        run: |
+          STATECASE_UAT_CLAUDE="$RUNNER_TEMP/statecase-native-tools/node_modules/.bin/claude" \
+          STATECASE_UAT_PARENT="$GITHUB_WORKSPACE" \
+          STATECASE_UAT_CONFIRM=run-native-harness-in-disposable-sandbox \
+          npm run uat:native-claude

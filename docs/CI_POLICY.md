@@ -22,6 +22,12 @@ Branch protection should require these logical checks on pull requests:
    restart, disjoint updates, deletion, and idle no-op verification. All account
    credentials and database/object state are generated inside one temporary
    fixture; no external account or existing agent directory is used.
+7. `native-codex` and `native-claude` — pinned real harnesses execute file
+   tools, persist sessions, resume their original UUID in a different home and
+   checkout after encrypted engine hydration, and synchronize changes back.
+   Each runs on a disposable hosted VM with a deterministic loopback model
+   provider and in-memory reference storage. These jobs do not replace the
+   packaged/live-cloud cross-host UAT or qualify interactive session pickers.
 
 Jobs use `npm ci`, minimum permissions, dependency caching, concurrency
 cancellation, timeouts, and no production credentials. CI forks receive no
@@ -54,8 +60,8 @@ and owner approval; it must not be used to merge untested new code.
 
 ### Pull request
 
-Run quality, runtime compatibility, native macOS lifecycle, and authenticated
-background sync. Add dependency review and CodeQL to the
+Run quality, runtime compatibility, native macOS lifecycle, authenticated
+background sync, and native Codex/Claude session continuity. Add dependency review and CodeQL to the
 required set as soon as GitHub exposes them for the repository. Core integration
 tests use local Cloudflare emulation and fake identity; no network account or
 personal harness directory.

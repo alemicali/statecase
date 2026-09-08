@@ -297,7 +297,7 @@ It does not establish that arbitrary shell/code executions disclose all reads:
 `strict` report validates the extracted dependency set, not universal read
 coverage. Complete coverage reporting for opaque tool execution remains required
 before an unconditional complete-context claim. Packaged/live-cloud cross-host
-resume, Claude resume, interactive pickers, the full compatibility matrix, and
+resume, interactive pickers, the full compatibility matrix, and
 sleep/reboot remain open qualification work.
 
 An extended native return-sync drill subsequently reproduced a release-blocking
@@ -322,8 +322,26 @@ deterministic-provider test of the preceding candidate. The branch/rollback
 candidate `a92a244` subsequently passed the complete
 [CI run](https://github.com/alemicali/statecase/actions/runs/34182284800), including
 native Codex return-sync and background synchronization. A later reserved-path
-guard has the 498-test local evidence above and requires its own CI run. Persistent
+guard passed its own [complete CI run](https://github.com/alemicali/statecase/actions/runs/34182534166),
+including native Codex return-sync. Persistent
 interrupted recovery, atomic HEAD and check-to-mutation races,
 managed LFS acquisition, packaged/live cross-host UAT, and broader qualification
 remain unresolved. Do not describe ordinary workspace round-trip sync as fully
 release-qualified yet.
+
+### Native Claude continuity checkpoint — 2026-09-08
+
+The [native Claude drill](uat/2026-09-08-native-claude-resume.md) passed with
+Claude Code 2.1.263 in a dedicated Daytona sandbox. Real Read/Edit/Write tools
+read tracked input, edit a tracked artifact, and create an untracked note.
+Strict engine hydration transfers the session and overlay onto the identical
+Git baseline in a fresh home and differently mapped project; `--resume` reopens
+the same UUID with original history, and native target edits synchronize back.
+The storage backend is an in-memory reference implementation and model replies
+come from a deterministic loopback Messages fixture. This is not packaged CLI
+enrollment, live Cloudflare, hosted inference, or physical cross-host evidence.
+The first provider runs failed closed on a native HEAD health probe; recognizing
+that exact probe allowed the drill to finish without changes to product code.
+A dedicated pinned-harness CI job now repeats this scope. Interactive listing,
+pre-apply runtime compatibility checks, other harness versions, and the combined
+packaged/live-cloud cross-host path remain release gates.

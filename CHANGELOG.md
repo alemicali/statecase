@@ -4,6 +4,13 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Qualified native Claude Code 2.1.263 Read/Edit/Write and original-UUID resume
+  after encrypted engine transfer into a fresh home/different Git checkout,
+  including exact baseline, untracked content, non-mutating hydration preview,
+  original history, and return sync. Added a repeatable isolated native CI drill.
+  Reference storage and deterministic loopback model responses do not qualify
+  packaged/live-cloud cross-host use, hosted inference, or interactive pickers.
+
 - Rejected Git metadata paths (including `.GIT` casing) and reserved recovery
   artifact paths inside workspace capsules. Added failing-first regressions
   proving a valid overlay must not overwrite `.git/config` or recovery files.

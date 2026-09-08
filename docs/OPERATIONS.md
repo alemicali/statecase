@@ -141,6 +141,17 @@ when nested sandboxing is unavailable. This changes the generated fixture's
 configuration, never the operator's harness. The CI job runs this opt-in in a
 fresh hosted runner VM. See the [executed scope and limitations](uat/2026-09-08-native-codex-resume.md).
 
+`npm run uat:native-claude` runs the corresponding Claude Code 2.1.263
+Read/Edit/Write, original-UUID resume, and return-sync drill. Run it only in a
+disposable sandbox/runner with an absolute `STATECASE_UAT_CLAUDE` executable,
+absolute `STATECASE_UAT_PARENT`, and
+`STATECASE_UAT_CONFIRM=run-native-harness-in-disposable-sandbox`. It creates
+fresh homes and native project paths, whitelists the child environment, allows
+only file tools in restricted mode, and uses synthetic loopback provider
+credentials. Never supply an existing agent profile. No hosted model account
+or live Cloudflare service is involved. See the
+[Claude execution report](uat/2026-09-08-native-claude-resume.md).
+
 ## Deploy
 
 ```bash

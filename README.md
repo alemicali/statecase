@@ -58,6 +58,10 @@ Native Codex 0.153.4 UUID resume after encrypted engine transfer to a fresh home
 and mapped checkout passed in Daytona; [the report](docs/uat/2026-09-08-native-codex-resume.md)
 separates this deterministic-provider/reference-storage drill from live-cloud,
 cross-host, Claude, interactive-picker, and complete read-observation claims.
+The corresponding [Claude Code 2.1.263 drill](docs/uat/2026-09-08-native-claude-resume.md)
+also passed native Read/Edit/Write, original-session resume in a different home
+and checkout, and return sync, with the same one-host/reference-backend and
+deterministic-provider limits. Both have pinned native CI jobs.
 The packaged post-revocation rotation, multi-epoch offline catch-up, clean-device
 recovery, scoped reissuance, and historical Drop restore passed a live Daytona
 drill against Cloudflare.

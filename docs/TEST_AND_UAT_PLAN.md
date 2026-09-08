@@ -225,6 +225,13 @@ policy; they are never uploaded merely because they are present.
   secret and cache exclusions.
 - `AD-CL-005`: session IDs shared across projects do not collide.
 - `AD-CL-006`: restored sessions are listed/resumable before apply is marked.
+  `npm run uat:native-claude` exercises the UUID-resume subset with real Claude
+  Code 2.1.263: tracked Read/Edit, untracked Write, exact Git baseline, strict
+  non-mutating hydration preview, changed home/project path, original prompt
+  and tool results, and return sync. A deterministic loopback Messages provider
+  drives the real tools; the actual engine uses reference storage on one host.
+  Interactive listing, runtime pre-apply compatibility verification, packaged
+  live-cloud cross-host resume, and other versions remain separate gates.
 - `AD-CL-007`: changed native format fails closed and preserves raw local data.
 
 ## 6. Workspace capsule tests
