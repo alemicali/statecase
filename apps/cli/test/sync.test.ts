@@ -9,7 +9,9 @@ import { canonicalJson, namespaceManifestSchema, SERVICE_HEALTH, type NamespaceM
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { StatecaseClient } from "../src/client.js";
-import { sessionBindingKey, type LocalConfig, type RootMapping } from "../src/config.js";
+import { ConfigStore, sessionBindingKey, type LocalConfig, type RootMapping } from "../src/config.js";
+import type { WorkspaceApplication } from "@statecase/workspace";
+import type { FileTransaction } from "../src/materialize.js";
 import { createEmergencySnapshot, restoreEmergencySnapshot } from "../src/emergency.js";
 import { SyncConflict, SyncEngine, type VaultKeyring } from "../src/sync.js";
 import * as streamTransfer from "../src/stream-transfer.js";
@@ -22,11 +24,64 @@ const temporary: string[] = [];
 const runFile = promisify(execFile);
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   const { rm } = await import("node:fs/promises");
   await Promise.all(temporary.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
 describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, WS-003, WS-004)", () => {
+  it.each(["commit", "rollback", "dry-run"])("joins an authenticated engine pull and its profile decision: %s (RT-006)", async mode => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-engine-profile-")); temporary.push(base);
+    const source = join(base, "source"), target = join(base, "target"), home = join(base, "profile");
+    await mkdir(source); await mkdir(target); await writeFile(join(source, "note.txt"), "remote work");
+    const store = new ConfigStore(home), current = await store.loadConfig(); Object.assign(current, config(target)); await store.saveConfig(current);
+    const remote = new MemoryRemote(), client = new StatecaseClient("https://remote.test", "token", remote.fetch), key = await randomKey();
+    await new SyncEngine(client, "vlt_test", key).push(config(source));
+    const original = await readFile(join(home, "config.json")), before = structuredClone(current); let called = false;
+    const engine = new SyncEngine(client, "vlt_test", key, {
+      commitMaterialization: async (proposal: LocalConfig, workspaces: readonly WorkspaceApplication[], files: FileTransaction) => {
+        called = true; expect(proposal).toBe(current); expect(proposal.applied[current.mappings[0].namespace].revisionId).toBeTruthy();
+        expect(await readFile(join(home, "config.json"))).toEqual(original);
+        await store.materializeWorkspaceConfig(proposal, workspaces, files, { afterBoundary: phase => {
+          if (mode === "rollback" && phase === "install") throw new Error("synthetic interrupted engine pull");
+        } });
+      },
+    });
+    if (mode === "rollback") {
+      await expect(engine.pull(current)).rejects.toThrow(); expect(called).toBe(true); expect(current).toEqual(before);
+      expect(await readFile(join(home, "config.json"))).toEqual(original);
+      await expect(readFile(join(target, "note.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(store.saveConfig(current)).rejects.toThrow();
+    } else {
+      await engine.pull(current, mode === "dry-run"); expect(called).toBe(mode === "commit");
+      if (mode === "dry-run") { expect(current).toEqual(before); expect(await readFile(join(home, "config.json"))).toEqual(original); }
+      else { expect((await store.loadConfig()).applied).toEqual(current.applied); expect(await readFile(join(target, "note.txt"), "utf8")).toBe("remote work"); await store.saveConfig(current); }
+    }
+  });
+  it("hands the engine's complete changed-branch workspace and source guards to the profile coordinator (WS-034)", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-engine-workspace-")); temporary.push(base);
+    for (const [name, value] of Object.entries({ GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: join(base, "empty-config"), GIT_OPTIONAL_LOCKS: "0" })) vi.stubEnv(name, value);
+    const source = join(base, "source"), target = join(base, "target"), home = join(base, "profile");
+    await initializeRepository(source); await runFile("git", ["clone", "-q", "--no-local", source, target]);
+    await runFile("git", ["-C", source, "switch", "-qc", "incoming"]);
+    await writeFile(join(source, "tracked.txt"), "incoming staged\n"); await runFile("git", ["-C", source, "add", "tracked.txt"]);
+    await writeFile(join(source, "tracked.txt"), "incoming worktree\n");
+    const a: LocalConfig = { ...config(source), mappings: [], workspaces: [{ id: "ws_return", path: source, sync: "git" }] };
+    const store = new ConfigStore(home), b = await store.loadConfig(); Object.assign(b, { ...a, workspaces: [{ id: "ws_return", path: target, sync: "git", gitFetch: "auto" }] }); await store.saveConfig(b);
+    const remote = new MemoryRemote(), client = new StatecaseClient("https://remote.test", "token", remote.fetch), key = await randomKey();
+    await new SyncEngine(client, "vlt_test", key).push(a); let called = false;
+    const engine = new SyncEngine(client, "vlt_test", key, {
+      commitMaterialization: async (proposal: LocalConfig, workspaces: readonly WorkspaceApplication[], files: FileTransaction) => {
+        called = true; expect(workspaces).toHaveLength(1); expect(workspaces[0].captured.capsule.headRef).toBe("incoming");
+        await store.materializeWorkspaceConfig(proposal, workspaces, files);
+      },
+    });
+    await engine.pull(b); expect(called).toBe(true);
+    expect((await runFile("git", ["-C", target, "symbolic-ref", "--short", "HEAD"])).stdout.trim()).toBe("incoming");
+    expect((await runFile("git", ["-C", target, "show", ":tracked.txt"])).stdout).toBe("incoming staged\n");
+    expect(await readFile(join(target, "tracked.txt"), "utf8")).toBe("incoming worktree\n");
+    expect((await store.loadConfig()).applied).toEqual(b.applied);
+  });
   it.each(["session", "drop", "delete", "create", "identical", "tail", "replacement", "symlink", "buffered-read-race"])("preserves local work changed after preflight and rolls back earlier writes: %s (SY-012)", async (mode) => {
     const root = await mkdtemp(join(tmpdir(), "statecase-precommit-race-")); temporary.push(root);
     const source = join(root, "source"), target = join(root, "target");
