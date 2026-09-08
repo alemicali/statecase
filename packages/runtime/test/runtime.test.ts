@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -15,6 +15,65 @@ afterEach(async () => {
 });
 
 describe("persistent runtime lock (RT-006, RT-007)", () => {
+  it("uses the kernel mutex rather than a reused PID for v2 records but respects live legacy owners (RT-016)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "statecase-lock-pid-reuse-")); temporary.push(root);
+    const path = join(root, "daemon.lock");
+    await writeFile(path, JSON.stringify({ version: 2, pid: process.pid, token: "reused-pid", createdAt: 1 }), { mode: 0o600 });
+    const recovered = await ProfileLock.acquire(path);
+    expect(recovered.record.version).toBe(2); await recovered.release();
+    await writeFile(path, JSON.stringify({ version: 1, pid: process.pid, token: "legacy-live", createdAt: 1 }), { mode: 0o600 });
+    await expect(ProfileLock.acquire(path)).rejects.toThrow("already running");
+    expect(JSON.parse(await readFile(path, "utf8")).token).toBe("legacy-live");
+  });
+
+  it("preserves independent ownership changes during recovery and releases the kernel mutex on failure (RT-016)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "statecase-lock-change-")); temporary.push(root);
+    const path = join(root, "daemon.lock");
+    await writeFile(path, JSON.stringify({ version: 1, pid: 999, token: "stale", createdAt: 1 }), { mode: 0o600 });
+    const replacement = JSON.stringify({ version: 1, pid: 998, token: "independent", createdAt: 2 });
+    await expect(ProfileLock.acquire(path, { isAlive: () => false,
+      beforeStaleRecovery: async () => { await writeFile(path, replacement); } })).rejects.toThrow("ownership changed");
+    expect(await readFile(path, "utf8")).toBe(replacement);
+    const retry = await ProfileLock.acquire(path, { isAlive: () => false }); await retry.release();
+    await expect(ProfileLock.acquire(path, { beforePublish: async () => { throw new Error("fixture abort"); } })).rejects.toThrow("fixture abort");
+    expect(await readdir(root)).toEqual(["daemon.lock.statecase-lock.sqlite"]);
+    const afterAbort = await ProfileLock.acquire(path); await afterAbort.release();
+  });
+
+  it("refuses linked and oversized owner metadata before reclaiming anything (RT-016)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "statecase-lock-unsafe-")); temporary.push(root);
+    const path = join(root, "daemon.lock"), target = join(root, "other");
+    const original = JSON.stringify({ version: 1, pid: 999, token: "other-owner", createdAt: 1 });
+    await writeFile(target, original, { mode: 0o600 }); await symlink(target, path);
+    await expect(ProfileLock.acquire(path, { isAlive: () => false })).rejects.toThrow("invalid existing runtime lock");
+    expect(await readFile(target, "utf8")).toBe(original);
+    const { rm } = await import("node:fs/promises"); await rm(path);
+    await writeFile(path, JSON.stringify({ version: 1, pid: 999, token: "x".repeat(5000), createdAt: 1 }), { mode: 0o600 });
+    await expect(ProfileLock.acquire(path, { isAlive: () => false })).rejects.toThrow("invalid existing runtime lock");
+  });
+
+  it("never steals a replacement lock when two stale-lock recoveries overlap (RT-016, AU-013)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "statecase-lock-race-")); temporary.push(root);
+    const path = join(root, "daemon.lock");
+    await writeFile(path, JSON.stringify({ version: 1, pid: 999, token: "stale", createdAt: 1 }), { mode: 0o600 });
+    let reached!: () => void, resume!: () => void;
+    const atRecovery = new Promise<void>((accept) => { reached = accept; });
+    const paused = new Promise<void>((accept) => { resume = accept; });
+    const aPromise = ProfileLock.acquire(path, { pid: 100, isAlive: (pid) => pid !== 999,
+      beforeStaleRecovery: async () => { reached(); await paused; } });
+    await atRecovery;
+    let b: ProfileLock | undefined; let bFailure: unknown; let a: ProfileLock | undefined;
+    try {
+      b = await ProfileLock.acquire(path, { pid: 200, isAlive: (pid) => pid !== 999 }).catch((error: unknown) => { bFailure = error; return undefined; });
+      resume(); a = await aPromise;
+      expect(b).toBeUndefined(); expect(bFailure).toBeInstanceOf(Error);
+      expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({ pid: 100, token: a.record.token });
+    } finally {
+      resume(); a ??= await aPromise.catch(() => undefined);
+      await a?.release().catch(() => undefined); await b?.release().catch(() => undefined);
+    }
+  });
+
   it("allows one owner, rejects a live second owner, and releases idempotently", async () => {
     const root = await mkdtemp(join(tmpdir(), "statecase-lock-"));
     temporary.push(root);
@@ -31,7 +90,7 @@ describe("persistent runtime lock (RT-006, RT-007)", () => {
     const root = await mkdtemp(join(tmpdir(), "statecase-stale-lock-"));
     temporary.push(root);
     const path = join(root, "daemon.lock");
-    await writeFile(path, JSON.stringify({ version: 1, pid: 999, token: "stale", createdAt: 1 }));
+    await writeFile(path, JSON.stringify({ version: 1, pid: 999, token: "stale", createdAt: 1 }), { mode: 0o600 });
     const lock = await ProfileLock.acquire(path, { pid: 300, isAlive: () => false });
     const record = JSON.parse(await readFile(path, "utf8")) as { pid: number; token: string };
     expect(record.pid).toBe(300);

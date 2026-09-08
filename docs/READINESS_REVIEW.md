@@ -391,3 +391,22 @@ Release work includes missing implementation, not only additional testing:
   and compatibility tests. Session continuity does not establish config parity.
 
 Neither gap is waived by successful round-trip UAT or overall coverage.
+
+### Profile exclusion and crash checkpoint — 2026-09-08
+
+CI `34186898197` passed commit `064ad2a`, including the isolated packaged native
+credential job and existing Linux/Node22/Node24/macOS/native-harness jobs.
+
+A subsequent failing-first audit reproduced two owners during stale-lock
+reclamation. ADR-0022 adds a dedicated SQLite/kernel mutex, atomic v2 owner
+metadata, legacy-live-owner refusal and reserved local guard files. Real-process
+tests now prove one winner among eight simultaneous restart contenders after
+SIGKILL and recovery from pre-reclaim/pre-publication crashes. That is progress
+on local crash exclusion, not proof of workspace rollback, OS reboot, complete
+background/native parity or full production readiness. The complete check now
+passes 556 tests (90.55% global branches; runtime 95.45%, mutex 95.65%), and the
+clean-installed native credential drill passes with the new lock implementation.
+The local authenticated two-daemon/workerd drill also passes bidirectional
+transfer, interrupted-upload replay, offline crash recovery, disjoint writes,
+deletion and idle no-op. See the [recorded evidence](uat/2026-09-08-profile-mutex.md).
+Exact-candidate platform CI and remaining broader release gates still apply.

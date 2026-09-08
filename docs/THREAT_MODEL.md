@@ -81,6 +81,14 @@ replayed device code; stolen bootstrap capability; one client signs for another.
 
 Controls:
 
+- ADR-0022 profile exclusion uses a dedicated SQLite/kernel mutex for the whole
+  operation lifetime and atomic, bounded owner metadata. This prevents two new
+  stale reclaimers from stealing each other's lock and releases exclusion on
+  process death. Persistent guard inodes are never automatically deleted and
+  are excluded from sync. Mixed old/new local writers, malicious same-principal
+  inode replacement and broken network-filesystem locks are outside that
+  guarantee; stop old writers before upgrading the local lock format.
+
 - keychain or protected-file credentials for persistent clients;
 - explicit native protection (ADR-0021) encrypts the complete local credential
   file with a key held in persistent Secret Service; it never silently changes

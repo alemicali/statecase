@@ -3,6 +3,8 @@ import { dirname } from "node:path";
 
 import Database from "better-sqlite3";
 
+export { LocalFileMutex, LocalMutexBusy } from "./mutex.js";
+
 export type OperationState = "queued" | "running" | "committed";
 
 export interface NewOperation {

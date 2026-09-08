@@ -53,6 +53,8 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
       const name = `context.md.statecase-transaction-abcdef12-abcd-4bcd-8bcd-abcdef123456.${suffix}`;
       return [name, name.toUpperCase()];
     });
+    recoveryNames.push("daemon.lock.statecase-lock.sqlite", "DAEMON.LOCK.STATECASE-LOCK.SQLITE",
+      "daemon.lock.statecase-lock.sqlite-journal", "daemon.lock.statecase-lock.sqlite.owned.tmp");
     for (const name of recoveryNames) await writeFile(join(first, "nested", name), "local-only recovery plaintext\n");
     await writeFile(outside, "outside\n");
     await symlink(outside, join(first, "link.txt"));

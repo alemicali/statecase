@@ -558,6 +558,15 @@ upload status, applied remote revisions, pending tombstones, path mappings,
 daemon leases, and redacted errors. A crash at any instruction boundary MUST
 allow replay without duplicate commits or lost queued changes.
 
+Profile locks use a dedicated persistent `<lock>.statecase-lock.sqlite` inode
+and an exclusive native SQLite transaction held for the lock lifetime, separate
+from `state.db` (ADR-0022). Owner metadata is version two, bounded/nonblocking
+and published only after complete private write/fsync. Kernel acquisition,
+not PID reuse, decides exclusion for v2. Live legacy v1 owners are respected;
+stop all older local writers before upgrading. Guard existence is not liveness.
+Never copy/read-open/unlink a live guard outside SQLite or put the profile on
+NFS. Mutex names and sidecars are reserved from synchronization/materialization.
+
 ## 8. Harness adapter contract
 
 Each adapter implements:

@@ -127,6 +127,20 @@ It is not an OS reboot, cloud sync, macOS or interactive-unlock qualification.
 
 ### Native service runtime
 
+When upgrading to the ADR-0022 lock format, stop older Statecase daemons and
+supervisors before starting the replacement CLI. Do not run older and newer
+lock implementations against the same local profile. New owner records use
+version two; active legacy version-one PIDs are still respected.
+
+Files ending in `.statecase-lock.sqlite` remain after the owner exits: they are
+persistent kernel-lock inodes, not stale liveness markers. Do not delete,
+replace, inspect with ordinary file reads from an embedded Statecase process,
+or synchronize them; sidecars and case variants are also excluded. Use
+`statecase daemon status` to inspect liveness. A crashed new process releases
+its native lock automatically; a malformed owner record still fails closed
+and should be investigated with all writers stopped. This mechanism requires
+a local filesystem with working SQLite locking, not NFS/shared agent homes.
+
 `statecase daemon install` pins the current Node executable. Reinstall the
 definition and stop/start the service after replacing/removing that Node installation; the service manager
 does not load nvm or your interactive shell startup files. Linux definitions

@@ -155,7 +155,7 @@ describe("OS-backed local credential protection (AU-012, AU-013, CR-011)", () =>
     expect(JSON.stringify(failure)).not.toContain(secrets().token);
     expect(await readFile(f.path)).toEqual(original); expect(f.keys.size).toBe(1);
     expect((await readdir(f.root)).sort()).toEqual(["credentials.json", "locks"]);
-    expect(await readdir(join(f.root, "locks"))).toEqual([]);
+    expect(await readdir(join(f.root, "locks"))).toEqual(["credentials.lock.statecase-lock.sqlite"]);
   });
 
   it("rejects an invalid backend key and wipes a wrongly sized owned buffer", async () => {

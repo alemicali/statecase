@@ -2444,6 +2444,7 @@ function excludedBuiltIn(path: string): boolean {
   const basename = parts.at(-1) ?? "";
   return parts.some((part) => part === ".git" || part === "node_modules" || part === ".statecase") ||
     parts.some((part) => /\.statecase-transaction-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\.(?:staged|backup)$/iu.test(part)) ||
+    parts.some((part) => /\.statecase-lock\.sqlite(?:$|[.-])/iu.test(part)) ||
     basename === ".env" || basename.startsWith(".env.") || basename === "auth.json" ||
     /(?:^|[._-])credentials?(?:[._-]|$)/iu.test(basename) || /\.(?:pem|key|p12|pfx)$/iu.test(basename);
 }

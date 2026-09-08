@@ -68,9 +68,9 @@ keychain, never the operator's keychain. Required tests include preview,
 round-trip/update, missing/locked/ambiguous backend, timeout, wrong key/context,
 malformed and oversized files, symlink refusal, foreign locks, failed commit,
 source changes during migration, stale saves, and unchanged legacy bytes on
-failure. Simultaneous stale-lock reclamation after process crashes still needs
-fault qualification of the shared `ProfileLock` implementation; normal
-active-writer exclusion does not prove that recovery boundary.
+failure. ADR-0022 replaces the racy stale-lock reclamation with a native SQLite
+mutex. Deterministic overlap and real-process SIGKILL/restart tests now cover
+that boundary; platform/package qualification must track the exact candidate.
 Real reboot/unlock, macOS, recovery/downgrade and independent security
 review remain release gates until supported by evidence.
 

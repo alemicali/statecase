@@ -375,6 +375,15 @@ deployed Worker test environment.
 
 ## 9. Daemon and shim tests
 
+- `RT-016`: kernel-backed exclusion survives process death and overlapping
+  stale-lock recovery. Pause one reclaimer and attempt another; it must not
+  steal the lock. After SIGKILL, eight independent contenders must yield
+  exactly one owner. Kill at pre-reclaim and pre-publication boundaries and
+  retry; never publish partial owner JSON or lose kernel exclusion. Cover
+  v2 PID reuse, live legacy owner refusal, unsafe/oversized metadata, foreign
+  replacement, native file creation faults, persistent inode identity and
+  case-insensitive exclusion of all mutex/sidecar names from sync/materialization.
+
 - `RT-015`: independent authenticated daemon processes converge without manual
   sync after setup, preserve a running journal operation across an interrupted
   object upload and SIGKILL, restart offline, reconcile disjoint peer writes,

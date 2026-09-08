@@ -1132,7 +1132,9 @@ describe("exact Git workspace capsules (WS-010..WS-018, WS-025..WS-026)", () => 
 describe("authenticated managed workspace advancement (WS-034)", () => {
   it.each([".git/config", ".GIT/config", "nested/context.statecase-transaction-11111111-2222-4333-8444-555555555555.backup",
     "nested/context.STATECASE-TRANSACTION-ABCDEF12-ABCD-4BCD-8BCD-ABCDEF123456.BACKUP",
-    "nested/context.Statecase-Transaction-abcdef12-abcd-4bcd-8bcd-abcdef123456.Staged/child.txt"])(
+    "nested/context.Statecase-Transaction-abcdef12-abcd-4bcd-8bcd-abcdef123456.Staged/child.txt",
+    "daemon.lock.statecase-lock.sqlite", "DAEMON.LOCK.STATECASE-LOCK.SQLITE", "nested/daemon.lock.statecase-lock.sqlite-journal",
+    "nested/daemon.lock.statecase-lock.sqlite.owned.tmp", "nested/daemon.lock.statecase-lock.sqlite/child"])(
     "rejects reserved local metadata in an otherwise valid capsule: %s", async (path) => {
       const source = await repository("reserved-source");
       const target = await repository("reserved-target");

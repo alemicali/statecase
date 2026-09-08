@@ -4,6 +4,14 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Fixed a reproduced double-owner race in stale profile-lock recovery. Daemon,
+  restore and credential locks now hold a dedicated SQLite/kernel mutex for
+  their lifetime and publish complete v2 owner metadata atomically. Added real
+  SIGKILL tests with eight restart contenders and two interrupted recovery
+  boundaries. Guard files persist locally and are excluded from Drop sync and
+  workspace materialization. Stop older local writers before upgrading; OS
+  reboot and exact-candidate native platform qualification remain gates.
+
 - Added explicit Linux native credential protection: non-mutating status and
   preview, confirmed migration to a Secret Service-wrapped encrypted file,
   verified key read-back, atomic updates, stale-save refusal and encrypted
