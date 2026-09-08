@@ -1,6 +1,6 @@
 # ADR 0028: Local profile framing and explicit upgrade
 
-Status: implemented locally; exact-candidate platform qualification pending
+Status: implemented; exact-candidate CI passed, wider release qualification open
 Date: 2026-09-08
 Test IDs: RT-017, PR-014, SK-001
 
