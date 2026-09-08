@@ -410,3 +410,11 @@ The local authenticated two-daemon/workerd drill also passes bidirectional
 transfer, interrupted-upload replay, offline crash recovery, disjoint writes,
 deletion and idle no-op. See the [recorded evidence](uat/2026-09-08-profile-mutex.md).
 Exact-candidate platform CI and remaining broader release gates still apply.
+
+CI `34188250327` on `e05a4e9` passed quality, Node 22/24, background sync,
+native credential packaging and the native macOS lifecycle. It failed the
+Codex/Claude native jobs during temporary-driver startup. A new failing-first
+load test reproduced the missing external SQLite module; the test-only builder
+now resolves that installed dependency explicitly outside the repository.
+This correction still needs exact-commit native CI evidence and does not
+retroactively turn the failed run green.

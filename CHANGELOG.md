@@ -4,6 +4,12 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Fixed native UAT driver startup outside the repository: Codex and Claude
+  scenarios now resolve the installed SQLite dependency explicitly through a
+  shared test-only builder. Added a failing-first external-directory load test
+  that acquires a real native mutex. This does not change the distributed CLI
+  or replace full native-session qualification.
+
 - Fixed a reproduced double-owner race in stale profile-lock recovery. Daemon,
   restore and credential locks now hold a dedicated SQLite/kernel mutex for
   their lifetime and publish complete v2 owner metadata atomically. Added real

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { build } from "esbuild";
+import { buildNativeScenario } from "./build-native-scenario.mjs";
 
 // AD-CL-006. Never point this drill at an existing harness profile. The child
 // uses generated homes, an environment allowlist and only Read/Write/Edit tools.
@@ -15,11 +15,7 @@ assert.equal(process.env.STATECASE_UAT_CONFIRM, "run-native-harness-in-disposabl
 const directory = await mkdtemp(join(tmpdir(), "statecase-native-claude-driver-"));
 try {
   const outfile = join(directory, "scenario.mjs");
-  await build({
-    entryPoints: [resolve(dirname(fileURLToPath(import.meta.url)), "native-claude-scenario.mjs")],
-    outfile, bundle: true, platform: "node", format: "esm", external: ["better-sqlite3"],
-    banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" },
-  });
+  await buildNativeScenario(resolve(dirname(fileURLToPath(import.meta.url)), "native-claude-scenario.mjs"), outfile);
   const pending = promisify(execFile)(process.execPath, [outfile], {
     env: process.env, timeout: 180_000, maxBuffer: 1024 * 1024,
   });

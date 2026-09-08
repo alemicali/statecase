@@ -92,3 +92,20 @@ network-mounted profile, or a fully production-ready Statecase release.
 Stop older local Statecase writers before upgrading. Never remove or replace
 the persistent guard file to make a process start. See ADR-0022 and operations
 for the local lock-format compatibility boundary.
+
+## CI follow-up and native driver regression
+
+CI `34188250327` on `e05a4e9` completed: quality, Node 22/24 compatibility,
+background sync, native credential package and native macOS lifecycle passed.
+Native Codex and Claude qualification jobs failed immediately at child startup;
+the run as a whole failed and is not described as green.
+
+A failing-first external-directory bundle test reproduced
+`ERR_MODULE_NOT_FOUND` for `better-sqlite3`. The new runtime dependency made the
+bare external import reachable, but each native UAT scenario runs from a
+temporary directory outside the repository's module-resolution tree. The
+shared test-only builder now resolves the installed native dependency to an
+explicit file URL. The regression executes that bundle from an unrelated
+temporary CWD and acquires/releases a real mutex. Product packaging and native
+scenarios themselves are unchanged; full native Codex/Claude reruns must still
+verify the driver correction on its exact commit.

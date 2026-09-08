@@ -383,6 +383,9 @@ deployed Worker test environment.
   v2 PID reuse, live legacy owner refusal, unsafe/oversized metadata, foreign
   replacement, native file creation faults, persistent inode identity and
   case-insensitive exclusion of all mutex/sidecar names from sync/materialization.
+  Native UAT bundles must also load their real SQLite dependency and acquire a
+  mutex from a temporary directory outside the repository; an in-repository
+  test runner does not establish that module-resolution boundary.
 
 - `RT-015`: independent authenticated daemon processes converge without manual
   sync after setup, preserve a running journal operation across an interrupted
