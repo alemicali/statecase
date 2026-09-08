@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { PersistentRuntime, readRuntimeStatus } from "../src/daemon.js";
+import { configuredSyncRoots, type LocalConfig } from "../src/config.js";
 
 const temporary: string[] = [];
 
@@ -15,6 +16,21 @@ afterEach(async () => {
 });
 
 describe("persistent daemon runtime (RT-007..RT-010)", () => {
+  it("reconciles filesystem events from an explicitly configured external memory root (AD-MEM-010)", async () => {
+    const home = await mkdtemp(join(tmpdir(), "statecase-memory-watch-")); temporary.push(home);
+    const path = join(home, "recall"); await mkdir(path, { mode: 0o700 });
+    const config: LocalConfig = { version: 1, apiUrl: "https://fixture.invalid", applied: {}, workspaces: [],
+      mappings: [{ id: "codex", kind: "codex", name: "Codex", namespace: "harness:codex:default", mode: "consume", path: join(home, "absent-harness") }],
+      memories: [{ id: "recall", kind: "codex-global", harnessNamespace: "harness:codex:default", mode: "two-way", path }] };
+    const reconcile = vi.fn(async () => undefined);
+    const daemon = new PersistentRuntime({ lockPath: join(home, "daemon.lock"), socketPath: join(home, "daemon.sock"),
+      roots: configuredSyncRoots(config), reconcile, scheduler: { debounceMs: 10, maximumMs: 10_000, pollMs: 10_000 } });
+    try {
+      await daemon.start(); expect(daemon.status().roots).toBe(1);
+      await writeFile(join(path, "MEMORY.md"), "synthetic memory update", { mode: 0o600 });
+      await vi.waitFor(() => expect(reconcile).toHaveBeenCalledWith("filesystem"), { timeout: 2000 });
+    } finally { await daemon.stop(); }
+  });
   it("owns one profile, reconciles missed/events, and exposes private local IPC", async () => {
     const home = await mkdtemp(join(tmpdir(), "statecase-daemon-"));
     temporary.push(home);

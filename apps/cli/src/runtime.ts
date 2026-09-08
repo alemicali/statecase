@@ -1,4 +1,5 @@
 import type { LocalConfig, LocalSecrets, ConfigStore } from "./config.js";
+import { ConfigStateChanged } from "./config.js";
 import { RemoteError, StatecaseClient } from "./client.js";
 import { CredentialStorageError } from "./credentials.js";
 import { NativeFileError } from "./native-file.js";
@@ -38,6 +39,7 @@ export function selectedVault(config: LocalConfig, secrets: LocalSecrets): strin
 
 export function exitCodeFor(error: unknown): number {
   if (error instanceof StatecaseUsageError) return error.exitCode;
+  if (error instanceof ConfigStateChanged) return 5;
   if (error instanceof NativeFileError) return error.code === "NATIVE_FILE_CHANGED" ? 5 : 6;
   if (error instanceof MemoryBindingError) return 2;
   if (error instanceof MemoryIdentityError || error instanceof MemoryFormatError) return 6;

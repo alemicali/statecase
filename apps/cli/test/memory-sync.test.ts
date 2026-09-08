@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -42,6 +42,7 @@ describe("guarded memory collection transport (AD-MEM-002, AD-MEM-006)", () => {
   });
   it.each(["unknown", "symlink", "oversize", "unsafe-directory"])("rejects %s native state without arbitrary fallback", async (kind) => {
     const { root, mapping } = await fixture(); await mkdir(mapping.path, { mode: kind === "unsafe-directory" ? 0o777 : 0o700 });
+    if (kind === "unsafe-directory") await chmod(mapping.path, 0o777);
     if (kind === "unknown") await writeFile(join(mapping.path, "state.sqlite"), "unknown", { mode: 0o600 });
     if (kind === "symlink") await symlink(root, join(mapping.path, "linked"));
     if (kind === "oversize") await writeFile(join(mapping.path, "MEMORY.md"), Buffer.alloc(1024 * 1024 + 1), { mode: 0o600 });

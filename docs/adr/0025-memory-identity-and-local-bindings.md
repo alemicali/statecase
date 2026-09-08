@@ -101,8 +101,14 @@ Hydration filters unrelated configured collections, resolves independently
 pinned checkpoints, and refuses missing/wrongly owned required memory. Explicit
 selection changes refresh capsules without requiring transcript changes; a
 memory-only change preserves an unchanged session's prior pin. Restore keeps
-the native policy marker and never creates a physical descriptor file. Local
-unit/integration evidence does not close AD-MEM-007..010, native format/location
+the native policy marker and never creates a physical descriptor file. The
+subsequent local CLI contract adds preview/confirmed map, list, rebind and removal;
+memory IDs remain immutable in category/harness/workspace, and local path changes
+clear prior applied state. Kernel-serialized optimistic config saves reject stale
+updates and inverse ownership collisions. Watch/service roots include selected
+memory, with explicit service refresh after root changes. The bundled skill and
+clean-package checks exercise that contract. Local
+unit/integration evidence does not close full AD-MEM-008..010, native format/location
 qualification, complete reference localization or independent-host/live GC UAT.
 
 ## Sources

@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { access, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -36,6 +36,7 @@ try {
   await Promise.all([access(join(skill, "SKILL.md")), access(join(skill, "agents", "openai.yaml"))]);
   const skillText = await readFile(join(skill, "SKILL.md"), "utf8");
   if (!skillText.includes("name: statecase")) throw new Error("packed CLI installed the wrong skill");
+  await access(join(skill, "references", "memory.md"));
 
   // SK-001: the packaged setup and skill lifecycle must agree on native root
   // overrides. Every possible default path is under the synthetic HOME above.
@@ -44,6 +45,24 @@ try {
   assert.ok(setup.skillTargets.includes(nativeSkill));
   await access(join(nativeSkill, "SKILL.md"));
   await assert.rejects(access(join(environment.HOME, ".claude")), { code: "ENOENT" });
+
+  // AD-MEM-007: exercise the actual installed CLI without a service account or
+  // native harness process. Selection must not read credentials or move files.
+  await run(executable, ["--json", "setup", "--harness", "codex"], { env: environment });
+  const memory = join(installation, "native-recall"), rebound = join(installation, "new-recall");
+  await mkdir(memory, { mode: 0o700 }); await writeFile(join(memory, "MEMORY.md"), "synthetic recall", { mode: 0o600 });
+  const map = ["--json", "memory", "map", "recall", memory, "--kind", "codex-global", "--harness", "harness:codex:default"];
+  const configPath = join(environment.STATECASE_HOME, "config.json"), before = await readFile(configPath);
+  const preview = JSON.parse((await run(executable, [...map, "--dry-run"], { env: environment })).stdout);
+  assert.equal(preview.files, 1); assert.equal(preview.nativeLocationVerified, false);
+  assert.deepEqual(await readFile(configPath), before);
+  await run(executable, [...map, "--yes"], { env: environment });
+  const memories = JSON.parse((await run(executable, ["--json", "memory", "list"], { env: environment })).stdout).memories;
+  assert.equal(memories[0].namespace, "memory:recall");
+  await run(executable, ["--json", "memory", "map", "recall", rebound, "--yes"], { env: environment });
+  await assert.rejects(access(rebound), { code: "ENOENT" });
+  await run(executable, ["--json", "memory", "remove", "recall", "--yes"], { env: environment });
+  assert.equal(await readFile(join(memory, "MEMORY.md"), "utf8"), "synthetic recall");
   const verified = JSON.parse((await run(executable, ["--json", "skills", "verify"], { env: environment })).stdout);
   assert.equal(verified.valid, true);
   await run(executable, ["--json", "skills", "uninstall", "--yes"], { env: environment });

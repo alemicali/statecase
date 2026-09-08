@@ -839,6 +839,19 @@ Restore rejects a request that strips the internal native-memory policy marker.
 These are local tests, not native recall, live GC, server-side revocation,
 CLI enrollment or background/independent-host qualification.
 
+The subsequent AD-MEM-007 CLI suite verifies local map/list/remove, required
+confirmation vs dry-run, metadata-only output, idempotency and path rebind,
+immutable identity, inverse Drop ownership rejection, unsafe enrollment refusal,
+agent-driven selection while a synthetic activity marker exists, and stale
+configuration-write refusal. Eight simultaneous config saves admit one writer.
+The clean-installed package smoke executes memory selection/rebind/removal and
+checks that the skill's memory reference is included. CLI reference-cloud tests
+publish memory and stage only the requested memory/Drop while other configured
+collections remain untouched. AD-MEM-010 local checks verify actual filesystem
+notification from the external memory root, daemon root selection and generated
+service permissions; they do not qualify missing-root startup, OS reboot, native
+recall or the packaged/live cross-host workflow.
+
 A release candidate is rejected when:
 
 - a critical/required test is skipped or flaky;

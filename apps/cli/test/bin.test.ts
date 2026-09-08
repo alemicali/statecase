@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { randomKey, sealVaultKeyForDevice } from "@statecase/crypto";
 
 import { runCli, type CliIO } from "../src/bin.js";
+import { ConfigStore } from "../src/config.js";
 
 const temporary: string[] = [];
 const originalEnvironment = { ...process.env };
@@ -21,6 +22,38 @@ afterEach(async () => {
 });
 
 describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
+  it("publishes selected memory and stages only the requested memory or Drop namespace (AD-MEM-007)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "statecase-memory-product-")); temporary.push(root);
+    process.env.STATECASE_HOME = join(root, "profile"); process.env.STATECASE_TOKEN = "synthetic-token";
+    process.env.STATECASE_RECOVERY_PASSPHRASE = "synthetic recovery phrase";
+    const remote = new CliRemote(), output: string[] = [], errors: string[] = [];
+    const io: CliIO = { stdout: (value) => output.push(value), stderr: (value) => errors.push(value), fetch: remote.fetch };
+    expect(await command(io, "--json", "login", "--non-interactive")).toBe(0);
+    expect(await command(io, "--json", "vault", "create", "memory-fixture", "--recovery-file", join(root, "recovery.json"))).toBe(0);
+    const store = new ConfigStore(), config = await store.loadConfig();
+    config.mappings.push({ id: "codex", namespace: "harness:codex:default", name: "Codex", kind: "codex", mode: "consume", path: join(root, "native") });
+    await store.saveConfig(config);
+    const memory = join(root, "memory"), drop = join(root, "drop"); await mkdir(memory, { mode: 0o700 }); await mkdir(drop, { mode: 0o700 });
+    await writeFile(join(memory, "MEMORY.md"), "checkpoint recall", { mode: 0o600 }); await writeFile(join(drop, "brief.md"), "checkpoint brief", { mode: 0o600 });
+    expect(await command(io, "--json", "memory", "map", "recall", memory, "--kind", "codex-global", "--harness", "harness:codex:default", "--yes")).toBe(0);
+    expect(await command(io, "--json", "drop", "add", drop, "--name", "brief")).toBe(0); const dropId = JSON.parse(output.at(-1)!).id;
+    expect(await command(io, "--json", "push")).toBe(0); const revision = JSON.parse(output.at(-1)!).results[0].revisionId;
+    await writeFile(join(memory, "MEMORY.md"), "newer recall", { mode: 0o600 }); expect(await command(io, "--json", "push")).toBe(0);
+    expect(await command(io, "--json", "memory", "map", "unrelated", join(root, "unrelated"), "--kind", "codex-global", "--harness", "harness:codex:default", "--yes")).toBe(0);
+    const before = await readFile(join(store.home, "config.json"));
+    const target = join(root, "staged-memory");
+    expect(await command(io, "--json", "restore", "--revision", revision, "--mapping", "memory_recall", "--target", target, "--dry-run")).toBe(0);
+    await expect(readFile(target)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await command(io, "--json", "restore", "--revision", revision, "--mapping", "memory_recall", "--target", target)).toBe(0);
+    expect(await readFile(join(target, "MEMORY.md"), "utf8")).toBe("checkpoint recall");
+    await expect(readFile(join(target, "collection.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    const stagedDrop = join(root, "staged-drop");
+    expect(await command(io, "--json", "restore", "--revision", revision, "--mapping", dropId, "--target", stagedDrop)).toBe(0);
+    expect(await readFile(join(stagedDrop, "brief.md"), "utf8")).toBe("checkpoint brief");
+    expect(await readFile(join(store.home, "config.json"))).toEqual(before);
+    expect(await readFile(join(memory, "MEMORY.md"), "utf8")).toBe("newer recall");
+    await expect(readFile(join(root, "unrelated"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
   it("controls only its own native profile through JSON start/stop and safe uninstall (RT-012, RT-014)", async () => {
     const home = await mkdtemp(join(tmpdir(), "statecase-cli-service-"));
     temporary.push(home);

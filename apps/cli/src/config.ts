@@ -1,8 +1,11 @@
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { ProfileLock } from "@statecase/runtime";
 
 import { CredentialFile, type CredentialFileOptions } from "./credentials.js";
+import { memoryMappings } from "./memory-bindings.js";
 
 export type MappingKind = "drop" | "codex" | "claude";
 export type MappingMode = "two-way" | "publish" | "consume" | "append";
@@ -72,6 +75,7 @@ export interface LocalSecrets {
 export class ConfigStore {
   readonly home: string;
   readonly #credentials: CredentialFile;
+  readonly #observed = new WeakMap<LocalConfig, string | null>();
 
   constructor(home = process.env.STATECASE_HOME ?? join(homedir(), ".statecase"), options: CredentialFileOptions = {}) {
     this.home = resolve(home);
@@ -79,18 +83,31 @@ export class ConfigStore {
   }
 
   async loadConfig(): Promise<LocalConfig> {
-    return readJson(join(this.home, "config.json"), {
+    const text = await readConfigText(join(this.home, "config.json"));
+    const config: LocalConfig = text === null ? {
       version: 1,
       apiUrl: process.env.STATECASE_API_URL ?? "https://statecase-api.hi-0e6.workers.dev",
       mappings: [],
       workspaces: [],
       applied: {},
       sessionBindings: {},
-    });
+    } : JSON.parse(text) as LocalConfig;
+    this.#observed.set(config, fingerprint(text));
+    return config;
   }
 
   async saveConfig(config: LocalConfig): Promise<void> {
-    await atomicJson(join(this.home, "config.json"), config);
+    memoryMappings(config);
+    let lock: ProfileLock;
+    try { lock = await ProfileLock.acquire(join(this.home, "config.lock")); }
+    catch { throw new ConfigStateChanged(); }
+    try {
+      const path = join(this.home, "config.json");
+      if (fingerprint(await readConfigText(path)) !== (this.#observed.get(config) ?? null)) throw new ConfigStateChanged();
+      const text = `${JSON.stringify(config, null, 2)}\n`;
+      await atomicJson(path, text);
+      this.#observed.set(config, fingerprint(text));
+    } finally { await lock.release(); }
   }
 
   async loadSecrets(): Promise<LocalSecrets> {
@@ -109,19 +126,36 @@ export function sessionBindingKey(namespace: string, logicalPath: string): strin
   return `${namespace}\0${logicalPath}`;
 }
 
-async function readJson<T>(path: string, fallback: T): Promise<T> {
+export function configuredSyncRoots(config: LocalConfig): string[] {
+  return [...new Set([
+    ...config.mappings.map((mapping) => mapping.path),
+    ...memoryMappings(config).map((mapping) => mapping.path),
+    ...config.workspaces.map((workspace) => workspace.path),
+  ].map((path) => resolve(path)))];
+}
+
+export class ConfigStateChanged extends Error {
+  readonly code = "CONFIG_STATE_CHANGED";
+  constructor() { super("local configuration changed or is being updated; reload and retry"); this.name = "ConfigStateChanged"; }
+}
+
+function fingerprint(text: string | null): string | null {
+  return text === null ? null : createHash("sha256").update(text).digest("hex");
+}
+
+async function readConfigText(path: string): Promise<string | null> {
   try {
-    return JSON.parse(await readFile(path, "utf8")) as T;
+    return await readFile(path, "utf8");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return structuredClone(fallback);
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
 }
 
-async function atomicJson(path: string, value: unknown): Promise<void> {
+async function atomicJson(path: string, text: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${process.pid}.${crypto.randomUUID()}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+  await writeFile(temporary, text, { encoding: "utf8", mode: 0o600, flag: "wx" });
   await chmod(temporary, 0o600);
   await rename(temporary, path);
   await chmod(path, 0o600);

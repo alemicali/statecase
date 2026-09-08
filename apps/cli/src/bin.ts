@@ -14,12 +14,12 @@ import { workspaceIdForRemote } from "@statecase/domain";
 import { LocalStateStore } from "@statecase/storage-local";
 import { ProfileLock } from "@statecase/runtime";
 import { captureWorkspace } from "@statecase/workspace";
-import { Command } from "commander";
+import { Command, CommanderError } from "commander";
 
 import { RemoteError, StatecaseClient } from "./client.js";
 import { assertNoHarnessProcess, HarnessActivityRegistry, type ActivityHandle } from "./activity.js";
 import { createBootstrapCapability, openBootstrapCapability, type ScopedVaultKeys } from "./capability.js";
-import { ConfigStore, type LocalConfig, type LocalSecrets, type RootMapping } from "./config.js";
+import { ConfigStore, configuredSyncRoots, type LocalConfig, type LocalSecrets, type RootMapping } from "./config.js";
 import type { CredentialKeyProtector } from "./credentials.js";
 import { PersistentRuntime, readRuntimeStatus, type DaemonTrigger } from "./daemon.js";
 import { readRecoveryKeyringKit, writeRecoveryKeyringKit } from "./recovery.js";
@@ -31,6 +31,8 @@ import { installHarnessShim, removeHarnessShim, verifyHarnessShim } from "./shim
 import { installSkill, uninstallSkill, verifySkill } from "./skills.js";
 import { HarnessSupervisor, resolveHarnessExecutable, type HarnessName, type ReconcileReason } from "./supervisor.js";
 import { SyncConflict, SyncEngine, type VaultKeyring } from "./sync.js";
+import { memoryMappings } from "./memory-bindings.js";
+import { planMemoryMap, planMemoryRemoval, type MemoryMapOptions } from "./memory-management.js";
 import { decodeVaultKeyring, encodeVaultKeyring, refreshVaultKeyring, wipeVaultKeyring, withVaultKeyring } from "./vault-keys.js";
 
 export interface CliIO {
@@ -54,7 +56,9 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
   program.name("statecase").description("Take your agents anywhere.").option("--json", "emit stable JSON output");
   program.enablePositionalOptions();
   program.exitOverride();
-  program.configureOutput({ writeOut: (value) => io.stdout(value.trimEnd()), writeErr: (value) => io.stderr(value.trimEnd()) });
+  program.configureOutput({ writeOut: (value) => io.stdout(value.trimEnd()), writeErr: (value) => {
+    if (!program.opts<{ json?: boolean }>().json) io.stderr(value.trimEnd());
+  } });
 
   const credentials = program.command("credentials").description("inspect and protect this installation's local credentials");
   credentials.command("status").action(async () => {
@@ -404,7 +408,7 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
   program.command("restore")
     .description("restore one namespace from an immutable historical revision")
     .requiredOption("--revision <revisionId>")
-    .requiredOption("--mapping <mappingId>", "Drop/harness mapping ID or workspace ID")
+    .requiredOption("--mapping <mappingId>", "Drop/harness mapping ID, memory_<collectionId>, or workspace ID")
     .option("--target <path>", "staging target; with --in-place it must equal the configured path")
     .option("--in-place", "replace the configured Drop/harness state and publish a new revision")
     .option("--dry-run")
@@ -412,7 +416,11 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
     .action(async (options: { revision: string; mapping: string; target?: string; inPlace?: boolean; dryRun?: boolean; yes?: boolean }) => {
       const { config, secrets, client } = await requireSession(store, io.fetch);
       const vaultId = selectedVault(config, secrets);
-      const mapping = config.mappings.find((item) => item.id === options.mapping);
+      const matches = [...config.mappings, ...memoryMappings(config)].filter((item) => item.id === options.mapping);
+      if (matches.length > 1) throw new StatecaseUsageError("restore mapping ID is ambiguous", 2);
+      const mapping = matches[0];
+      const affectedHarness = mapping?.memory ? mapping.memory.kind === "codex-global" ? "codex" : "claude"
+        : mapping?.kind === "drop" ? undefined : mapping?.kind;
       const workspace = config.workspaces.find((item) => item.id === options.mapping);
       if (!mapping && !workspace) throw new StatecaseUsageError("restore mapping is not configured on this device", 2);
       if (mapping && workspace) throw new StatecaseUsageError("restore mapping ID is ambiguous", 2);
@@ -446,7 +454,14 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
       if (options.inPlace && !targetInfo) throw new StatecaseUsageError("configured in-place restore target is missing", 2);
       const restoreConfig = structuredClone(config);
       if (!options.inPlace) restoreConfig.applied = {};
-      if (mapping && !options.inPlace) {
+      if (!options.inPlace) restoreConfig.memories = [];
+      if (mapping?.memory && !options.inPlace) {
+        restoreConfig.mappings = config.mappings.filter((item) => item.namespace === mapping.memory!.harnessNamespace)
+          .map((item) => ({ ...item, mode: "publish" }));
+        restoreConfig.memories = config.memories!.filter((item) => `memory:${item.id}` === mapping.namespace)
+          .map((item) => ({ ...item, mode: "consume", path: target }));
+        restoreConfig.workspaces = restoreConfig.workspaces.map((item) => ({ ...item, sync: "identity-only" }));
+      } else if (mapping && !options.inPlace) {
         restoreConfig.mappings = [{ ...mapping, mode: "consume", path: target }];
         restoreConfig.workspaces = restoreConfig.workspaces.map((item) => ({ ...item, sync: "identity-only" }));
       } else if (!options.inPlace) {
@@ -472,15 +487,15 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
           } catch {
             throw new StatecaseUsageError("stop the Statecase daemon before in-place restore", 5);
           }
-          if (mapping && mapping.kind !== "drop") {
+          if (affectedHarness) {
             const activity = new HarnessActivityRegistry(join(store.home, "locks", "harnesses"));
             try {
-              harnessBarrier = await activity.beginRestore(mapping.kind);
-              await assertNoHarnessProcess(mapping.kind);
+              harnessBarrier = await activity.beginRestore(affectedHarness);
+              await assertNoHarnessProcess(affectedHarness);
             } catch {
               await harnessBarrier?.release();
               harnessBarrier = undefined;
-              throw new StatecaseUsageError(`stop ${mapping.kind} before in-place restore`, 5);
+              throw new StatecaseUsageError(`stop ${affectedHarness} before in-place restore`, 5);
             }
           }
           protectedSnapshot = await client.createSnapshot(vaultId, `Before in-place restore of ${inPlaceMapping!.id}`);
@@ -495,7 +510,7 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
                 statecaseHome: store.home,
                 targetRoot: target,
                 paths,
-                ...(context ? { workspace: { targetHeadRef: context.targetHeadRef } } : mapping?.kind === "drop" || !mapping ? {} : { harness: mapping.kind }),
+                ...(context ? { workspace: { targetHeadRef: context.targetHeadRef } } : affectedHarness ? { harness: affectedHarness } : {}),
               });
               return { rollback: () => restoreEmergencySnapshot(emergency!.path) };
             },
@@ -568,7 +583,9 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
       if (!options.yes) throw new StatecaseUsageError("local conflict resolution requires --yes", 2);
       const { config, secrets, client } = await requireSession(store, io.fetch);
       const vaultId = selectedVault(config, secrets);
-      const mapping = config.mappings.find((item) => item.id === options.mapping);
+      const matches = [...config.mappings, ...memoryMappings(config)].filter((item) => item.id === options.mapping);
+      if (matches.length > 1) throw new StatecaseUsageError("conflict mapping ID is ambiguous", 2);
+      const mapping = matches[0];
       const workspace = config.workspaces.find((item) => item.id === options.mapping);
       if (!mapping && !workspace) throw new StatecaseUsageError("conflict mapping is not configured on this device", 2);
       if (mapping && workspace) throw new StatecaseUsageError("conflict mapping ID is ambiguous", 2);
@@ -576,8 +593,16 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
       const snapshot = await client.createSnapshot(vaultId, `Before local resolution of ${options.mapping}`);
       const expectedHeadRevisionId = (await client.namespaceHeads(vaultId)).revisionId ?? snapshot.revisionId;
       const resolveConfig = structuredClone(config);
-      if (mapping) {
+      resolveConfig.memories = [];
+      if (mapping?.memory) {
+        resolveConfig.mappings = config.mappings.filter((item) => item.namespace === mapping.memory!.harnessNamespace)
+          .map((item) => ({ ...item, mode: "consume" }));
+        resolveConfig.memories = config.memories!.filter((item) => `memory:${item.id}` === mapping.namespace);
+        resolveConfig.workspaces = resolveConfig.workspaces.map((item) => ({ ...item, sync: "identity-only" }));
+      } else if (mapping) {
         resolveConfig.mappings = [mapping];
+        resolveConfig.memories = (config.memories ?? []).filter((item) => item.harnessNamespace === mapping.namespace)
+          .map((item) => ({ ...item, mode: "consume" }));
         resolveConfig.workspaces = resolveConfig.workspaces.map((item) => ({ ...item, sync: "identity-only" }));
       } else {
         resolveConfig.mappings = [];
@@ -601,6 +626,39 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
       } finally {
         wipeSyncAccess(key);
       }
+    });
+
+  const memory = program.command("memory").description("explicitly select native memory collections; does not enable native recall or grant cloud access");
+  memory.command("map <memoryId> <path>")
+    .description("preview or bind a stable collection ID to this device's native directory")
+    .option("--kind <kind>", "claude-project or codex-global; required for a new binding")
+    .option("--harness <namespace>", "configured harness namespace; required for a new binding")
+    .option("--workspace <workspaceId>", "logical workspace required for claude-project")
+    .option("--mode <mode>", "two-way, publish, consume, or append")
+    .option("--name <name>").option("--dry-run").option("--yes", "confirm local memory selection")
+    .action(async (id: string, path: string, options: MemoryMapOptions & { dryRun?: boolean; yes?: boolean }) => {
+      if (Boolean(options.dryRun) === Boolean(options.yes)) throw new StatecaseUsageError("choose --dry-run or confirm memory mapping with --yes", 2);
+      const config = normalizeConfig(await store.loadConfig());
+      const plan = await planMemoryMap(config, id, path, options);
+      if (!options.dryRun && (plan.result.changed || plan.result.appliedReset)) await store.saveConfig(Object.assign(config, plan.config));
+      emit(io, program, { ...plan.result, dryRun: Boolean(options.dryRun) },
+        `${options.dryRun ? "Would map" : "Mapped"} memory ${id}; ${plan.result.files} files, ${plan.result.bytes} bytes. Native recall is not enabled or verified.${plan.result.requiresDaemonRestart ? " Stop a running daemon, then run daemon install to refresh service permissions and watches." : ""}`);
+    });
+  memory.command("list").description("list device-local memory bindings without reading native content")
+    .action(async () => {
+      const config = normalizeConfig(await store.loadConfig()); memoryMappings(config);
+      const memories = (config.memories ?? []).map((binding) => ({ ...binding, namespace: `memory:${binding.id}`, mappingId: `memory_${binding.id}`,
+        appliedRevisionId: config.applied[`memory:${binding.id}`]?.revisionId ?? null, nativeLocationVerified: false }));
+      emit(io, program, { memories }, memories.map((binding) => `${binding.id}\t${binding.kind}\t${binding.mode}\t${binding.path}`).join("\n") || "No memory collections");
+    });
+  memory.command("remove <memoryId>").description("remove only the local binding; keep native files and cloud revisions")
+    .option("--dry-run").option("--yes", "confirm removal of the local binding")
+    .action(async (id: string, options: { dryRun?: boolean; yes?: boolean }) => {
+      if (Boolean(options.dryRun) === Boolean(options.yes)) throw new StatecaseUsageError("choose --dry-run or confirm memory removal with --yes", 2);
+      const config = normalizeConfig(await store.loadConfig()), plan = planMemoryRemoval(config, id);
+      if (!options.dryRun) await store.saveConfig(Object.assign(config, plan.config));
+      emit(io, program, { ...plan.result, dryRun: Boolean(options.dryRun) },
+        `${options.dryRun ? "Would remove" : "Removed"} memory ${id} binding; native files and cloud revisions are unchanged. Stop a running daemon, then run daemon install to refresh service permissions and watches.`);
     });
 
   const drop = program.command("drop").description("map arbitrary synchronized directories");
@@ -977,10 +1035,7 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
     .option("--once", "perform startup reconciliation and exit")
     .action(async (options: { once?: boolean }) => {
       const initial = normalizeConfig(await store.loadConfig());
-      const roots = [
-        ...initial.mappings.map((mapping) => mapping.path),
-        ...initial.workspaces.map((workspaceValue) => workspaceValue.path),
-      ];
+      const roots = configuredSyncRoots(initial);
       const journal = new LocalStateStore(join(store.home, "state.db"));
       const sync = async (reason: ReconcileReason): Promise<string | null> => {
         const { config, secrets, client } = await requireSession(store, io.fetch);
@@ -1098,6 +1153,7 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
       namespaces: scoped?.namespaces ?? [],
       expiresAt: scoped?.expiresAt ?? null,
       mappings: config.mappings,
+      memories: config.memories ?? [],
       apiUrl: config.apiUrl,
     };
     emit(io, program, data, `${data.authenticated ? "authenticated" : "not authenticated"}; ${config.mappings.length} mappings; vault ${data.selectedVaultId ?? "not selected"}`);
@@ -1115,7 +1171,7 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
     return requestedExitCode;
   } catch (error) {
     if ((error as { code?: string }).code === "commander.helpDisplayed") return 0;
-    const code = exitCodeFor(error);
+    const code = error instanceof CommanderError ? 2 : exitCodeFor(error);
     const message = error instanceof SyncConflict ? `${error.message}: ${error.paths.join(", ")}` : (error as Error).message;
     if (program.opts<{ json?: boolean }>().json) io.stderr(JSON.stringify({ error: { code, message } }));
     else io.stderr(`statecase: ${message}`);
@@ -1297,7 +1353,7 @@ function daemonServiceDefinition(store: ConfigStore, argv: string[]) {
       statecaseExecutable,
       nodeExecutable: process.execPath,
       statecaseHome: store.home,
-      roots: [...config.mappings.map((mapping) => mapping.path), ...config.workspaces.map((workspace) => workspace.path)],
+      roots: configuredSyncRoots(config),
       ...(platform === "darwin" && process.env.STATECASE_KEYCHAIN_PATH !== undefined ? { keychainPath: process.env.STATECASE_KEYCHAIN_PATH } : {}),
       ...(platform === "darwin" && process.getuid ? { uid: process.getuid() } : {}),
     });

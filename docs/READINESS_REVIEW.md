@@ -543,3 +543,36 @@ type checking, build and clean-installed package smoke. Global branch coverage
 is 91.83% (4171/4542); the new memory scanner/planner is 96.42% and the shared
 native-text planner is 96.87%. The separate local workerd suite passes 12 tests
 (including its deliberate ambiguous-rotation fault); no live deployment changed.
+
+### Memory CLI, service roots and configuration concurrency — 2026-09-08
+
+CI `34206344550` on `39fa0f7` completed with six successful jobs (including both
+native harnesses, native credential/service jobs and background synchronization)
+and three failed unit-test jobs. The same unsafe-directory fixture failed under
+both Node versions and quality: creation requested 0777 but the runner's umask
+removed write permissions, so the resulting directory was legitimately safe.
+The failure was reproduced locally under umask 022. The fixture now applies
+explicit chmod before exercising the unchanged safety guard; a fresh complete
+CI result is still required, and this does not resolve the earlier unrelated
+background-service disappearance.
+
+Memory map/list/rebind/remove is now available through the CLI and its packaged
+skill, with metadata/count-only previews, explicit confirmation, immutable
+logical ownership and no native-file movement/deletion. Staging restore and
+conflict selection recognize memory mapping IDs and exclude unrelated memory.
+Configuration saves validate inverse ownership collisions and use a kernel
+mutex with observed-state comparison; stale CLI/daemon writes fail instead of
+losing bindings or applied revisions. This does not make configuration/remote/
+credential mutations one atomic transaction or fence older clients.
+
+Selected memory roots participate in daemon filesystem notifications and service
+write permissions. A running service must be stopped and reinstalled after root
+changes. The new local and clean-package tests do not prove native memory recall,
+custom/subagent format coverage, missing-root service startup, hot service reload,
+sleep/reboot or independent-host/live-cloud behavior. These remain release work.
+
+The local check with explicit umask 022 passes 798 tests in 57 files, lint,
+type checking, build and the expanded clean-installed package smoke. Global
+branches are 91.90% (4222/4594); memory management is 100% (44/44), and config
+persistence is 94.11% (16/17). The packaged skill was updated using skill-creator
+and its validator passed. This local result requires exact-candidate CI evidence.

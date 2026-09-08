@@ -7,6 +7,7 @@ import { deriveRecoveryKey, encryptEnvelope, randomKey } from "@statecase/crypto
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ConfigStore } from "../src/config.js";
+import { ProfileLock } from "@statecase/runtime";
 import { readRecoveryKeyringKit, readRecoveryKit, writeRecoveryKeyringKit, writeRecoveryKit } from "../src/recovery.js";
 
 const temporary: string[] = [];
@@ -46,6 +47,34 @@ describe("CLI local security and recovery (CR-007, CR-009, AU-011)", () => {
     temporary.push(home);
     await writeFile(join(home, "config.json"), "{not-json", "utf8");
     await expect(new ConfigStore(home).loadConfig()).rejects.toBeInstanceOf(SyntaxError);
+  });
+
+  it("rejects stale concurrent configuration saves without losing memory bindings or applied revisions (AD-MEM-007)", async () => {
+    const home = await mkdtemp(join(tmpdir(), "statecase-config-concurrent-")); temporary.push(home);
+    const first = new ConfigStore(home), second = new ConfigStore(home);
+    const a = await first.loadConfig(), b = await second.loadConfig();
+    a.deviceName = "first"; await first.saveConfig(a);
+    b.deviceName = "stale";
+    await expect(second.saveConfig(b)).rejects.toMatchObject({ code: "CONFIG_STATE_CHANGED" });
+    expect((await first.loadConfig()).deviceName).toBe("first");
+    const c = await first.loadConfig(), d = await second.loadConfig();
+    c.applied["memory:recall"] = { revisionId: "nrev_one", digests: {} }; await first.saveConfig(c);
+    d.memories = [];
+    await expect(second.saveConfig(d)).rejects.toMatchObject({ code: "CONFIG_STATE_CHANGED" });
+    c.deviceName = "next"; await first.saveConfig(c);
+    expect((await second.loadConfig()).applied).toEqual(c.applied);
+    await expect(second.saveConfig({ ...c, deviceName: "unobserved" })).rejects.toMatchObject({ code: "CONFIG_STATE_CHANGED" });
+  });
+  it("admits one concurrent configuration writer and preserves config while the mutex is held (AD-MEM-007)", async () => {
+    const home = await mkdtemp(join(tmpdir(), "statecase-config-writers-")); temporary.push(home);
+    const store = new ConfigStore(home), initial = await store.loadConfig(); await store.saveConfig(initial);
+    const lock = await ProfileLock.acquire(join(home, "config.lock"));
+    try { await expect(store.saveConfig(initial)).rejects.toMatchObject({ code: "CONFIG_STATE_CHANGED" }); }
+    finally { await lock.release(); }
+    const configs = await Promise.all(Array.from({ length: 8 }, () => store.loadConfig()));
+    const results = await Promise.allSettled(configs.map((config, index) => { config.deviceName = `writer-${index}`; return store.saveConfig(config); }));
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect((await store.loadConfig()).deviceName).toBe(`writer-${results.findIndex((result) => result.status === "fulfilled")}`);
   });
 
   it("round-trips a passphrase-protected kit and rejects the wrong vault or passphrase", async () => {

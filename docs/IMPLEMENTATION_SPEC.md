@@ -1315,10 +1315,33 @@ rewrite an unchanged session's checkpoint; explicitly changing the selected
 collection set creates a new capsule, including when transcript bytes are equal.
 Read-only selected memory must already exist remotely before it can be pinned.
 
-The engine integration does not yet provide CLI enrollment/rebind/removal or
-native-memory compatibility. Full native effective-location precedence, custom/
+CLI enrollment is now `memory map <id> <path>` with category/harness and, for
+Claude project memory, a logical workspace. Exactly one of `--dry-run` / `--yes`
+is required. Preview scans only the selected root with the bounded native policy
+and returns aggregate counts, not file content. Repeating a binding is idempotent;
+moving its path clears the applied marker without moving/deleting files. Logical
+category/harness/workspace identity is immutable for an existing ID. `memory list`
+is local metadata only; `memory remove` forgets the binding, not cloud history.
+`restore --mapping memory_<id>` selects one memory namespace, and staged restore
+does not change the native binding. In-place restore fences the owning harness.
+Conflicts accept the same mapping ID and preserve unrelated namespace selection.
+
+Configuration writes validate memory ownership even when an ordinary Drop or
+workspace command changes the candidate config. A per-profile kernel mutex and
+observed-content fingerprint reject stale concurrent writes with exit `5`;
+callers must reload before retrying. No field is silently merged or discarded.
+This is configuration serialization, not a transaction spanning remote commits,
+credentials and native files, nor a substitute for old-client fencing.
+
+Daemon watches and native service write roots include selected memory paths.
+After a root change, stop a running service and rerun `daemon install` to refresh
+OS permissions and watchers. The CLI can update selection while an agent is
+active because it neither rewrites native state nor enables memory generation.
+
+This does not establish native-memory compatibility. Full native effective-location precedence, custom/
 subagent formats, path localization of memory references in restored tool history,
-daemon watches, mixed-version fencing and packaged independent-host UAT remain
+empty/missing-root service initialization, dynamic service refresh, mixed-version
+fencing and packaged independent-host UAT remain
 required. No automatic harness setup enables or scans memory. The complete
 TDD/UAT obligations remain normative in
 [ADR-0025](adr/0025-memory-identity-and-local-bindings.md).

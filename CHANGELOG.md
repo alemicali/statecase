@@ -4,6 +4,19 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Added `memory map/list/remove` with local-only preview, explicit confirmation,
+  immutable ownership, safe rebind and no native-file deletion. Exposed memory
+  selection to status, restore and conflict commands; added watched/service
+  roots and packaged agent-native skill guidance. Native recall/generation and
+  independent-host qualification remain open.
+- Serialize configuration saves through a profile kernel mutex and reject stale
+  observed content instead of silently overwriting another CLI/daemon update.
+  Validate memory ownership on all configuration saves. CLI syntax failures now
+  use usage exit 2 and one JSON error envelope when `--json` is selected.
+- Corrected the unsafe-memory-directory test fixture to set permissions
+  explicitly after creation. CI's umask made the previous fixture safe; the
+  native directory protection itself is unchanged.
+
 - Connected explicit memory collections to encrypted engine push/pull, guarded
   native-text transactions, independent scope keys and canonical encrypted
   identity descriptors. Added exact Session Capsule memory pins, dependency

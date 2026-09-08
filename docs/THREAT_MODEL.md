@@ -400,3 +400,14 @@ selected memory collection, but do not authorize global instruction changes or
 disclose ungranted memory keys. Local scope tests do not qualify live capability
 revocation, native effective recall, filesystem alias races, complete native
 format coverage or mixed-client fencing. These remain release obligations.
+
+Memory enrollment validates before persisting selection and never changes native
+settings, grants remote keys, or moves files. All config saves now check memory
+ownership, including inverse collisions introduced through ordinary Drop or
+workspace commands. A short-lived kernel mutex plus the fingerprint observed at
+load time prevents cooperating current-version CLI/daemon writers from silently
+overwriting stale configuration. Contention/change is exit `5`, with no automatic
+field merge. Old binaries and arbitrary same-user file editors do not participate
+in this lock; mixed-client fencing and broader local-filesystem races remain
+open. Configuration persistence is not atomic with an earlier remote mutation;
+an error must not trigger blind retries of destructive/ambiguous operations.

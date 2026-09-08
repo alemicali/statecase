@@ -8,12 +8,14 @@ import { InstructionError } from "@statecase/adapter-common/instructions";
 import { MemoryFormatError } from "@statecase/adapter-common/memory";
 import { MemoryIdentityError } from "../src/memory-sync.js";
 import { MemoryBindingError } from "../src/memory-bindings.js";
+import { ConfigStateChanged } from "../src/config.js";
 
 describe("CLI error contract", () => {
   it("classifies memory identity and format failures as integrity errors and invalid local bindings as usage (AD-MEM-007)", () => {
     expect(exitCodeFor(new MemoryIdentityError())).toBe(6);
     expect(exitCodeFor(new MemoryFormatError())).toBe(6);
     expect(exitCodeFor(new MemoryBindingError())).toBe(2);
+    expect(exitCodeFor(new ConfigStateChanged())).toBe(5);
   });
   it("classifies native instruction failures as authorization, integrity or concurrent-state conflicts (AD-CTX-003, AD-CTX-009)", () => {
     expect(exitCodeFor(new NativeFileError("NATIVE_FILE_CHANGED"))).toBe(5);

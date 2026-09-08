@@ -17,6 +17,10 @@ statecase --json status
 
 Read the JSON fields `accessMode`, `namespaces`, and `expiresAt`. Decide whether full login/vault enrollment, scoped bootstrap, harness setup, a Drop mapping, or synchronization is missing.
 
+For native memory selection or relocation, read [memory collections](references/memory.md).
+Memory is separate from global instructions and Drops; ordinary harness setup
+does not select it or enable native recall.
+
 ## Ephemeral bootstrap
 
 On a trusted full-access device, create a least-privilege grant with `statecase token create --namespace <ids> --actions read,append --ttl <minutes> --output <protected-path>`. Never request or echo the generated file contents. Prefer `read` without `append` when the sandbox does not need to return work.
@@ -89,7 +93,7 @@ statecase --json workspace hydrate --session <sessionCapsuleId> --mode strict
 
 Use `strict` for unattended work. In an interactive workflow, `warn` may materialize the available closure and exits `8` when dependencies remain unresolved; explain those paths before launching the harness. Use `best-effort` only when the operator explicitly accepts an incomplete context. An external dependency must be mapped as a Drop and checkpointed; never copy it ad hoc.
 
-Treat the capsule as the authority even when its harness, workspace, and Drops pin different revision IDs. The CLI authenticates and atomically composes those historical namespace states; never replace a pinned revision with the current head.
+Treat the capsule as the authority even when its harness, workspace, Drops and memory collections pin different revision IDs. The CLI authenticates and atomically composes those historical namespace states; never replace a pinned revision with the current head. Bind required memory IDs locally before strict hydration; do not substitute another project's memory.
 
 ## Restore safely
 
@@ -109,6 +113,10 @@ Use `statecase --json retention plan` to inspect encrypted object and byte count
 - Exit `5`: preserve both sides and report the conflicting paths. A rewritten
   session prefix or incompatible event order is not a safe append; do not force
   resolution automatically or concatenate the files.
+- If exit `5` reports that local configuration changed, reread status and the
+  relevant mappings before retrying the intended configuration change. Never
+  replace `config.json` from an old copy; another process may have added memory
+  bindings or applied revisions. Do not blindly retry an ambiguous remote mutation.
 - `BASELINE_UNAVAILABLE` with exit `5`: if policy is `ask`, request approval to fetch with system Git or have the operator provision the commit. After approval, reattach the same ID/path with `--git-fetch auto` and retry. Never ask for Git credentials in chat and never change a `never` policy without explicit direction.
 - `GIT_LFS_CONTENT_UNAVAILABLE` with exit `5`: report the logical paths and reason. If the workspace policy is `ask`, request approval to reattach it with `--git-fetch auto`; Statecase will use only device-local Git LFS, its cache, and the existing origin. For `binary-missing`, ask the operator to install Git LFS; for `download-failed`, ask them to verify device-local credentials/network; for `integrity`, stop and preserve the rollback. Never request credentials, copy LFS storage, or silently switch to metadata-only mode.
 - Exit `6`: stop. Treat this as an integrity or cryptographic failure.
