@@ -50,6 +50,40 @@ the presence of new assertions in the fixture. The entire CI run subsequently
 completed successfully in all nine jobs, including quality/workerd/audit,
 background synchronization, both Node versions, native Claude and macOS checks.
 
+## Concurrent continuation follow-up
+
+Candidate `37b1f7b07ca9d7988b2c42fd559f921f743772c5` passed native-codex job
+`102034206805` in
+[CI 34217993203](https://github.com/alemicali/statecase/actions/runs/34217993203).
+Codex, Node, Git, runner image and reference topology are unchanged.
+
+After target continuation/publication but before source hydration, the original
+source harness now resumes that same UUID and appends a separate text-only turn.
+Its actual request must still contain the original relative memory patch header,
+and its memory file must retain the original bytes. This produces two native
+branches over the same previously published history; the source continuation
+is not fabricated by editing JSONL.
+
+Source publication merges the branches and must retain its old applied harness
+marker. Source pull then receives the target's workspace/memory changes and the
+merged history. The source history contains exactly one concurrent text response
+and exactly one target patch call. Source push is a no-op; a subsequent target
+pull and push must also converge without creating another revision.
+
+The native pass record adds `nativeConcurrentSessionAppend`,
+`mergedAppliedMarkerPreserved`, `bothNativeBranchesRetained` and
+`bothPeersConverged`, all true, with 78 encrypted objects. All prior original-
+UUID, memory patch, preference/instruction, configuration, preview and return
+assertions pass again. The complete run subsequently finished successfully in
+all nine jobs, including quality/workerd/audit, background synchronization,
+both Node versions, native Claude and macOS lifecycle/credential checks.
+
+This qualifies the pinned two-branch native case with reviewed relative memory
+references, not arbitrary concurrent operations or two live writers on one
+native file. SY-012's injected late-write/rollback cases are separate local
+engine evidence; this native drill does not inject a writer into the final
+check/rename interval or simulate a killed materialization process.
+
 ## Boundaries
 
 The collection is an explicit synthetic memory binding. This does **not** prove
@@ -65,6 +99,6 @@ Those are local assertions, not additional native operations in this drill.
 
 Workspace raw patch filenames remain relative to the mapped checkout in this
 fixture; arbitrary workspace/Drop patch-header localization is not established.
-Concurrent representation-changing appends, historical/mixed-client migration,
+Concurrent cases beyond the selected two-branch drill, historical/mixed-client migration,
 filesystem aliases, packaged independent-host/live-cloud parity and the broader
 production/security gates remain required.

@@ -781,3 +781,14 @@ hydration safety, persistent SIGKILL recovery, historical/mixed-client migration
 or packaged independent-host qualification. The final-check/rename window and
 writes through existing descriptors remain explicit release risks. Generic Drop
 permission policy is preserved; dedicated native context restrictions remain.
+
+The native extension on `37b1f7b` subsequently passed job `102034206805` in CI
+`34217993203`: real Codex continuations on both homes retain the original UUID,
+merge over the shared history, preserve the old applied marker until pull and
+retain both contributions once; both peers converge with no-op pushes. All
+prior native assertions also pass. See the
+[concurrent follow-up report](uat/2026-09-08-native-memory-patches.md). This is
+reference-topology evidence, not active-writer or independent-host qualification.
+The complete `34217993203` CI run subsequently passed all nine jobs, including
+background synchronization and quality/workerd/audit. The original unrelated
+background-service-loss investigation is not resolved by this successful run.

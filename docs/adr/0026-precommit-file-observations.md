@@ -72,3 +72,9 @@ parent replacement, metadata/link changes, unsafe file kinds, invalid limits
 and redacted diagnostics. Existing historical restore, key-epoch, namespace,
 workspace and native lifecycle checks must still pass. Native CI is recorded
 separately from these deterministic regressions.
+
+The complete local check passed 891 tests. Candidate `37b1f7b` subsequently
+passed all nine jobs of CI `34217993203`, including native Codex/Claude, background
+synchronization, workerd/quality and macOS lifecycle/credential checks. This
+establishes compatibility with those executed drills, not an active-writer,
+largest-file latency, atomic-rename or persistent-recovery guarantee.

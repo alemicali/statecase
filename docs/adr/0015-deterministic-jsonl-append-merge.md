@@ -145,3 +145,10 @@ duplicates, changed authored content, unsupported remote-tail references and
 incomplete local tails. The native Codex drill is extended to fork the original
 session on both homes before reconciliation; an executed pass is required
 before claiming native concurrent-history qualification.
+
+The native extension passed on `37b1f7b` in job `102034206805` of CI
+`34217993203`. Both real source/target continuations retain the original UUID;
+the merged push retains the old applied marker and verified pull retains each
+contribution once. Both peers subsequently converge with no-op pushes. See the
+[bounded report](../uat/2026-09-08-native-memory-patches.md); active-writer,
+historical/mixed-client and independent-host cases remain separate requirements.
