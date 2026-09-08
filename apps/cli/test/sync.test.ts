@@ -10,8 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { StatecaseClient } from "../src/client.js";
 import { ConfigStore, sessionBindingKey, type LocalConfig, type RootMapping } from "../src/config.js";
-import type { WorkspaceApplication } from "@statecase/workspace";
-import type { FileTransaction } from "../src/materialize.js";
+import type { WorkspaceApplication, WorkspaceFileTransaction } from "@statecase/workspace";
 import { createEmergencySnapshot, restoreEmergencySnapshot } from "../src/emergency.js";
 import { SyncConflict, SyncEngine, type VaultKeyring } from "../src/sync.js";
 import * as streamTransfer from "../src/stream-transfer.js";
@@ -39,7 +38,7 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     await new SyncEngine(client, "vlt_test", key).push(config(source));
     const original = await readFile(join(home, "config.json")), before = structuredClone(current); let called = false;
     const engine = new SyncEngine(client, "vlt_test", key, {
-      commitMaterialization: async (proposal: LocalConfig, workspaces: readonly WorkspaceApplication[], files: FileTransaction) => {
+      commitMaterialization: async (proposal: LocalConfig, workspaces: readonly WorkspaceApplication[], files: WorkspaceFileTransaction) => {
         called = true; expect(proposal).toBe(current); expect(proposal.applied[current.mappings[0].namespace].revisionId).toBeTruthy();
         expect(await readFile(join(home, "config.json"))).toEqual(original);
         await store.materializeWorkspaceConfig(proposal, workspaces, files, { afterBoundary: phase => {
@@ -67,11 +66,11 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     await writeFile(join(source, "tracked.txt"), "incoming staged\n"); await runFile("git", ["-C", source, "add", "tracked.txt"]);
     await writeFile(join(source, "tracked.txt"), "incoming worktree\n");
     const a: LocalConfig = { ...config(source), mappings: [], workspaces: [{ id: "ws_return", path: source, sync: "git" }] };
-    const store = new ConfigStore(home), b = await store.loadConfig(); Object.assign(b, { ...a, workspaces: [{ id: "ws_return", path: target, sync: "git", gitFetch: "auto" }] }); await store.saveConfig(b);
+    const store = new ConfigStore(home), b = await store.loadConfig(); Object.assign(b, { ...a, applied: {}, sessionBindings: {}, workspaces: [{ id: "ws_return", path: target, sync: "git", gitFetch: "auto" }] }); await store.saveConfig(b);
     const remote = new MemoryRemote(), client = new StatecaseClient("https://remote.test", "token", remote.fetch), key = await randomKey();
     await new SyncEngine(client, "vlt_test", key).push(a); let called = false;
     const engine = new SyncEngine(client, "vlt_test", key, {
-      commitMaterialization: async (proposal: LocalConfig, workspaces: readonly WorkspaceApplication[], files: FileTransaction) => {
+      commitMaterialization: async (proposal: LocalConfig, workspaces: readonly WorkspaceApplication[], files: WorkspaceFileTransaction) => {
         called = true; expect(workspaces).toHaveLength(1); expect(workspaces[0].captured.capsule.headRef).toBe("incoming");
         await store.materializeWorkspaceConfig(proposal, workspaces, files);
       },
@@ -81,6 +80,41 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     expect((await runFile("git", ["-C", target, "show", ":tracked.txt"])).stdout).toBe("incoming staged\n");
     expect(await readFile(join(target, "tracked.txt"), "utf8")).toBe("incoming worktree\n");
     expect((await store.loadConfig()).applied).toEqual(b.applied);
+  });
+  it.each(["commit", "rollback", "dry-run"])("hydrates a scoped session against its original observed profile: %s (RT-006, WS-034)", async mode => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-engine-hydrate-")); temporary.push(base);
+    for (const [name, value] of Object.entries({ GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: join(base, "empty-config"), GIT_OPTIONAL_LOCKS: "0" })) vi.stubEnv(name, value);
+    const workspace = join(base, "project"), harness = join(base, "source-harness"), targetWorkspace = join(base, "target-project"), targetHarness = join(base, "target-harness");
+    await initializeRepository(workspace); await runFile("git", ["clone", "-q", "--no-local", workspace, targetWorkspace]);
+    await mkdir(join(harness, "sessions"), { recursive: true }); await mkdir(targetHarness);
+    await writeFile(join(harness, "sessions", "hydrated.jsonl"), JSON.stringify({ type: "session_meta", payload: { cwd: workspace } }) + "\n");
+    const a = harnessConfig(harness, workspace); a.workspaces[0].sync = "git";
+    const remote = new MemoryRemote(), client = new StatecaseClient("https://remote.test", "token", remote.fetch), key = await randomKey();
+    const sender = new SyncEngine(client, "vlt_test", key); await sender.push(a); const capsule = (await sender.dependencies())[0];
+    const store = new ConfigStore(join(base, "profile")), current = await store.loadConfig(); Object.assign(current, harnessConfig(targetHarness, targetWorkspace)); current.workspaces[0].sync = "git";
+    const other = join(base, "unrelated"); await mkdir(other); await writeFile(join(other, "keep.txt"), "unrelated work");
+    current.mappings.push({ id: "other", name: "Other", kind: "drop", path: other, namespace: "drop:other", mode: "two-way" });
+    current.applied["drop:other"] = { revisionId: "nrev_preserved", digests: {} };
+    await store.saveConfig(current); const before = structuredClone(current); let called = false, faultReached = false;
+    const engine = new SyncEngine(client, "vlt_test", key, {
+      commitMaterialization: async (proposal, workspaces, files) => {
+        called = true; expect(proposal).toBe(current); expect(proposal.mappings).toEqual(before.mappings);
+        expect(proposal.applied["drop:other"]).toEqual(before.applied["drop:other"]);
+        expect(Object.keys(proposal.sessionBindings ?? {})).toHaveLength(1);
+        await store.materializeWorkspaceConfig(proposal, workspaces, files, { afterBoundary: phase => {
+          if (mode === "rollback" && phase === "install") { faultReached = true; throw new Error("synthetic hydration interruption"); }
+        } });
+      },
+    });
+    if (mode === "rollback") { await expect(engine.hydrate(current, capsule.sessionCapsuleId)).rejects.toThrow(); expect(called).toBe(true); expect(faultReached).toBe(true); expect(current).toEqual(before); expect(await store.loadConfig()).toEqual(before); }
+    else {
+      await engine.hydrate(current, capsule.sessionCapsuleId, { dryRun: mode === "dry-run" }); expect(called).toBe(mode === "commit");
+      if (mode === "commit") {
+        expect(await store.loadConfig()).toEqual(current); expect(current.mappings).toEqual(before.mappings);
+        const nativePath = Object.values(current.sessionBindings!)[0]; expect(await readFile(join(targetHarness, nativePath), "utf8")).toContain(targetWorkspace);
+      } else expect(current).toEqual(before);
+    }
+    expect(await readFile(join(other, "keep.txt"), "utf8")).toBe("unrelated work");
   });
   it.each(["session", "drop", "delete", "create", "identical", "tail", "replacement", "symlink", "buffered-read-race"])("preserves local work changed after preflight and rolls back earlier writes: %s (SY-012)", async (mode) => {
     const root = await mkdtemp(join(tmpdir(), "statecase-precommit-race-")); temporary.push(root);
