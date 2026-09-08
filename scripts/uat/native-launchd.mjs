@@ -25,6 +25,7 @@ const env = { PATH: process.env.PATH, HOME: home, STATECASE_HOME: profile,
   CODEX_HOME: join(home, "codex"), CODEX_SQLITE_HOME: join(home, "codex-sqlite"), CLAUDE_CONFIG_DIR: join(home, "claude") };
 let definition;
 try {
+  await command(env, "profile", "upgrade", "--yes");
   definition = (await command(env, "daemon", "install", "--no-start")).path;
   assert.equal(definition, join(home, "Library", "LaunchAgents", "com.statecase.daemon.plist"));
   const contents = await readFile(definition, "utf8");

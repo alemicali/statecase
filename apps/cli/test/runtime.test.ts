@@ -11,8 +11,15 @@ import { MemoryBindingError } from "../src/memory-bindings.js";
 import { ConfigStateChanged } from "../src/config.js";
 import { MemoryReferenceError } from "../src/session-memory-paths.js";
 import { RemoteError } from "../src/client.js";
+import { ProfileFormatError } from "../src/profile-format.js";
 
 describe("CLI error contract", () => {
+  it("classifies profile incompatibility as integrity and unconfirmed writes as retryable (RT-017)", () => {
+    expect(exitCodeFor(new ProfileFormatError("PROFILE_INVALID"))).toBe(6);
+    expect(exitCodeFor(new ProfileFormatError("PROFILE_UPGRADE_REQUIRED"))).toBe(6);
+    expect(exitCodeFor(new ProfileFormatError("PROFILE_UNSUPPORTED"))).toBe(6);
+    expect(exitCodeFor(new ProfileFormatError("PROFILE_WRITE_FAILED"))).toBe(7);
+  });
   it("classifies client/service incompatibility as integrity exit 6 (PR-014)", () => {
     expect(exitCodeFor(new RemoteError(426, "UNSUPPORTED_PROTOCOL", "fixed compatibility diagnostic"))).toBe(6);
     expect(exitCodeFor(new RemoteError(426, "CLIENT_UPGRADE_REQUIRED", "fixed upgrade diagnostic"))).toBe(6);

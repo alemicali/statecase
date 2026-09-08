@@ -7,6 +7,12 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import { gunzipSync } from "node:zlib";
 
+async function profileConfig(profile) {
+  const text = await readFile(join(profile, "config.json"), "utf8");
+  assert.ok(text.startsWith("STATECASE-PROFILE/2\n"));
+  return JSON.parse(text.slice("STATECASE-PROFILE/2\n".length)).config;
+}
+
 // UAT-03, AD-CL-006, RT-001/003: independent-host peer. No imports from product
 // source: every Statecase operation uses an independently installed CLI/shim.
 // An authorized orchestrator supplies a private synthetic fixture input file,
@@ -113,7 +119,7 @@ try {
     await save();
     console.log(JSON.stringify({ result: "pass", phase, strictHydration: true, previewNonMutating: true, nativeProjectPath: true }));
   } else if (phase === "inspect") {
-    const config = JSON.parse(await readFile(join(profile, "config.json"), "utf8"));
+    const config = await profileConfig(profile);
     const exists = async (path) => { try { await readdir(path); return true; } catch (error) { if (error.code === "ENOENT") return false; throw error; } };
     const artifact = await readFile(join(project, "artifact.txt"), "utf8");
     console.log(JSON.stringify({ result: "pass", phase, appliedNamespaces: Object.keys(config.applied).length,
@@ -199,7 +205,7 @@ try {
     assert.equal(await readFile(join(project, "note.txt"), "utf8"), noteBytes);
     const nativeBytes = await readFile(nativePath(state.sessionId), "utf8");
     check(nativeBytes.includes("continued on separate peer"), "returned-native-history-missing");
-    const config = JSON.parse(await readFile(join(profile, "config.json"), "utf8"));
+    const config = await profileConfig(profile);
     check(Object.keys(config.sessionBindings).length === 1, "duplicate-session-binding");
     console.log(JSON.stringify({ result: "pass", phase, returnSync: true, returnedSessionHistory: true, originalNativePath: true }));
   }

@@ -9,7 +9,8 @@ import { randomKey, sealVaultKeyForDevice } from "@statecase/crypto";
 import { SERVICE_HEALTH } from "@statecase/protocol";
 
 import { runCli, type CliIO } from "../src/bin.js";
-import { ConfigStore } from "../src/config.js";
+import { ConfigStore, type LocalConfig } from "../src/config.js";
+import { decodeProfile, encodeProfile } from "../src/profile-format.js";
 
 const temporary: string[] = [];
 const originalEnvironment = { ...process.env };
@@ -136,10 +137,10 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
 
     process.env.STATECASE_HOME = machineA;
     expect(await command(io, "--json", "login", "--non-interactive", "--device-name", "laptop")).toBe(0);
-    const firstDeviceId = (JSON.parse(await readFile(join(machineA, "config.json"), "utf8")) as { deviceId: string }).deviceId;
+    const firstDeviceId = (decodeProfile(await readFile(join(machineA, "config.json"), "utf8")).config as { deviceId: string }).deviceId;
     expect(firstDeviceId).toMatch(/^dev_[a-f0-9]{32}$/u);
     expect(await command(io, "--json", "login", "--non-interactive", "--device-name", "laptop renamed")).toBe(0);
-    expect((JSON.parse(await readFile(join(machineA, "config.json"), "utf8")) as { deviceId: string }).deviceId).toBe(firstDeviceId);
+    expect((decodeProfile(await readFile(join(machineA, "config.json"), "utf8")).config as { deviceId: string }).deviceId).toBe(firstDeviceId);
     expect(await command(io, "--json", "vault", "create", "personal", "--recovery-file", recovery)).toBe(0);
     const created = JSON.parse(output.at(-1)!) as { id: string };
     expect(await command(io, "--json", "vault", "list")).toBe(0);
@@ -276,7 +277,7 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
 
     process.env.STATECASE_HOME = machineA;
     expect(await command(io, "--json", "login", "--non-interactive", "--device-name", "active")).toBe(0);
-    const activeConfig = JSON.parse(await readFile(join(machineA, "config.json"), "utf8")) as { deviceId: string };
+    const activeConfig = decodeProfile(await readFile(join(machineA, "config.json"), "utf8")).config as { deviceId: string };
     const activeSecrets = JSON.parse(await readFile(join(machineA, "credentials.json"), "utf8")) as { deviceExchange?: { publicKey: string; privateKey: string } };
     expect(activeSecrets.deviceExchange).toMatchObject({
       publicKey: expect.stringMatching(/^stc_x25519_public_v1\./u),
@@ -294,7 +295,7 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
 
     process.env.STATECASE_HOME = machineB;
     expect(await command(io, "--json", "login", "--non-interactive", "--device-name", "lost")).toBe(0);
-    const lostConfig = JSON.parse(await readFile(join(machineB, "config.json"), "utf8")) as { deviceId: string };
+    const lostConfig = decodeProfile(await readFile(join(machineB, "config.json"), "utf8")).config as { deviceId: string };
     expect(await command(io, "--json", "vault", "join", "vlt_test", "--recovery-file", initialRecovery)).toBe(0);
     expect(await command(io, "--json", "drop", "map", drop.id, revokedTarget, "--name", "context")).toBe(0);
     expect(await command(io, "--json", "pull")).toBe(0);
@@ -438,7 +439,7 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
     expect(await command(io, "--json", "drop", "map", drop.id, target, "--name", "context")).toBe(0);
     expect(await command(io, "--json", "pull")).toBe(0);
     const priorCredentials = await readFile(join(peer, "credentials.json"));
-    const peerId = (JSON.parse(await readFile(join(peer, "config.json"), "utf8")) as { deviceId: string }).deviceId;
+    const peerId = (decodeProfile(await readFile(join(peer, "config.json"), "utf8")).config as { deviceId: string }).deviceId;
 
     process.env.STATECASE_HOME = owner;
     for (const epoch of [2, 3]) {
@@ -572,17 +573,17 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
 
     expect(await command(io, "--json", "workspace", "attach", "--id", "ws_main", "--path", original, "--mode", "metadata-only")).toBe(0);
     const configPath = join(process.env.STATECASE_HOME, "config.json");
-    const configured = JSON.parse(await readFile(configPath, "utf8")) as { applied: Record<string, unknown> };
+    const configured = decodeProfile(await readFile(configPath, "utf8")).config as { applied: Record<string, unknown> };
     configured.applied["workspace:ws_main"] = { revisionId: "nrev_applied", digests: {} };
-    await writeFile(configPath, `${JSON.stringify(configured, null, 2)}\n`);
+    await writeFile(configPath, encodeProfile(configured as LocalConfig), { mode: 0o600 });
 
     expect(await command(io, "--json", "workspace", "move", "ws_main", original)).toBe(0);
     expect(JSON.parse(output.at(-1)!)).toMatchObject({ id: "ws_main", moved: false, path: original });
-    expect((JSON.parse(await readFile(configPath, "utf8")) as { applied: Record<string, unknown> }).applied["workspace:ws_main"]).toBeDefined();
+    expect((decodeProfile(await readFile(configPath, "utf8")).config as { applied: Record<string, unknown> }).applied["workspace:ws_main"]).toBeDefined();
 
     expect(await command(io, "--json", "workspace", "move", "ws_main", destination)).toBe(0);
     expect(JSON.parse(output.at(-1)!)).toMatchObject({ id: "ws_main", moved: true, previousPath: original, path: destination });
-    let moved = JSON.parse(await readFile(configPath, "utf8")) as { workspaces: Array<{ id: string; path: string }>; applied: Record<string, unknown> };
+    let moved = decodeProfile(await readFile(configPath, "utf8")).config as { workspaces: Array<{ id: string; path: string }>; applied: Record<string, unknown> };
     expect(moved.workspaces).toContainEqual(expect.objectContaining({ id: "ws_main", path: destination }));
     expect(moved.applied["workspace:ws_main"]).toBeUndefined();
     expect(await readFile(join(original, "local.txt"), "utf8")).toBe("do not move or delete\n");
@@ -591,13 +592,13 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
     expect(await command(io, "--json", "workspace", "attach", "--id", "ws_other", "--path", occupied, "--mode", "metadata-only")).toBe(0);
     expect(await command(io, "--json", "workspace", "move", "ws_main", occupied)).toBe(2);
     expect(JSON.parse(errors.at(-1)!)).toMatchObject({ error: { code: 2, message: expect.stringContaining("already attached") } });
-    moved = JSON.parse(await readFile(configPath, "utf8")) as typeof moved;
+    moved = decodeProfile(await readFile(configPath, "utf8")).config as typeof moved;
     expect(moved.workspaces.find((item) => item.id === "ws_main")?.path).toBe(destination);
     expect(moved.workspaces.find((item) => item.id === "ws_other")?.path).toBe(occupied);
 
     expect(await command(io, "--json", "workspace", "detach", "ws_main")).toBe(0);
     expect(JSON.parse(output.at(-1)!)).toMatchObject({ id: "ws_main", detached: true, path: destination });
-    const detached = JSON.parse(await readFile(configPath, "utf8")) as typeof moved;
+    const detached = decodeProfile(await readFile(configPath, "utf8")).config as typeof moved;
     expect(detached.workspaces.map((item) => item.id)).toEqual(["ws_other"]);
     expect(detached.applied["workspace:ws_main"]).toBeUndefined();
     expect(await readFile(join(destination, "destination.txt"), "utf8")).toBe("preserve destination\n");
@@ -605,13 +606,13 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
     expect(await command(io, "--json", "workspace", "move", "ws_missing", original)).toBe(2);
 
     expect(await command(io, "--json", "workspace", "attach", "--id", "ws_rebind", "--path", original, "--mode", "metadata-only")).toBe(0);
-    const rebound = JSON.parse(await readFile(configPath, "utf8")) as typeof moved;
+    const rebound = decodeProfile(await readFile(configPath, "utf8")).config as typeof moved;
     rebound.applied["workspace:ws_rebind"] = { revisionId: "nrev_rebind", digests: {} };
-    await writeFile(configPath, `${JSON.stringify(rebound, null, 2)}\n`);
+    await writeFile(configPath, encodeProfile(rebound as LocalConfig), { mode: 0o600 });
     expect(await command(io, "--json", "workspace", "attach", "--id", "ws_rebind", "--path", original, "--mode", "metadata-only", "--git-fetch", "auto")).toBe(0);
-    expect((JSON.parse(await readFile(configPath, "utf8")) as typeof moved).applied["workspace:ws_rebind"]).toBeDefined();
+    expect((decodeProfile(await readFile(configPath, "utf8")).config as typeof moved).applied["workspace:ws_rebind"]).toBeDefined();
     expect(await command(io, "--json", "workspace", "attach", "--id", "ws_rebind", "--path", destination, "--mode", "metadata-only", "--git-fetch", "auto")).toBe(0);
-    const reboundElsewhere = JSON.parse(await readFile(configPath, "utf8")) as typeof moved;
+    const reboundElsewhere = decodeProfile(await readFile(configPath, "utf8")).config as typeof moved;
     expect(reboundElsewhere.workspaces.find((item) => item.id === "ws_rebind")?.path).toBe(destination);
     expect(reboundElsewhere.applied["workspace:ws_rebind"]).toBeUndefined();
 
@@ -663,9 +664,9 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
     })]);
 
     const configPath = join(process.env.STATECASE_HOME, "config.json");
-    const appliedAtSource = (JSON.parse(await readFile(configPath, "utf8")) as { applied: Record<string, unknown> }).applied[`drop:${added.id}`];
+    const appliedAtSource = (decodeProfile(await readFile(configPath, "utf8")).config as { applied: Record<string, unknown> }).applied[`drop:${added.id}`];
     expect(await command(io, "--json", "drop", "map", added.id, source)).toBe(0);
-    const samePath = JSON.parse(await readFile(configPath, "utf8")) as { mappings: Array<{ id: string; name: string; mode: string; path: string }>; applied: Record<string, unknown> };
+    const samePath = decodeProfile(await readFile(configPath, "utf8")).config as { mappings: Array<{ id: string; name: string; mode: string; path: string }>; applied: Record<string, unknown> };
     expect(samePath.mappings.find((mapping) => mapping.id === added.id)).toMatchObject({ name: "knowledge", mode: "append", path: source });
     expect(samePath.applied[`drop:${added.id}`]).toEqual(appliedAtSource);
 
@@ -684,7 +685,7 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
     expect(await readFile(configPath, "utf8")).toBe(beforeInvalidMode);
 
     expect(await command(io, "--json", "drop", "map", added.id, destination)).toBe(0);
-    const remapped = JSON.parse(await readFile(configPath, "utf8")) as typeof samePath;
+    const remapped = decodeProfile(await readFile(configPath, "utf8")).config as typeof samePath;
     expect(remapped.mappings.find((mapping) => mapping.id === added.id)).toMatchObject({ name: "knowledge", mode: "append", path: destination });
     expect(remapped.applied[namespace]).toBeUndefined();
     expect(await command(io, "--json", "drop", "status", added.id)).toBe(0);
@@ -707,7 +708,7 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
     })]);
     expect(await command(io, "--json", "drop", "remove", "drop_missing")).toBe(0);
 
-    const configWithVault = JSON.parse(await readFile(configPath, "utf8")) as { selectedVaultId: string };
+    const configWithVault = decodeProfile(await readFile(configPath, "utf8")).config as { selectedVaultId: string };
     const credentialsPath = join(process.env.STATECASE_HOME, "credentials.json");
     const credentials = JSON.parse(await readFile(credentialsPath, "utf8")) as {
       vaultKeys: Record<string, string>;
@@ -733,7 +734,7 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
 
     expect(await command(io, "--json", "drop", "remove", added.id)).toBe(0);
     expect(JSON.parse(output.at(-1)!)).toMatchObject({ id: added.id, path: destination, removed: true });
-    const removed = JSON.parse(await readFile(configPath, "utf8")) as { mappings: Array<{ id: string }>; applied: Record<string, unknown> };
+    const removed = decodeProfile(await readFile(configPath, "utf8")).config as { mappings: Array<{ id: string }>; applied: Record<string, unknown> };
     expect(removed.mappings.find((mapping) => mapping.id === added.id)).toBeUndefined();
     expect(removed.applied[namespace]).toBeUndefined();
     expect(await readFile(join(source, "context.txt"), "utf8")).toBe("portable context\n");
@@ -820,7 +821,7 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
     const workspace = join(base, "workspace");
     const session = join(harness, "sessions", "2026", "09", "07", "supervised.jsonl");
     await Promise.all([mkdir(home), mkdir(join(harness, "sessions", "2026", "09", "07"), { recursive: true }), mkdir(workspace)]);
-    await writeFile(join(home, "config.json"), `${JSON.stringify({
+    await writeFile(join(home, "config.json"), encodeProfile({
       version: 1,
       apiUrl: "https://remote.test",
       deviceId: "dev_supervised",
@@ -828,7 +829,7 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
       mappings: [{ id: "harness_codex_default", kind: "codex", mode: "two-way", name: "Codex", namespace: "harness:codex:default", path: harness }],
       workspaces: [{ id: "ws_supervised", path: workspace, sync: "identity-only" }],
       applied: {},
-    }, null, 2)}\n`);
+    }), { mode: 0o600 });
     await writeFile(join(home, "credentials.json"), `${JSON.stringify({
       version: 1,
       token: "test-device-token",
@@ -844,7 +845,7 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
     const script = "require('node:fs').writeFileSync(process.env.HARNESS_SESSION_PATH, JSON.stringify({type:'session_meta',payload:{cwd:process.env.HARNESS_WORKSPACE_PATH}})+'\\n')";
 
     expect(await command(io, "run", "codex", "--executable", process.execPath, "--sync-interval", "0", "--", "-e", script)).toBe(0);
-    const saved = JSON.parse(await readFile(join(home, "config.json"), "utf8")) as { sessionBindings?: Record<string, string> };
+    const saved = decodeProfile(await readFile(join(home, "config.json"), "utf8")).config as { sessionBindings?: Record<string, string> };
     expect(saved.sessionBindings?.["harness:codex:default\0portable-sessions/ws_supervised/supervised.jsonl"])
       .toBe("sessions/2026/09/07/supervised.jsonl");
     expect(errors).toEqual([]);

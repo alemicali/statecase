@@ -46,7 +46,7 @@ describe("CLI local security and recovery (CR-007, CR-009, AU-011)", () => {
     const home = await mkdtemp(join(tmpdir(), "statecase-malformed-config-"));
     temporary.push(home);
     await writeFile(join(home, "config.json"), "{not-json", "utf8");
-    await expect(new ConfigStore(home).loadConfig()).rejects.toBeInstanceOf(SyntaxError);
+    await expect(new ConfigStore(home).loadConfig()).rejects.toMatchObject({ code: "PROFILE_INVALID" });
   });
 
   it("rejects stale concurrent configuration saves without losing memory bindings or applied revisions (AD-MEM-007)", async () => {

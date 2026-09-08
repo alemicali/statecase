@@ -34,6 +34,7 @@ try {
   await writeFile(join(env.STATECASE_HOME, "config.json"), JSON.stringify({ version: 1, apiUrl: "http://127.0.0.1:1", mappings: [], workspaces: [], applied: {} }), { mode: 0o600, flag: "wx" });
   const original = await readFile(credentials);
   stage = "preview-and-missing-store";
+  assert.equal((await command(["profile", "upgrade", "--yes"])).code, 0);
   assert.equal((await command(["credentials", "protect", "--dry-run"])).data?.backend, "macos-keychain");
   assert.ok((await readFile(credentials)).equals(original), "preview changed credentials");
   await assert.rejects(stat(keychain), { code: "ENOENT" });

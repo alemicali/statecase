@@ -121,7 +121,11 @@ console.log(JSON.stringify({ result: "pass", vaultId: vault.id, dropId: drop.id,
 }, null, 2));
 
 async function assertContent(name, content) { assert.equal(await readFile(join(folders[name], "context.txt"), "utf8"), content); }
-async function config(name) { return JSON.parse(await readFile(join(machines[name], "config.json"), "utf8")); }
+async function config(name) {
+  const text = await readFile(join(machines[name], "config.json"), "utf8");
+  assert.ok(text.startsWith("STATECASE-PROFILE/2\n"));
+  return JSON.parse(text.slice("STATECASE-PROFILE/2\n".length)).config;
+}
 async function credentials(name) { return JSON.parse(await readFile(join(machines[name], "credentials.json"), "utf8")); }
 
 function runRaw(name, args, options = {}) {

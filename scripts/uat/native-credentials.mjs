@@ -62,6 +62,7 @@ async function inside(root, cli) {
     for (const canary of [token, vaultKey, password]) assert.ok(!`${result.stdout}\n${result.stderr}`.includes(canary), "secret appeared in CLI diagnostics");
     return { code: result.code, data: JSON.parse(result.stdout.trim() || "null") };
   };
+  assert.equal((await command("profile", "upgrade", "--yes")).code, 0);
   assert.equal((await command("credentials", "protect", "--dry-run")).code, 0);
   assert.deepEqual(await readFile(credentials), original);
   assert.deepEqual(await readdir(env.XDG_DATA_HOME), []);

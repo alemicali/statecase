@@ -29,6 +29,7 @@ const env = { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(home, ".
 let linked = false;
 let definition;
 try {
+  await command("profile", "upgrade", "--yes");
   const installed = await command("daemon", "install", "--no-start");
   definition = installed.path;
   assert.equal(definition, join(home, ".config", "systemd", "user", unit));
