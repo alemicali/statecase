@@ -745,6 +745,14 @@ component so a case-sensitive sender cannot bypass a case-insensitive receiver.
 Retained ad-hoc backups MUST NOT be
 represented as an authenticated or crash-qualified emergency snapshot.
 
+Artifact ownership (ADR-0029) MUST be established by exclusive creation of a
+private same-filesystem reservation directory before claiming any child path.
+The current layout is `<target>.statecase-transaction-<uuid>.staged/` containing
+`prepared` and/or `backup`. Failed reservations MUST preserve pre-existing
+files, directories, symlinks and legacy sibling backups. Observed directory
+substitutions and unexpected children MUST fail closed without recursive cleanup.
+This ownership prerequisite does not implement persistent transaction replay.
+
 Baseline blobs that conform to the Git LFS pointer format MUST NOT be treated as
 the referenced content. Capture and hydration report
 `GIT_LFS_CONTENT_UNAVAILABLE` with logical paths while the worktree still holds

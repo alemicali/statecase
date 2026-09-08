@@ -4,6 +4,13 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Fix materialization artifact collisions that could delete existing staging
+  files/symlinks or overwrite recovery backups. Reserve private same-filesystem
+  directories exclusively, detect observed substitution, preserve unknown
+  children and avoid recursive cleanup. Add a real SIGKILL test proving retained
+  originals at a partial-install boundary; automatic restart recovery remains
+  a release gate.
+
 - Add framed local profiles and explicit `profile status` / `profile upgrade`
   preview/confirmation. Retain exact prior documents, refuse known active users,
   guard concurrent changes and stale writes, validate/bound input, fsync local

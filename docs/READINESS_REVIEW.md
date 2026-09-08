@@ -4,6 +4,28 @@ Status: foreground sync implemented and deployed; release qualification in progr
 production launch
 Last updated: 2026-09-08
 
+## Materialization artifact ownership checkpoint — 2026-09-08
+
+The preceding profile candidate `5214917` passed all nine jobs in CI
+`34224065282`. Three failing-first materializer regressions then reproduced
+deletion of foreign staging files/symlinks and overwrite/removal of a foreign
+backup on name collision. ADR-0029 replaces unowned sibling targets with an
+exclusively reserved private same-filesystem directory, observes directory
+identity before mutation/cleanup, preserves unknown children and avoids
+recursive deletion. A bundled real-materializer child is terminated by actual
+SIGKILL at the second installation boundary; exact first-target originals remain
+inside the private directory and the untouched second target retains its bytes.
+Nested recovery material is excluded from encrypted Drop transfer.
+
+The complete local check passed 962 tests in 64 files, lint, types, build and
+clean-installed package smoke. Materializer branches are 95.71%; global branches
+are 92.68% (4640/5006). Hosted exact-candidate qualification is still required.
+This is a recovery ownership prerequisite, not completed RT-006: the killed
+fixture remains partially installed. Durable intent, restart replay, coordinated
+HEAD/refs/index and applied-profile markers, multi-root crash transitions,
+power-loss durability and open-descriptor writers remain release gates. No real
+operator profile, harness, credentials or live cloud deployment was modified.
+
 ## Local profile compatibility checkpoint — 2026-09-08
 
 The prior contract documentation candidate `96ffdf1` passed CI `34221429749`.

@@ -309,8 +309,11 @@ If local sync reports incomplete materialization rollback, stop the affected
 daemon and harness before retrying or cleaning anything. A newer editor write
 may have been deliberately preserved instead of being replaced by older data.
 Available original versions remain next to the affected files as
-`<filename>.statecase-transaction-<uuid>.backup`; they contain local plaintext
-and retain the original file's permissions. Preserve both versions, inspect
+`<filename>.statecase-transaction-<uuid>.staged/backup`, inside a private `0700`
+directory; earlier versions used the sibling
+`<filename>.statecase-transaction-<uuid>.backup`. Both contain local plaintext
+and retain the original file's permissions. The `prepared` child, when present,
+contains uninstalled incoming data. Preserve both versions, inspect
 the exact affected paths, and copy recovery material to a private location
 outside synchronized roots before deciding which version to keep. Never run a
 wildcard cleanup over these backups. Statecase excludes transaction artifacts

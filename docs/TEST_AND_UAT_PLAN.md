@@ -490,6 +490,10 @@ unit assertion for historical executable evidence.
 - `RT-005`: final flush timeout does not alter the harness exit code or discard
   the journal.
 - `RT-006`: crash/kill at every journal transition replays idempotently.
+  Prerequisite artifact tests now cover failed exclusive reservations, legacy
+  backup preservation, directory substitution, unknown-child preservation and
+  actual SIGKILL between file installations. That kill test verifies exact
+  retained originals, not restart recovery; full durable replay remains open.
 - `RT-007`: two daemons for one profile cannot run concurrently.
 - `RT-008`: sleep/wake and network change trigger reconcile without a storm.
 - `RT-009`: rapid file events debounce but the maximum publish deadline holds.

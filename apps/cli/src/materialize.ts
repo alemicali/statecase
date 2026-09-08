@@ -1,7 +1,7 @@
-import { chmod, constants, copyFile, lstat, mkdir, open, readlink, rename, rm, symlink } from "node:fs/promises";
+import { chmod, constants, copyFile, lstat, mkdir, open, readdir, readlink, rename, rm, rmdir, symlink } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { createHash } from "node:crypto";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import { assertTemporarySpace } from "./disk-space.js";
 
@@ -25,6 +25,7 @@ export interface FileTransaction {
 
 interface PreparedTarget {
   path: string;
+  artifact?: { path: string; identity: string };
   staging?: string;
   backup?: string;
   installed: boolean;
@@ -50,7 +51,8 @@ export async function applyFileTransaction(transaction: FileTransaction): Promis
       const write = transaction.writes[index];
       const target = targets[index];
       await mkdir(dirname(target.path), { recursive: true, mode: 0o700 });
-      target.staging = `${target.path}.statecase-transaction-${transactionId}.staged`;
+      await reserveArtifact(target, transactionId);
+      target.staging = join(target.artifact!.path, "prepared");
       if (write.sourcePath === undefined) {
         await assertTemporarySpace(dirname(target.staging), write.bytes.byteLength);
         const handle = await open(target.staging, "wx", 0o600);
@@ -77,7 +79,8 @@ export async function applyFileTransaction(transaction: FileTransaction): Promis
       const link = transaction.symlinks![index];
       const target = targets[transaction.writes.length + index];
       await mkdir(dirname(target.path), { recursive: true, mode: 0o700 });
-      target.staging = `${target.path}.statecase-transaction-${transactionId}.staged`;
+      await reserveArtifact(target, transactionId);
+      target.staging = join(target.artifact!.path, "prepared");
       await symlink(link.target, target.staging);
       target.installedFingerprint = await targetFingerprint(target.staging);
     }
@@ -85,12 +88,14 @@ export async function applyFileTransaction(transaction: FileTransaction): Promis
     for (let index = 0; index < targets.length; index += 1) {
       const target = targets[index];
       await transaction.beforeCommit?.(index, target.path);
+      await assertArtifact(target);
       const existing = await optionalLstat(target.path);
       if (existing && !existing.isFile() && !existing.isSymbolicLink()) {
         throw new Error(`refusing to replace non-regular file: ${target.path}`);
       }
       if (existing) {
-        const backup = `${target.path}.statecase-transaction-${transactionId}.backup`;
+        if (!target.artifact) await reserveArtifact(target, transactionId);
+        const backup = join(target.artifact!.path, "backup");
         await rename(target.path, backup);
         target.backup = backup;
       }
@@ -101,6 +106,7 @@ export async function applyFileTransaction(transaction: FileTransaction): Promis
     const rollbackErrors: unknown[] = [];
     for (const target of [...targets].reverse()) {
       try {
+        await assertArtifact(target);
         if ((target.installed || target.backup) &&
             await targetFingerprint(target.path) !== (target.installed ? target.installedFingerprint ?? "absent" : "absent")) {
           throw new Error("destination changed independently; preserving local work and recovery backup");
@@ -121,9 +127,41 @@ export async function applyFileTransaction(transaction: FileTransaction): Promis
 }
 
 async function cleanupTemporary(targets: readonly PreparedTarget[]): Promise<void> {
-  await Promise.all(targets.flatMap((target) => [target.staging, target.preserveBackup ? undefined : target.backup]
-    .filter((path): path is string => Boolean(path))
-    .map((path) => rm(path, { force: true }))));
+  await Promise.all(targets.map(async (target) => {
+    if (!target.artifact) return;
+    await assertArtifact(target);
+    if ((await readdir(target.artifact.path)).some((name) => name !== "prepared" && name !== "backup")) {
+      throw new Error("unexpected transaction artifact; recovery files retained");
+    }
+    if (target.staging) await rm(target.staging, { force: true });
+    if (target.preserveBackup) return;
+    if (target.backup) await rm(target.backup, { force: true });
+    // Never recursively delete: unexpected children are preserved for inspection.
+    await rmdir(target.artifact.path);
+  }));
+}
+
+/** Exclusively own a private same-filesystem directory before claiming any
+ * temporary pathname. A failed reservation must never authorize cleanup of
+ * a pre-existing stage or recovery backup, including artifacts from old clients. */
+async function reserveArtifact(target: PreparedTarget, transactionId: string): Promise<void> {
+  const path = `${target.path}.statecase-transaction-${transactionId}.staged`;
+  await mkdir(path, { mode: 0o700 });
+  const info = await lstat(path);
+  if (!info.isDirectory()) throw new Error("transaction artifact cannot be observed safely");
+  target.artifact = { path, identity: artifactIdentity(info) };
+}
+
+async function assertArtifact(target: PreparedTarget): Promise<void> {
+  if (!target.artifact) return;
+  const info = await optionalLstat(target.artifact.path);
+  if (!info?.isDirectory() || artifactIdentity(info) !== target.artifact.identity) {
+    throw new Error("transaction artifact changed; recovery files retained");
+  }
+}
+
+function artifactIdentity(info: Awaited<ReturnType<typeof lstat>>): string {
+  return JSON.stringify([info.dev, info.ino, info.mode, info.uid]);
 }
 
 /** Rename preserves inode, content, mode, and mtime, but may change ctime. */

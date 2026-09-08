@@ -308,6 +308,14 @@ These controls do not yet prove crash-safe persistent recovery, atomic HEAD
 exclusion, or protection against races inside the check-to-mutation boundaries.
 Those remain release gates; no unconditional concurrent-writer safety claim is made.
 
+ADR-0029 additionally reserves a private artifact directory exclusively before
+claiming staging/backup children. Failed reservations cannot authorize cleanup
+of pre-existing recovery data. Directory identity rechecks and non-recursive,
+known-child cleanup preserve observed substitutions and unknown contents. A real
+SIGKILL test verifies retained original bytes at one partial-install boundary;
+it does not establish automatic replay, power-loss durability or open-descriptor
+writer safety. Those gates above remain unchanged.
+
 ### Workspace dependency incompleteness
 
 Threats: transcript restores without modified code; missed watcher event;
