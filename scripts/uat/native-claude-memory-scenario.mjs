@@ -32,7 +32,7 @@ source.memory = join(claudeProjectDirectory(join(source.home, "claude"), source.
 target.memory = join(target.home, "custom-memory");
 const index = (marker) => `# Memory\n${marker}\n- [Synthetic project context](project_context.md)\n`;
 const topic = `---\nname: Synthetic project context\ndescription: Synthetic fixture only\ntype: project\n---\n${topicMarkers[0]}\n`;
-let phase = "setup", active, requestCount = 0, fixtureFailure, key, healthProbes = 0;
+let phase = "setup", active, requestCount = 0, fixtureFailure, key, healthProbes = 0, invocation = 0;
 const check = (condition, code) => { if (!condition) { fixtureFailure ??= code; throw new Error("native memory fixture assertion failed"); } };
 const environment = (machine, disabled = false) => ({
   PATH: process.env.PATH, HOME: machine.home, CLAUDE_CONFIG_DIR: join(machine.home, "claude"),
@@ -57,8 +57,15 @@ const provider = createServer(async (request, response) => {
     if (request.headers["content-encoding"] === "gzip") bytes = gunzipSync(bytes, { maxOutputLength: 8 * 1024 * 1024 });
     const body = JSON.parse(bytes.toString());
     if (pathname.endsWith("/count_tokens")) { response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ input_tokens: 100 })); return; }
-    check(active && ++requestCount <= (active.write ? 4 : 1), "unexpected-model-turn");
-    if (requestCount === 1) {
+    check(active && ++requestCount <= active.turns, "unexpected-model-turn");
+    if (requestCount === 1 && active.resume) {
+      const historyCalls = body.messages.filter((message) => message.role === "assistant")
+        .flatMap((message) => Array.isArray(message.content) ? message.content : []).filter((block) => block.type === "tool_use");
+      check(historyCalls.length === 3, "memory-history-call-count");
+      check(historyCalls.every((call) => call.input.file_path === join(target.memory, call.name === "Write" ? "MEMORY.md" : "project_context.md")), "memory-history-path-not-localized");
+      const historyResults = body.messages.flatMap((message) => Array.isArray(message.content) ? message.content : []).filter((block) => block.type === "tool_result");
+      check(JSON.stringify(historyResults).includes(topicMarkers[0]), "memory-original-read-history-lost");
+    } else if (requestCount === 1) {
       assertClaudeMemoryContext(body, {
         prompt, required: active.disabled ? [] : [active.unrelated ? unrelatedMarker : indexMarkers[active.generation], active.machine.memory],
         forbidden: [...indexMarkers.filter((_, i) => active.disabled || active.unrelated || i !== active.generation),
@@ -66,18 +73,18 @@ const provider = createServer(async (request, response) => {
       });
     } else {
       const result = body.messages.flatMap((message) => Array.isArray(message.content) ? message.content : [])
-        .find((block) => block.type === "tool_result" && block.tool_use_id === `toolu_memory_${requestCount - 1}`);
+        .find((block) => block.type === "tool_result" && block.tool_use_id === `${active.toolPrefix}_${requestCount - 1}`);
       check(result && !result.is_error, "native-tool-failed");
       if (requestCount === 2) check(JSON.stringify(result.content).includes(topicMarkers[active.generation]), "native-topic-not-read");
     }
     let tool;
-    if (active.write && requestCount === 1) tool = { name: "Read", input: { file_path: join(active.machine.memory, "project_context.md") } };
+    if ((active.write || active.resume) && requestCount === 1) tool = { name: "Read", input: { file_path: join(active.machine.memory, "project_context.md") } };
     else if (active.write && requestCount === 2) tool = { name: "Edit", input: {
       file_path: join(active.machine.memory, "project_context.md"), old_string: topicMarkers[active.generation], new_string: topicMarkers[active.generation + 1],
     } };
     else if (active.write && requestCount === 3) tool = { name: "Write", input: { file_path: join(active.machine.memory, "MEMORY.md"), content: index(indexMarkers[active.generation + 1]) } };
     if (tool) check(body.tools.some((candidate) => candidate.name === tool.name), "native-tool-not-offered");
-    const content = tool ? { type: "tool_use", id: `toolu_memory_${requestCount}`, ...tool } : { type: "text", text: "Synthetic fixture complete." };
+    const content = tool ? { type: "tool_use", id: `${active.toolPrefix}_${requestCount}`, ...tool } : { type: "text", text: "Synthetic fixture complete." };
     const message = { id: `msg_memory_${requestCount}`, type: "message", role: "assistant", model: body.model,
       content: [content], stop_reason: tool ? "tool_use" : "end_turn", stop_sequence: null, usage: { input_tokens: 100, output_tokens: 30 } };
     if (!body.stream) { response.setHeader("content-type", "application/json"); response.end(JSON.stringify(message)); return; }
@@ -122,7 +129,7 @@ try {
   await new Promise((accept, reject) => { provider.once("error", reject); provider.listen(0, "127.0.0.1", accept); });
   const ids = new Set();
   phase = "memory-source";
-  ids.add(await harness(source, 0, { write: true }));
+  const sourceSession = await harness(source, 0, { write: true }); ids.add(sourceSession);
   const written = await memoryBytes(source);
   assert.ok(written.topic.includes(topicMarkers[1]));
   assert.ok(!written.topic.includes(topicMarkers[0]));
@@ -145,6 +152,10 @@ try {
   await engine.hydrate(b, reports[0].sessionCapsuleId, { mode: "strict" });
   assert.deepEqual(await memoryBytes(target), written);
   assert.equal(await readFile(join(target.home, "claude", "settings.json"), "utf8"), targetSettings);
+  assert.equal((await engine.push(b)).outcome, "unchanged");
+  phase = "memory-resume";
+  assert.equal(await harness(target, 1, { resume: sourceSession }), sourceSession);
+  assert.deepEqual(await memoryBytes(target), written);
   phase = "memory-target";
   const fresh = await harness(target, 1, { write: true });
   assert.ok(!ids.has(fresh)); ids.add(fresh);
@@ -157,6 +168,7 @@ try {
   process.chdir(source.project);
   assert.equal((await engine.pull(a)).outcome, "pulled");
   assert.deepEqual(await memoryBytes(source), returned);
+  assert.equal((await engine.push(a)).outcome, "unchanged");
   phase = "memory-recall";
   for (const disabled of [false, true]) {
     const id = await harness(source, 2, { disabled });
@@ -191,6 +203,8 @@ try {
     nativeDefaultMemoryRoot: true, nativeCustomMemoryRoot: true, startupIndexRecall: true, topicReadOnDemand: true,
     nativeMemoryEditWrite: true, disabledMemoryNegativeControl: true, unselectedMemoryPreserved: true,
     worktreeSharedRecall: true, subdirectorySharedRecall: true, unrelatedProjectIsolatedRecall: true,
+    sameSessionMemoryResume: true, memoryHistoryPathsLocalized: true, originalMemoryReadHistoryPreserved: true,
+    resumedNativeRead: true, localizedSessionNoOpRoundTrip: true,
     exactMemoryTransfer: true, memoryDependencyResolved: true, hydrationPreviewNonMutating: true,
     localMemorySettingsPreserved: true, returnTransferAndFreshRecall: true, encryptedObjects: remote.objectCount() }));
 } catch (error) {
@@ -206,11 +220,11 @@ try {
 async function memoryBytes(machine) {
   return { index: await readFile(join(machine.memory, "MEMORY.md"), "utf8"), topic: await readFile(join(machine.memory, "project_context.md"), "utf8") };
 }
-async function harness(machine, generation, { write = false, disabled = false, unrelated = false } = {}) {
-  active = { machine, generation, write, disabled, unrelated }; requestCount = 0;
+async function harness(machine, generation, { write = false, disabled = false, unrelated = false, resume } = {}) {
+  active = { machine, generation, write, disabled, unrelated, resume, turns: write ? 4 : resume ? 2 : 1, toolPrefix: `toolu_memory_${++invocation}` }; requestCount = 0;
   const args = ["--setting-sources", "user", "--disable-slash-commands", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
     "--no-chrome", "--tools", "Read,Write,Edit", "--allowedTools", "Read,Write,Edit", "--permission-mode", "acceptEdits",
-    "--max-turns", "5", "--output-format", "json", "-p", prompt];
+    "--max-turns", "5", "--output-format", "json", ...(resume ? ["--resume", resume] : []), "-p", prompt];
   const pending = execute(executable, args, { cwd: machine.project, env: environment(machine, disabled), timeout: 45_000, maxBuffer: 1024 * 1024, detached: true });
   pending.child.stdin.end();
   let result, cleanupError;
@@ -218,7 +232,7 @@ async function harness(machine, generation, { write = false, disabled = false, u
   finally { if (pending.child.pid) { try { process.kill(-pending.child.pid, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") cleanupError = error; } } }
   if (cleanupError) throw cleanupError;
   check(fixtureFailure === undefined, "provider-failed");
-  check(requestCount === (write ? 4 : 1), "model-turn-count");
+  check(requestCount === active.turns, "model-turn-count");
   const output = JSON.parse(result.stdout);
   check(output.type === "result" && output.subtype === "success" && output.is_error === false, "native-result-failed");
   assert.match(output.session_id, /^[a-f0-9-]{36}$/u);

@@ -4,6 +4,13 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Portabilize reviewed absolute memory file-tool references by logical collection
+  ID in session history; localize them to the receiving harness/project binding
+  without changing prose, tool outputs or authored content. Refuse missing,
+  ambiguous and unsafe references before native writes. Add round-trip/staging
+  regressions and a pinned native same-session memory-resume qualification step;
+  relative/freeform migration and mixed-client compatibility remain open.
+
 - Added a disposable-runner Claude memory qualification scenario for fresh
   recall, native Read/Edit/Write, default-to-custom-root transfer and return
   recall, with disabled-memory and unselected-project controls. Added local

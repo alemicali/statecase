@@ -1353,3 +1353,13 @@ return recall, plus disabled-memory and unselected-project controls. It does
 not invoke the native harness on the operator machine or copy operator memory.
 Local assertion tests are not a native pass; record exact-candidate CI results
 and keep reference-backend evidence distinct from packaged/live-cloud UAT.
+
+AD-MEM-011 adds typed memory-reference conversion in session history. Reviewed
+absolute tool path fields use stable `statecase://memory/<id>/<path>` references;
+materialization resolves only explicitly bound, same-harness/same-project roots.
+Missing/unsafe references are integrity exit 6 before native writes. Content and
+prose are not rewritten. The streamed and buffered session paths, global unbound
+sessions and append-merge activity inspection share the policy. Relative paths,
+freeform patch conversion, old-history migration and mixed-version fencing remain
+required; this format must not be deployed as mixed-client-compatible without
+that qualification. See ADR-0025 for exact boundaries.

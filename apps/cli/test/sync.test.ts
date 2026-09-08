@@ -108,8 +108,14 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     await expect(engine.hydrate(target, capsule.sessionCapsuleId, { mode: "strict" })).rejects.toBeInstanceOf(Error);
     expect(target).toEqual(before); await expect(readFile(target.mappings[0]!.path)).rejects.toMatchObject({ code: "ENOENT" });
     remote.namespaceObjects.set(oldObject, oldEnvelope);
+    const missingMemoryBinding = structuredClone(target); missingMemoryBinding.memories = []; missingMemoryBinding.mappings = missingMemoryBinding.mappings.slice(0, 1);
+    await expect(engine.pull(missingMemoryBinding)).rejects.toMatchObject({ code: "MEMORY_REFERENCE_UNRESOLVED" });
+    expect(missingMemoryBinding.applied).toEqual({});
+    await expect(readFile(target.mappings[0]!.path)).rejects.toMatchObject({ code: "ENOENT" });
     await engine.hydrate(target, capsule.sessionCapsuleId, { mode: "strict" });
     expect(await readFile(join(target.memories[0]!.path, "MEMORY.md"), "utf8")).toBe("Recall at checkpoint");
+    const localizedMemorySession = (await readFile(join(target.mappings[0]!.path, "sessions", "statecase", target.workspaces[0]!.id, "memory-session.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    expect(localizedMemorySession[1].arguments.path).toBe(join(target.memories[0]!.path, "MEMORY.md"));
     expect(await readFile(join(target.memories[1]!.path, "MEMORY.md"), "utf8")).toBe("Private other project");
     expect(target.applied["memory:other"]).toBeUndefined();
     expect(target.memories).toEqual(before.memories);

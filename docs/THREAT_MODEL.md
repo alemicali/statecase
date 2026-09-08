@@ -411,3 +411,12 @@ field merge. Old binaries and arbitrary same-user file editors do not participat
 in this lock; mixed-client fencing and broader local-filesystem races remain
 open. Configuration persistence is not atomic with an earlier remote mutation;
 an error must not trigger blind retries of destructive/ambiguous operations.
+
+Typed session memory references authenticate logical identity through the encrypted
+session and existing collection descriptor; they are not authority to access an
+unbound root. Wrong-project, missing-ID, ambiguous-root and unsafe-path cases fail
+before native writes with a fixed redacted error. Only reviewed structured tool
+path fields are converted; prose, tool results and authored content are historical
+data, not filesystem mapping instructions. Bounded record traversal and staging
+cleanup constrain malformed inputs. Relative/opaque reference closure, historical
+migration, physical aliases and old-client fencing remain open release obligations.

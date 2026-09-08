@@ -873,6 +873,18 @@ Both the first four-session pass and the seven-session location-extension pass
 are recorded in [the native report](uat/2026-09-08-native-claude-memory.md), with
 candidate/job IDs and the reference-backend/native-location evidence boundaries.
 
+AD-MEM-011 adds failing-first regressions for source absolute memory paths left
+in restored tool inputs. Tests require exact portable/native/restaged bytes,
+preserved prose/Write content/tool results, JSON argument and function envelopes,
+safe directory/Unicode paths, source/target project checks, missing mappings,
+traversal/encoded paths, unsupported opaque formats, bounded traversal, unbound
+global sessions and plaintext-stage cleanup after refusal. A generic engine pull
+with a missing memory binding must leave applied and native state untouched.
+The extended native Claude drill must resume the original UUID, observe localized
+historical memory tool arguments, preserve the old Read output and perform a new
+native Read from the target memory directory. Both transfer directions must then
+have a no-op canonical push. Relative/freeform and migration cases remain required.
+
 A release candidate is rejected when:
 
 - a critical/required test is skipped or flaky;

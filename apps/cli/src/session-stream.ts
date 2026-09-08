@@ -11,6 +11,7 @@ import {
 } from "@statecase/adapter-common";
 
 import { assertTemporarySpace, createStagingDirectory } from "./disk-space.js";
+import { createMemoryReferenceRewriter, type SessionMemoryRoot } from "./session-memory-paths.js";
 
 const DEFAULT_MAX_RECORD_BYTES = 64 * 1024 * 1024;
 const READ_BUFFER_BYTES = 64 * 1024;
@@ -34,16 +35,17 @@ export async function inspectPortableSessionActivity(
   sourcePath: string,
   workspaceId: string,
   workspacePath: string,
-  options: { maxRecordBytes?: number } = {},
+  options: { maxRecordBytes?: number; memories?: readonly SessionMemoryRoot[] } = {},
 ): Promise<ActivityReference[]> {
   const maxRecordBytes = options.maxRecordBytes ?? DEFAULT_MAX_RECORD_BYTES;
   if (!Number.isSafeInteger(maxRecordBytes) || maxRecordBytes <= 0) {
     throw new RangeError("maximum JSONL record size must be positive");
   }
   let cwd: string | undefined;
+  const memoryReferences = createMemoryReferenceRewriter(options.memories ?? [], "native", workspaceId);
   const activity = new Map<string, ActivityReference>();
   const accepted = await forEachCompleteRecord(sourcePath, maxRecordBytes, async (record) => {
-    const localized = transformStrings(record, (value) => localizeWorkspaceUri(value, workspaceId, workspacePath));
+    const localized = memoryReferences(transformStrings(record, (value) => localizeWorkspaceUri(value, workspaceId, workspacePath)));
     cwd = sessionWorkingDirectory([localized]) ?? cwd;
     const records = cwd ? [{ type: "session_meta", cwd }, localized] : [localized];
     for (const reference of extractActivityReferences(records)) {
@@ -57,15 +59,16 @@ export async function inspectPortableSessionActivity(
 export async function localizePortableSession(
   sourcePath: string,
   destinationPath: string,
-  workspaceId: string,
-  workspacePath: string,
-  options: { maxRecordBytes?: number } = {},
+  workspaceId: string | undefined,
+  workspacePath: string | undefined,
+  options: { maxRecordBytes?: number; memories?: readonly SessionMemoryRoot[] } = {},
 ): Promise<number> {
   const maxRecordBytes = options.maxRecordBytes ?? DEFAULT_MAX_RECORD_BYTES;
   if (!Number.isSafeInteger(maxRecordBytes) || maxRecordBytes <= 0) {
     throw new RangeError("maximum JSONL record size must be positive");
   }
   const source = await lstat(sourcePath);
+  const memoryReferences = createMemoryReferenceRewriter(options.memories ?? [], "native", workspaceId);
   if (!source.isFile()) throw new Error("portable session source is not a regular file");
   await assertTemporarySpace(dirname(destinationPath), source.size);
   const destination = await open(destinationPath, "wx", 0o600);
@@ -73,10 +76,9 @@ export async function localizePortableSession(
   let accepted = 0;
   try {
     accepted = await forEachCompleteRecord(sourcePath, maxRecordBytes, async (record) => {
-      const transformed = transformStrings(record, (value) => {
-        return localizeWorkspaceUri(value, workspaceId, workspacePath);
-      });
-      const bytes = encoder.encode(`${JSON.stringify(transformed)}\n`);
+      const transformed = workspaceId && workspacePath
+        ? transformStrings(record, (value) => localizeWorkspaceUri(value, workspaceId, workspacePath)) : record;
+      const bytes = encoder.encode(`${JSON.stringify(memoryReferences(transformed))}\n`);
       await destination.writeFile(bytes);
       written += bytes.byteLength;
     });
@@ -109,7 +111,7 @@ export function localizeWorkspaceUri(value: string, workspaceId: string, workspa
 export async function stagePortableSession(
   sourcePath: string,
   workspaces: readonly SessionWorkspace[],
-  options: { maxRecordBytes?: number } = {},
+  options: { maxRecordBytes?: number; memories?: readonly SessionMemoryRoot[] } = {},
 ): Promise<StagedSession | undefined> {
   const maxRecordBytes = options.maxRecordBytes ?? DEFAULT_MAX_RECORD_BYTES;
   if (!Number.isSafeInteger(maxRecordBytes) || maxRecordBytes <= 0) {
@@ -159,18 +161,20 @@ export async function stagePortableSession(
     return undefined;
   }
 
+  try {
   const cwdWorkspace = cwd ? longestContainingWorkspace(workspaces, cwd) : undefined;
   const workspace = cwdWorkspace ?? (matchedWorkspaceIds.size === 1
     ? workspaces.find((candidate) => candidate.id === [...matchedWorkspaceIds][0])
     : undefined);
   let path = acceptedPath;
   let size = acceptedSize;
-  if (workspace) {
+  if (workspace || (options.memories?.length ?? 0) > 0) {
+    const memoryReferences = createMemoryReferenceRewriter(options.memories ?? [], "portable", workspace?.id);
     const portable = await open(portablePath, "wx", 0o600);
     size = 0;
     try {
       await forEachCompleteRecord(acceptedPath, maxRecordBytes, async (record) => {
-        const transformed = transformStrings(record, (value) => portablePathValue(value, workspace));
+        const transformed = memoryReferences(workspace ? transformStrings(record, (value) => portablePathValue(value, workspace)) : record);
         const bytes = encoder.encode(`${JSON.stringify(transformed)}\n`);
         await portable.writeFile(bytes);
         size += bytes.byteLength;
@@ -188,6 +192,10 @@ export async function stagePortableSession(
     activity: [...activity.values()],
     dispose: () => rm(stagingRoot, { recursive: true, force: true }),
   };
+  } catch (error) {
+    await rm(stagingRoot, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 async function forEachCompleteRecord(

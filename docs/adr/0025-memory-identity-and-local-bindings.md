@@ -2,7 +2,7 @@
 
 Status: accepted design; implementation in progress
 Date: 2026-09-08
-Test IDs: AD-MEM-001..010, AD-CTX-008
+Test IDs: AD-MEM-001..011, AD-CTX-008
 
 ## Requirement
 
@@ -91,6 +91,10 @@ processed after an unbounded allocation.
   explicit global grant, no accidental claim of project isolation.
 - AD-MEM-010: daemon/shim parity, independent-host packaged live-cloud UAT,
   mixed-client fencing and safe unsupported native-version handling.
+- AD-MEM-011: portable typed memory references in native tool history; exact
+  canonical round trips, same-session resume, missing/wrong-owner denial,
+  relative and absolute paths, reviewed freeform formats and historical migration.
+  Never rewrite prose, tool results or authored artifact content to satisfy it.
 
 ## Implementation checkpoint
 
@@ -119,6 +123,34 @@ reference-backend boundaries. The seven-session extension on `66f4e1f` also
 passed native worktree/subdirectory shared recall and unrelated-project startup
 isolation. This is selected AD-MEM-008 evidence, not all native-memory support or
 automatic effective-root discovery.
+
+## Typed reference checkpoint
+
+Reviewed absolute tool path arguments now use `statecase://memory/<id>/<path>`
+inside encrypted session records. The owning harness selects eligible bindings;
+Claude workspace ownership is checked before source conversion and destination
+localization. Safe directory references are supported as well as files. Unknown
+IDs, wrong projects, ambiguous bindings, unsafe suffixes and recognized opaque
+tool formats that would require an unsupported memory rewrite fail with fixed
+`MEMORY_REFERENCE_UNRESOLVED` (integrity exit 6). Other projects are not guessed
+from matching directory names. Missing bindings fail before native materialization.
+
+Only reviewed top-level path fields in structured tool inputs are transformed,
+including JSON-string arguments and nested function envelopes. User/assistant
+prose, tool output, edit replacements and Write content retain their native
+values. Streamed push/localization/append inspection and legacy buffered paths
+share the policy. Root resolution is compiled per file; traversal is bounded.
+Global memory references can be localized in an unbound session, without claiming
+that such a session has a workspace capsule. Failed staging is cleaned up.
+
+AD-MEM-011 is not complete: relative memory paths, native freeform patch-header
+conversion, complete historical-reference migration, physical aliases and
+mixed-client fencing still require implementation/qualification. Already-published
+absolute paths are not inferred or rewritten from prose; a source-side canonical
+rescan is a format change whose append/migration compatibility must be qualified
+before live rollout. The native Claude drill now attempts same-UUID resume with
+localized historical Read/Edit/Write paths and a native Read from the target
+memory root; its new exact-candidate CI result must be recorded separately.
 
 ## Sources
 

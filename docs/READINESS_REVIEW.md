@@ -620,3 +620,30 @@ worktree capsule transfer, automatic effective-root discovery or full settings
 precedence. The report records the exact versions and topology; wider production
 and Codex memory gates remain open.
 The complete `34209964941` run then finished successfully in all nine jobs.
+
+The documentation follow-up `8dc7b47` also passed CI `34210288919`.
+
+### Typed memory references and same-session qualification — 2026-09-08
+
+A failing-first regression confirmed that restored memory tool inputs still
+contained the source machine's absolute path. Reviewed structured file-tool
+arguments now use logical memory URIs in encrypted history and are localized to
+explicit same-harness/same-project target bindings. Source and target ownership,
+unsafe suffixes, unsupported opaque rewrites and missing references fail closed
+with integrity exit 6. Prose, tool results, edit replacements and Write content
+remain unchanged. Streamed and buffered paths and append activity inspection
+share this policy; failed memory staging is removed.
+
+AD-MEM-011 tests cover typed-field round trips, restaged byte identity, missing
+binding refusal before native writes, global unbound sessions, traversal and
+resource bounds. The local complete check passes 827 tests in 59 files, lint,
+type checking, build and clean-package smoke; global branches are 91.92%
+(4337/4718) and the new memory reference rewriter is 100% (96/96). The extended
+native drill requires the original Claude UUID, preserved old Read output,
+localized historical tool arguments, a new target-native Read and canonical no-op
+pushes in both directions. That native candidate has not yet been qualified.
+
+This does not complete reference portability: relative paths, native freeform
+patch conversion, historical migration, physical aliases and mixed-client
+fencing remain explicit work. The live deployment is unchanged. Do not treat the
+new session representation as backwards-compatible before migration/fencing UAT.

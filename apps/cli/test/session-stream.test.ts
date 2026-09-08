@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { inspectPortableSessionActivity, localizePortableSession, stagePortableSession } from "../src/session-stream.js";
+import * as diskSpace from "../src/disk-space.js";
 
 const temporary: string[] = [];
 
@@ -13,6 +14,55 @@ afterEach(async () => {
 });
 
 describe("streamed session staging (AD-CX-008, PERF-003)", () => {
+  it("maps memory tool references by identity while preserving prose and written content (AD-MEM-011)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "statecase-session-memory-path-")); temporary.push(root);
+    const workspace = join(root, "project"), memory = join(root, "source-memory"), targetMemory = join(root, "target-memory");
+    const source = join(root, "source.jsonl"), destination = join(root, "target.jsonl");
+    const nativePath = join(memory, "topic.md"), portablePath = "statecase://memory/recall/topic.md";
+    const records = [
+      { type: "session_meta", cwd: workspace },
+      { type: "assistant", message: { role: "assistant", content: [
+        { type: "text", text: nativePath },
+        { type: "tool_use", name: "Write", input: { file_path: nativePath, content: nativePath } },
+      ] } },
+      { type: "user", message: { role: "user", content: [{ type: "tool_result", content: { path: nativePath } }] } },
+    ];
+    await writeFile(source, records.map((record) => JSON.stringify(record)).join("\n") + "\n");
+    const staged = await stagePortableSession(source, [{ id: "ws_test", path: workspace }], { memories: [{ id: "recall", path: memory, workspaceId: "ws_test" }] });
+    try {
+      const portable = (await readFile(staged!.path, "utf8")).trimEnd().split("\n").map((line) => JSON.parse(line));
+      expect(portable[1].message.content[1].input).toEqual({ file_path: portablePath, content: nativePath });
+      expect(portable[1].message.content[0].text).toBe(nativePath); expect(portable[2]).toEqual(records[2]);
+      const options = { memories: [{ id: "recall", path: targetMemory, workspaceId: "ws_test" }] };
+      await localizePortableSession(staged!.path, destination, "ws_test", workspace, options);
+      const localized = (await readFile(destination, "utf8")).trimEnd().split("\n").map((line) => JSON.parse(line));
+      expect(localized[1].message.content[1].input).toEqual({ file_path: join(targetMemory, "topic.md"), content: nativePath });
+      expect(localized[2]).toEqual(records[2]);
+      const restaged = await stagePortableSession(destination, [{ id: "ws_test", path: workspace }], options);
+      try { expect(await readFile(restaged!.path, "utf8")).toBe(await readFile(staged!.path, "utf8")); }
+      finally { await restaged?.dispose(); }
+      expect(await inspectPortableSessionActivity(staged!.path, "ws_test", workspace, options)).toContainEqual({ path: join(targetMemory, "topic.md"), access: "write", source: "native-event" });
+      await expect(localizePortableSession(staged!.path, join(root, "missing.jsonl"), "ws_test", workspace)).rejects.toMatchObject({ code: "MEMORY_REFERENCE_UNRESOLVED" });
+    } finally { await staged?.dispose(); }
+  });
+  it("maps an unbound global memory session and removes plaintext staging after a rejected binding (AD-MEM-011)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "statecase-memory-global-session-")); temporary.push(root);
+    const source = join(root, "source.jsonl"), memory = join(root, "memory");
+    await writeFile(source, JSON.stringify({ type: "tool_call", name: "read_file", arguments: { path: join(memory, "topic.md") } }) + "\n");
+    const staged = await stagePortableSession(source, [], { memories: [{ id: "global", path: memory }] });
+    try {
+      expect(staged?.workspaceId).toBeUndefined();
+      const destination = join(root, "destination.jsonl");
+      await localizePortableSession(staged!.path, destination, undefined, undefined, { memories: [{ id: "global", path: join(root, "target") }] });
+      expect(JSON.parse(await readFile(destination, "utf8")).arguments.path).toBe(join(root, "target", "topic.md"));
+    } finally { await staged?.dispose(); }
+    const created = vi.spyOn(diskSpace, "createStagingDirectory");
+    try {
+      await expect(stagePortableSession(source, [], { memories: [{ id: "project", path: memory, workspaceId: "wrong-project" }] })).rejects.toMatchObject({ code: "MEMORY_REFERENCE_UNRESOLVED" });
+      const ownedRoot = await created.mock.results[0]!.value;
+      await expect(access(ownedRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { created.mockRestore(); }
+  });
   it("does not turn native record types or prose into paths when sync runs inside the workspace (AD-CX-007)", async () => {
     const root = await mkdtemp(join(tmpdir(), "statecase-session-cwd-"));
     temporary.push(root);
