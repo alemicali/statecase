@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { createServer } from "node:http";
+import { once } from "node:events";
 
 import { RemoteError, StatecaseClient } from "../src/client.js";
 import { CLIENT_HEADERS, SERVICE_HEALTH } from "@statecase/protocol";
@@ -7,6 +9,22 @@ const compatible = (fetcher: typeof fetch): typeof fetch => async (input, init) 
   new URL(String(input)).pathname === "/health" ? Response.json(SERVICE_HEALTH) : fetcher(input, init);
 
 describe("HTTP client contract (PR-001, AU-011)", () => {
+  it("refuses protected redirects without forwarding a bootstrap secret to another endpoint (PR-014, AU-011)", async () => {
+    let forwarded = 0, redemptions = 0;
+    const server = createServer((request, response) => {
+      request.resume();
+      if (request.url === "/health") { response.setHeader("content-type", "application/json"); response.end(JSON.stringify(SERVICE_HEALTH)); }
+      else if (request.url === "/api/bootstrap/redeem") { redemptions++; response.writeHead(307, { location: "/unexpected-target" }); response.end(); }
+      else { forwarded++; response.setHeader("content-type", "application/json"); response.end("{}"); }
+    });
+    server.listen(0, "127.0.0.1"); await once(server, "listening");
+    try {
+      const address = server.address(); if (!address || typeof address === "string") throw new Error("fixture did not bind");
+      const client = new StatecaseClient(`http://127.0.0.1:${address.port}`);
+      await expect(client.redeemBootstrap("synthetic-bootstrap-private-canary")).rejects.toEqual(new RemoteError(0, "NETWORK_ERROR", "Statecase service is unavailable"));
+      expect(redemptions).toBe(1); expect(forwarded).toBe(0);
+    } finally { server.closeAllConnections(); await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
+  });
   it("retries a disconnected health stream as a network failure, without exposing transport diagnostics (PR-014)", async () => {
     let disconnected = true, protectedCalls = 0, healthCalls = 0;
     const client = new StatecaseClient("https://statecase.test", "token", async (input) => {
