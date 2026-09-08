@@ -1,11 +1,14 @@
-import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { constants, lstat, mkdir, open, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { ProfileLock } from "@statecase/runtime";
 
 import { CredentialFile, type CredentialFileOptions } from "./credentials.js";
 import { memoryMappings } from "./memory-bindings.js";
+import { decodeProfile, encodeProfile, MAX_PROFILE_BYTES, ProfileFormatError } from "./profile-format.js";
+import { captureFileGuard } from "./file-guard.js";
+import { HarnessActivityRegistry, type ActivityHandle } from "./activity.js";
 
 export type MappingKind = "drop" | "codex" | "claude";
 export type MappingMode = "two-way" | "publish" | "consume" | "append";
@@ -82,8 +85,10 @@ export class ConfigStore {
     this.#credentials = new CredentialFile(this.home, options);
   }
 
-  async loadConfig(): Promise<LocalConfig> {
+  async loadConfig(options: { allowLegacy?: boolean } = {}): Promise<LocalConfig> {
     const text = await readConfigText(join(this.home, "config.json"));
+    const decoded = text === null ? undefined : decodeProfile(text);
+    if (decoded?.format === 1 && !options.allowLegacy) throw new ProfileFormatError("PROFILE_UPGRADE_REQUIRED");
     const config: LocalConfig = text === null ? {
       version: 1,
       apiUrl: process.env.STATECASE_API_URL ?? "https://statecase-api.hi-0e6.workers.dev",
@@ -91,23 +96,71 @@ export class ConfigStore {
       workspaces: [],
       applied: {},
       sessionBindings: {},
-    } : JSON.parse(text) as LocalConfig;
+    } : decoded!.config;
     this.#observed.set(config, fingerprint(text));
     return config;
   }
 
   async saveConfig(config: LocalConfig): Promise<void> {
     memoryMappings(config);
+    const text = encodeProfile(config);
     let lock: ProfileLock;
     try { lock = await ProfileLock.acquire(join(this.home, "config.lock")); }
     catch { throw new ConfigStateChanged(); }
     try {
       const path = join(this.home, "config.json");
-      if (fingerprint(await readConfigText(path)) !== (this.#observed.get(config) ?? null)) throw new ConfigStateChanged();
-      const text = `${JSON.stringify(config, null, 2)}\n`;
+      const current = await readConfigText(path);
+      if (current !== null && decodeProfile(current).format === 1) throw new ProfileFormatError("PROFILE_UPGRADE_REQUIRED");
+      if (fingerprint(current) !== (this.#observed.get(config) ?? null)) throw new ConfigStateChanged();
       await atomicJson(path, text);
       this.#observed.set(config, fingerprint(text));
+    } catch (error) {
+      if (error instanceof ProfileFormatError || error instanceof ConfigStateChanged) throw error;
+      throw new ProfileFormatError("PROFILE_WRITE_FAILED");
     } finally { await lock.release(); }
+  }
+
+  async profileStatus(): Promise<{ exists: boolean; format: 1 | 2; migrationRequired: boolean }> {
+    const text = await readConfigText(join(this.home, "config.json"));
+    const format = text === null ? 2 : decodeProfile(text).format;
+    return { exists: text !== null, format, migrationRequired: format === 1 };
+  }
+
+  async upgradeProfile(options: { dryRun: boolean; beforeCommit?: () => Promise<void> }): Promise<{
+    fromFormat: 1 | 2; toFormat: 2; changed: boolean; dryRun: boolean; backupPath?: string;
+  }> {
+    const path = join(this.home, "config.json"), original = await readConfigText(path);
+    const decoded = original === null ? undefined : decodeProfile(original);
+    const result = { fromFormat: decoded?.format ?? 2, toFormat: 2 as const, changed: decoded?.format === 1, dryRun: options.dryRun };
+    if (!decoded || decoded.format === 2) return result;
+    memoryMappings(decoded.config);
+    const upgraded = encodeProfile(decoded.config);
+    if (options.dryRun) return result;
+    const locks: Array<ProfileLock | ActivityHandle> = [], key = randomBytes(32);
+    try {
+      try {
+        locks.push(await ProfileLock.acquire(join(this.home, "daemon.lock")));
+        const activity = new HarnessActivityRegistry(join(this.home, "locks", "harnesses"));
+        locks.push(await activity.beginRestore("codex")); locks.push(await activity.beginRestore("claude"));
+        locks.push(await ProfileLock.acquire(join(this.home, "config.lock")));
+      } catch { throw new ConfigStateChanged(); }
+      const guard = await captureFileGuard(this.home, path, key, { maximumBytes: MAX_PROFILE_BYTES });
+      if (await readConfigText(path) !== original) throw new ConfigStateChanged();
+      const backupPath = join(this.home, `config.pre-upgrade-v1.${crypto.randomUUID()}.json`);
+      await writeSynced(backupPath, original!);
+      await syncDirectory(this.home);
+      await options.beforeCommit?.();
+      try { await guard.assertUnchanged(); } catch { throw new ConfigStateChanged(); }
+      await atomicJson(path, upgraded);
+      return { ...result, backupPath };
+    } catch (error) {
+      if (error instanceof ProfileFormatError || error instanceof ConfigStateChanged) throw error;
+      throw new ProfileFormatError("PROFILE_WRITE_FAILED");
+    } finally {
+      key.fill(0);
+      // Release every acquired barrier even if one ownership record was changed.
+      await releaseProfileLocks(locks);
+    }
   }
 
   async loadSecrets(): Promise<LocalSecrets> {
@@ -144,19 +197,53 @@ function fingerprint(text: string | null): string | null {
 }
 
 async function readConfigText(path: string): Promise<string | null> {
+  let handle: Awaited<ReturnType<typeof open>> | undefined, bytes: Buffer | undefined;
   try {
-    return await readFile(path, "utf8");
+    const parent = await lstat(dirname(path)).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return undefined; throw error; });
+    if (parent && (!parent.isDirectory() || parent.isSymbolicLink())) throw new ProfileFormatError();
+    try { handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
+    const before = await handle.stat();
+    if (!before.isFile() || before.nlink !== 1 || before.size > MAX_PROFILE_BYTES || (before.mode & 0o022) !== 0 ||
+      (process.getuid && before.uid !== process.getuid())) throw new ProfileFormatError();
+    bytes = Buffer.alloc(before.size + 1); let length = 0;
+    while (length < bytes.length) {
+      const read = await handle.read(bytes, length, bytes.length - length, length);
+      if (!read.bytesRead) break; length += read.bytesRead;
+    }
+    const after = await handle.stat(), named = await lstat(path);
+    const identity = (value: typeof before) => JSON.stringify([value.dev, value.ino, value.size, value.mtimeMs, value.ctimeMs, value.mode, value.uid, value.nlink]);
+    if (length !== before.size || identity(before) !== identity(after) || identity(before) !== identity(named)) throw new ConfigStateChanged();
+    return new TextDecoder("utf8", { fatal: true, ignoreBOM: true }).decode(bytes.subarray(0, length));
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
-  }
+    if (error instanceof ConfigStateChanged || error instanceof ProfileFormatError) throw error;
+    throw new ProfileFormatError();
+  } finally { bytes?.fill(0); await handle?.close().catch(() => { throw new ProfileFormatError(); }); }
 }
 
 async function atomicJson(path: string, text: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${process.pid}.${crypto.randomUUID()}.tmp`;
-  await writeFile(temporary, text, { encoding: "utf8", mode: 0o600, flag: "wx" });
-  await chmod(temporary, 0o600);
-  await rename(temporary, path);
-  await chmod(path, 0o600);
+  // Do not enter cleanup unless this operation actually created the file.
+  const handle = await open(temporary, "wx", 0o600);
+  try {
+    try { await handle.writeFile(text, "utf8"); await handle.sync(); } finally { await handle.close(); }
+    await rename(temporary, path); await syncDirectory(dirname(path));
+  }
+  finally { await rm(temporary, { force: true }); }
+}
+
+async function writeSynced(path: string, text: string): Promise<void> {
+  const handle = await open(path, "wx", 0o600);
+  try { await handle.writeFile(text, "utf8"); await handle.sync(); }
+  finally { await handle.close(); }
+}
+async function syncDirectory(path: string): Promise<void> {
+  const handle = await open(path, "r");
+  try { await handle.sync(); } finally { await handle.close(); }
+}
+
+async function releaseProfileLocks(locks: Array<ProfileLock | ActivityHandle>): Promise<void> {
+  const released = await Promise.allSettled(locks.reverse().map((lock) => lock.release()));
+  if (released.some((entry) => entry.status === "rejected")) throw new ConfigStateChanged();
 }

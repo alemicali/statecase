@@ -21,6 +21,17 @@ For native memory selection, relocation or `MEMORY_REFERENCE_UNRESOLVED`, read [
 Memory is separate from global instructions and Drops; ordinary harness setup
 does not select it or enable native recall.
 
+If status reports that the local profile requires explicit migration, use
+`statecase --json profile status` and `statecase --json profile upgrade --dry-run`.
+Ask the operator to stop Statecase daemons, supervisors and other profile users
+(`statecase daemon stop` remains available for legacy profiles). Only after
+approval run `statecase --json profile upgrade --yes`. Report and preserve the
+returned `backupPath`; migration changes only the local configuration document,
+not credentials, cloud state or native files. Do not strip the format header,
+restore the old document over an active profile, or run an old binary as a
+workaround. A conflict requires reinspection, not deletion of lock files. If a
+failure leaves the outcome unclear, inspect `profile status` before retrying.
+
 ## Ephemeral bootstrap
 
 On a trusted full-access device, create a least-privilege grant with `statecase token create --namespace <ids> --actions read,append --ttl <minutes> --output <protected-path>`. Never request or echo the generated file contents. Prefer `read` without `append` when the sandbox does not need to return work.

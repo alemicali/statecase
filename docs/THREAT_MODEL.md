@@ -1,5 +1,18 @@
 # Statecase threat model
 
+## Local profile downgrade boundary (ADR-0028)
+
+A framed configuration rejects historical JSON readers before config-dependent
+commands can interpret new mappings/state. The current CLI checks the profile
+before credential-only and global-skill actions too. Explicit migration preserves
+the exact prior document, does not read keys or native context, uses existing
+barriers and rechecks the source before atomic publication. Input reads and
+serialization are bounded; unsafe files and untrusted diagnostics are refused.
+Already-running old processes, malicious header removal/ancestor races and old
+commands which never read configuration are not universally fenced. The actual
+historical-package drill qualifies seven stopped-profile workflows only; live
+cutover, power-loss durability and full historic-format support remain required.
+
 ## Client compatibility boundary (ADR-0027)
 
 The required remote client contract prevents accidental old-client use of new

@@ -26,6 +26,8 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm run cloud:test
+      - name: Qualify historical package profile upgrade and downgrade refusal
+        run: npm run uat:profile
       - run: npm audit --omit=dev --audit-level=high
       - name: Upload coverage
         if: always()

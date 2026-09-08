@@ -60,6 +60,25 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
     if (!program.opts<{ json?: boolean }>().json) io.stderr(value.trimEnd());
   } });
 
+  program.hook("preAction", async (_program, command) => {
+    const parent = command.parent?.name();
+    if (parent === "profile" || (parent === "daemon" && ["stop", "status"].includes(command.name()))) return;
+    // Also guard actions that otherwise only touch credentials or global skills.
+    await store.loadConfig();
+  });
+  const profile = program.command("profile").description("inspect and explicitly upgrade the local profile format");
+  profile.command("status").action(async () => {
+    const result = await store.profileStatus();
+    emit(io, program, result, result.migrationRequired ? "Local profile requires explicit upgrade." : "Local profile format is current.");
+  });
+  profile.command("upgrade").option("--dry-run", "preview without writing files").option("--yes", "confirm upgrade after stopping Statecase processes")
+    .action(async (options: { dryRun?: boolean; yes?: boolean }) => {
+      if (Boolean(options.dryRun) === Boolean(options.yes)) throw new StatecaseUsageError("choose --dry-run or confirm profile upgrade with --yes after stopping Statecase processes", 2);
+      const result = await store.upgradeProfile({ dryRun: Boolean(options.dryRun) });
+      emit(io, program, result, result.dryRun ? "Profile upgrade preview; no files changed." : result.changed
+        ? `Profile upgraded; previous document retained at ${result.backupPath}.` : "Local profile format is already current.");
+    });
+
   const credentials = program.command("credentials").description("inspect and protect this installation's local credentials");
   credentials.command("status").action(async () => {
     const status = await store.credentialStatus();
@@ -1102,7 +1121,7 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
 
   for (const action of ["start", "stop"] as const) {
     daemon.command(action).description(`${action} the installed service for this profile`).action(async () => {
-      const definition = await daemonServiceDefinition(store, argv);
+      const definition = await daemonServiceDefinition(store, argv, action === "stop");
       await activateService(definition, action, io.serviceRunner);
       emit(io, program, { action, platform: definition.source.platform, requested: true }, `Statecase daemon ${action} requested`);
     });
@@ -1339,13 +1358,13 @@ function waitForTermination(): Promise<void> {
   });
 }
 
-function daemonServiceDefinition(store: ConfigStore, argv: string[]) {
+function daemonServiceDefinition(store: ConfigStore, argv: string[], allowLegacy = false) {
   if (process.platform !== "linux" && process.platform !== "darwin") {
     throw new StatecaseUsageError("native daemon services are supported on Linux and macOS", 2);
   }
   const platform: "linux" | "darwin" = process.platform;
   const statecaseExecutable = resolve(argv[1] ?? "statecase");
-  return store.loadConfig().then((raw) => {
+  return store.loadConfig({ allowLegacy }).then((raw) => {
     const config = normalizeConfig(raw);
     return serviceDefinition({
       platform,

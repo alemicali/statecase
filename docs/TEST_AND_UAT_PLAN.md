@@ -402,6 +402,22 @@ deployed Worker test environment.
   are not evidence that offline old binaries are fenced.
 - `PR-015`: Worker logs contain no plaintext body or authorization material.
 
+### RT-017 Local profile migration and downgrade refusal
+
+ADR-0028 requires framed version/capability validation; non-mutating status and
+preview; explicit confirmation; exact owner-only prior-document backup; active
+daemon/config/supervisor refusal; source recheck and stale-writer denial; safe
+I/O failures and retry; malformed/oversized/link/type/UTF-8 input rejection;
+retention of optional config payload fields and pre-existing staging collisions.
+New CLI actions must refuse legacy profiles before credentials, network, skills
+or native mutation, with the explicit profile and daemon-stop paths retained.
+`npm run uat:profile` must qualify actual clean-installed historical/current
+packages, including successful legacy use before migration and seven rejected
+config-dependent commands after migration with exact state preservation. It does
+not prove all historical commands or active old-writer, power-loss or cross-host
+safety. Those remain separate release tests; do not substitute a JSON.parse-only
+unit assertion for historical executable evidence.
+
 ## 8. Authentication and authorization tests
 
 - `AU-001`: browser/device-code completion cannot be replayed.

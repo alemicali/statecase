@@ -105,6 +105,31 @@ old keys, or ciphertext it already copied.
 
 ## Local verification
 
+### Local profile upgrade
+
+Fresh profiles use the framed local format. Existing plain JSON profiles require:
+
+```bash
+statecase --json profile status
+statecase --json profile upgrade --dry-run
+statecase daemon stop
+# Stop other Statecase supervisors, restores and profile users as well.
+statecase --json profile upgrade --yes
+```
+
+Only run the confirmed step after operator approval and stopped processes.
+Keep the returned `backupPath`. The migration never reads credentials or moves
+native files and does not update the remote Worker. `config.json` now contains a
+format header plus a JSON envelope: do not use raw JSON editing, strip the header,
+or replace it with the backup to bypass an incompatible binary. Existing bespoke
+scripts that parse this file must migrate to supported CLI operations.
+
+After exit 7 or an interrupted upgrade, inspect `profile status` first. A current
+format is a no-op on retry; an old format still requires migration. Completed
+backups are retained even when a later source change aborts the upgrade. Unknown
+or malformed formats fail closed. This is not a blanket fence for arbitrary old
+commands that never open the profile, or permission to leave old writers running.
+
 ### Local credential protection
 
 Existing profiles keep their owner-only file mode unless explicitly migrated:

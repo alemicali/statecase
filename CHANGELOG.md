@@ -4,6 +4,13 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Add framed local profiles and explicit `profile status` / `profile upgrade`
+  preview/confirmation. Retain exact prior documents, refuse known active users,
+  guard concurrent changes and stale writes, validate/bound input, fsync local
+  publication and preserve pre-existing staging collisions. Qualify seven
+  downgrade refusals with an actual clean-installed historical package. This is
+  a stopped-profile migration, not a fence for arbitrary old tools or live writers.
+
 - Add required client/service contract negotiation with a bounded credential-free
   health handshake, per-request capabilities and HTTP 426 rejection before domain
   operations or one-time bootstrap consumption. Preserve retryable network/stream

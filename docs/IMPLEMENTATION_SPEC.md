@@ -1246,6 +1246,13 @@ copy-only operation.
 
 ## 19. Delivery sequence
 
+Local profile framing/migration follows ADR-0028. New configurations are framed
+format 2 at the historical `config.json` path; legacy plain JSON requires an
+explicit preview/confirmed upgrade with a retained exact backup. The migration
+does not touch keys, native files or cloud state. Historical reader refusal is
+qualified with actual packages; active old-process and wider filesystem/durability
+limits remain distinct from that stopped-profile result.
+
 1. Freeze protocol/domain types and golden fixtures.
 2. Establish standalone workspace/package boundaries and architecture tests.
 3. Implement crypto envelopes and test vectors.

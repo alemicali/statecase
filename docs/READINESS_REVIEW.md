@@ -4,6 +4,34 @@ Status: foreground sync implemented and deployed; release qualification in progr
 production launch
 Last updated: 2026-09-08
 
+## Local profile compatibility checkpoint — 2026-09-08
+
+The prior contract documentation candidate `96ffdf1` passed CI `34221429749`.
+RT-017 now implements explicit local profile status/preview/upgrade with framed
+format 2, structural/capability validation, bounded no-follow reads, exact prior
+document backups, existing daemon/config/supervisor barriers, source rechecks,
+fsynced publication and stale-writer refusal. New CLI entrypoints guard legacy
+profiles before credential-only/global-skill work; daemon stop and the explicit
+profile commands retain migration access. Unknown optional config payload data
+is preserved. The packaged skill was updated with skill-creator and validated.
+
+The complete local check passed 951 tests in 64 files, lint, types, build and
+clean-installed package smoke; global branch coverage is 92.67% (4621/4986),
+configuration is 94.87% and profile framing is 100%. The local historical-package
+UAT already passed before the final staging-cleanup/error-classification and
+native-directory inventory refinements: locked `5907829`
+and the current package were separately built/packed/clean-installed, old usage
+succeeded before migration, preview preserved bytes, and seven old config-dependent
+commands refused the migrated profile without changing config/credentials/native
+fixtures. Exact backups and owned fixture cleanup were verified.
+
+ADR-0028 records the important boundary: no real user profile was migrated, no
+cloud deployment changed, and a format header cannot stop already-running old
+writers or arbitrary old commands that never read configuration. The historical
+test is not full historical/native-format compatibility, power-loss durability,
+malicious same-user race protection or live cross-host qualification. Exact-
+candidate native/platform CI is required before promoting this implementation.
+
 ## Required client/service contract checkpoint — 2026-09-08
 
 The previous committed candidate `5907829` passed all nine jobs in CI

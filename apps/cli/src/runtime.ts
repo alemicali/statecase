@@ -8,6 +8,7 @@ import { MemoryFormatError } from "@statecase/adapter-common/memory";
 import { MemoryIdentityError } from "./memory-sync.js";
 import { MemoryBindingError } from "./memory-bindings.js";
 import { MemoryReferenceError } from "./session-memory-paths.js";
+import { ProfileFormatError } from "./profile-format.js";
 
 export class StatecaseUsageError extends Error {
   constructor(message: string, readonly exitCode = 2) {
@@ -39,6 +40,7 @@ export function selectedVault(config: LocalConfig, secrets: LocalSecrets): strin
 }
 
 export function exitCodeFor(error: unknown): number {
+  if (error instanceof ProfileFormatError) return error.code === "PROFILE_WRITE_FAILED" ? 7 : 6;
   if (error instanceof StatecaseUsageError) return error.exitCode;
   if (error instanceof ConfigStateChanged) return 5;
   if (error instanceof NativeFileError) return error.code === "NATIVE_FILE_CHANGED" ? 5 : 6;

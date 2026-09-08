@@ -9,6 +9,10 @@ Branch protection should require these logical checks on pull requests:
 
 1. `quality` — lint, typecheck, coverage tests, build, package dry-run, and
    production dependency audit on the primary Node version.
+   It also runs `uat:profile`: locked historical source and the current CLI are
+   clean-packaged/installed in disposable roots to verify explicit local-profile
+   upgrade and old config-dependent command refusal, without native harnesses
+   or remote service credentials.
 2. `compatibility` — build and tests on every supported Node major.
 3. `CodeQL` — JavaScript/TypeScript static security analysis, required once
    GitHub code scanning is available for the repository.
