@@ -8,6 +8,8 @@ import { build } from "esbuild";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { ConfigStore } from "../src/config.js";
 import { runCli, type CliIO } from "../src/bin.js";
+import { ProfileLock } from "@statecase/runtime";
+import { HarnessActivityRegistry } from "../src/activity.js";
 
 const temporary: string[]=[];
 let bundleRoot:string,bundle:string;
@@ -42,6 +44,56 @@ function applyScript(home:string,files:string,phase:string,index:number){
       {afterBoundary:(phase,index)=>{if(phase===${JSON.stringify(phase)}&&index===${index})process.kill(process.pid,"SIGKILL");}});`;
 }
 describe("one durable native/profile checkpoint (RT-006, BK-009)",()=>{
+  it.each([["backup",2,"rollback"],["install",0,"rollback"],["commit",-1,"cleanup"]] as const)("exposes explicit CLI recovery after actual kill at %s/%s",async(phase,index,outcome)=>{
+    const f=await fixture();
+    expect(await child(applyScript(f.home,f.files,phase,index),f.root)).toEqual({code:null,signal:"SIGKILL"});
+    vi.stubEnv("STATECASE_HOME",f.home);
+    const output:string[]=[],errors:string[]=[],network=vi.fn(async()=>{throw new Error("network forbidden");});
+    const processTable=vi.fn(async()=>"");
+    const io={stdout:(value:string)=>output.push(value),stderr:(value:string)=>errors.push(value),fetch:network,harnessProcessTable:processTable};
+    const command=(...args:string[])=>runCli(["node","statecase","--json","profile","recover",...args],io);
+    const checkpoint=await readFile(join(f.home,"profile-materialization.json")),journal=await readFile(join(f.home,"materialization","active.jsonl"));
+    const note=await readFile(join(f.files,"note"));
+    await writeFile(join(f.home,"credentials.json"),"unreadable synthetic credential canary",{mode:0o600});
+    expect(await command()).toBe(2);expect(await command("--dry-run","--yes")).toBe(2);
+    expect(await command("--dry-run")).toBe(0);
+    expect(JSON.parse(output.at(-1)!)).toMatchObject({pending:true,outcome,dryRun:true});
+    expect(processTable).not.toHaveBeenCalled();expect(network).not.toHaveBeenCalled();
+    expect(await readFile(join(f.home,"profile-materialization.json"))).toEqual(checkpoint);
+    expect(await readFile(join(f.home,"materialization","active.jsonl"))).toEqual(journal);
+    expect(await readFile(join(f.files,"note"))).toEqual(note);
+    if(phase==="backup")await expect(lstat(join(f.home,"config.json"))).rejects.toMatchObject({code:"ENOENT"});
+    expect(await command("--yes")).toBe(0);
+    expect(JSON.parse(output.at(-1)!)).toMatchObject({pending:true,outcome,dryRun:false});
+    expect(processTable).toHaveBeenCalled();expect(network).not.toHaveBeenCalled();
+    expect(await readFile(join(f.files,"note"),"utf8")).toBe(outcome==="rollback"?"original note":"incoming note");
+    if(outcome==="rollback")expect(await readFile(join(f.home,"config.json"),"utf8")).toBe(f.original);
+    else expect((await f.store.loadConfig()).applied["drop:notes"].revisionId).toBe("new-revision");
+    expect(await command("--yes")).toBe(0);
+    expect(JSON.parse(output.at(-1)!)).toEqual({pending:false,outcome:"none",targets:0,dryRun:false});
+  });
+  it.each(["daemon","config","codex","claude","untracked-codex","untracked-claude","process-error"])("refuses operator recovery while %s exclusion cannot be established",async kind=>{
+    const f=await fixture();expect(await child(applyScript(f.home,f.files,"install",0),f.root)).toEqual({code:null,signal:"SIGKILL"});
+    vi.stubEnv("STATECASE_HOME",f.home);
+    const registry=new HarnessActivityRegistry(join(f.home,"locks","harnesses"));
+    const held=kind==="daemon"||kind==="config"?await ProfileLock.acquire(join(f.home,`${kind}.lock`))
+      :kind==="codex"||kind==="claude"?await registry.enter(kind):undefined;
+    const checkpoint=await readFile(join(f.home,"profile-materialization.json")),journal=await readFile(join(f.home,"materialization","active.jsonl")),errors:string[]=[];
+    const io={stdout:()=>{},stderr:(value:string)=>errors.push(value),fetch:async()=>{throw new Error("network forbidden");},harnessProcessTable:async()=>{
+      if(kind==="process-error")throw new Error("private process inspection canary");
+      return kind.startsWith("untracked-")?`999999 ${kind.slice(10)} /fixture/${kind.slice(10)} private-process-canary`:"";
+    }};
+    try {
+      expect(await runCli(["node","statecase","--json","profile","recover","--yes"],io)).toBe(5);
+      expect(errors.join("")).not.toContain("canary");
+      expect(await readFile(join(f.home,"profile-materialization.json"))).toEqual(checkpoint);
+      expect(await readFile(join(f.home,"materialization","active.jsonl"))).toEqual(journal);
+      expect(await readFile(join(f.files,"note"),"utf8")).toBe("incoming note");
+    }finally{await held?.release();}
+    // All partially acquired barriers are released after refusal.
+    const active=await registry.enter("codex");await active.release();
+    expect(await runCli(["node","statecase","--json","profile","recover","--yes"],{...io,harnessProcessTable:async()=>""})).toBe(0);
+  });
   it.each([["install",0],["backup",2],["install",2]] as const)("restores native files and exact profile after kill at %s/%s",async(phase,index)=>{
     const {root,home,files,store,original}=await fixture();
     expect(await child(applyScript(home,files,phase,index),root)).toEqual({code:null,signal:"SIGKILL"});
