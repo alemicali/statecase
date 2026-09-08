@@ -114,4 +114,14 @@ describe("repository-derived exact index authority (RT-006, WS-034)", () => {
     }
     await expect(lstat(join(dirname(gitDir), "missing"))).rejects.toMatchObject({ code: "ENOENT" });
   });
+  it.each(["symlink", "hardlink", "directory"])("refuses a pre-existing %s index without changing it", async kind => {
+    const f = await fixture(), index = join(f.workspace, ".git", "index"), foreign = join(f.root, "foreign");
+    await writeFile(foreign, "foreign bytes");
+    if (kind === "symlink") await symlink(foreign, index);
+    if (kind === "hardlink") await link(foreign, index);
+    if (kind === "directory") await mkdir(index);
+    await expect(prepareGitIndexes(f.config, [f.workspace])).rejects.toMatchObject({ code: "PROFILE_RECOVERY_REQUIRED" });
+    expect(await readFile(foreign, "utf8")).toBe("foreign bytes");
+    expect((await readdir(join(f.workspace, ".git"))).some(name => name.includes("statecase"))).toBe(false);
+  });
 });
