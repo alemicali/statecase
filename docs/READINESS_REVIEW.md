@@ -681,3 +681,27 @@ requires their presence in the source's real history before target resume and
 return checks. That new exact-candidate native execution is still pending.
 Freeform patches, full historical migration, physical aliases, mixed versions,
 independent-host packaged/cloud parity and the wider production gates remain open.
+
+The relative candidate `5c127a8` failed CI `34213273513`: eight jobs passed, while
+the memory step in native-claude failed in `memory-return`. The ordinary native
+session step passed, and the memory drill had reached beyond source-relative
+history, target hydration/resume and target writes. This is a failed candidate,
+not a native-relative pass. Return diagnostics now distinguish publish, pull and
+no-op phases and expose only fixed error classes.
+
+A failing-first local return drill reproduced a source-session `SyncConflict`:
+the applied baseline hashed portable bytes rather than the captured native file,
+and converting relative fields to absolute paths invalidated the literal
+supersequence fallback. Applied session baselines now hash the immutable native
+complete-prefix snapshot; remote object digests remain portable. They never hash
+a later live file. Six tests cover unchanged and legacy-buffered return, edits
+during upload/after push, and incomplete tails before/after capture. Uncaptured
+work is preserved with an atomic refusal. Restoring the exact captured fixture
+permits return and a no-op push; conflict checks are not bypassed.
+
+The updated full local check passes 836 tests in 59 files, lint, types, build
+and clean-package smoke. Global branches are 92.45% (4413/4773); the memory
+rewriter remains 100% (141/141). A new native CI run is required to establish
+that this correction closes the observed hosted-runner failure. Historical,
+mixed-client and concurrent representation-changing append qualification remain
+open alongside the wider production requirements.

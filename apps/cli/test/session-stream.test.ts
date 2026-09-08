@@ -128,6 +128,9 @@ describe("streamed session staging (AD-CX-008, PERF-003)", () => {
 
     const staged = await stagePortableSession(source, [{ id: "ws_test", path: workspace }]);
     expect(staged).toBeDefined();
+    const nativePrefix = await readFile(staged!.nativePath, "utf8");
+    expect(JSON.parse(nativePrefix.split("\n")[0]!).payload.cwd).toBe(workspace);
+    expect(nativePrefix).not.toContain("partial");
     expect(await readFile(staged!.path, "utf8")).toBe([
       JSON.stringify({ type: "session_meta", payload: { cwd: "statecase://workspace/ws_test" } }),
       JSON.stringify({ type: "tool_call", name: "read_file", arguments: { path: "notes.md" } }),

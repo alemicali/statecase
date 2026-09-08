@@ -170,11 +170,13 @@ try {
   assert.ok(returned.topic.includes(topicMarkers[2]));
   assert.ok(!returned.topic.includes(topicMarkers[1]));
   assert.ok(returned.index.includes(indexMarkers[2]));
-  phase = "memory-return";
+  phase = "memory-return-publish";
   assert.equal((await engine.push(b)).outcome, "pushed");
   process.chdir(source.project);
+  phase = "memory-return-pull";
   assert.equal((await engine.pull(a)).outcome, "pulled");
   assert.deepEqual(await memoryBytes(source), returned);
+  phase = "memory-return-noop";
   assert.equal((await engine.push(a)).outcome, "unchanged");
   phase = "memory-recall";
   for (const disabled of [false, true]) {

@@ -178,6 +178,24 @@ requires them to be present in source history before testing original-UUID
 target resume. Its exact-candidate result is pending execution. Freeform patches,
 complete migration, physical aliases and mixed-client fencing remain open.
 
+### Native applied-baseline correction
+
+The first relative-native candidate `5c127a8` failed during the return phase of
+CI `34213273513`; the other eight jobs passed. A local failing-first regression
+reproduced a false source-session conflict: push recorded the portable session
+digest as the applied native-file baseline, while relative-to-absolute
+materialization also prevented the literal history-supersequence fallback.
+
+Applied session digests now hash the captured native complete prefix, using the
+original accepted staging file (or accepted native bytes in the buffered legacy
+path). Remote content digests remain hashes of the portable representation.
+Never compute this baseline by rereading the live source after upload: edits
+made after capture must not become overwrite consent. Tests cover ordinary and
+buffered legacy returns, edits during upload/after push, and incomplete tails
+present before or after capture. Real uncaptured changes still refuse pull and
+preserve native bytes, memory and applied state. Historical/mixed-client and
+concurrent representation-changing append qualification remain required.
+
 ## Sources
 
 Fetched 2026-09-08: [Codex memories](https://learn.chatgpt.com/docs/customization/memories)

@@ -71,6 +71,8 @@ interface ScannedEntry {
   logicalPath: string;
   bytes?: Uint8Array;
   stagedPath?: string;
+  nativeStagedPath?: string;
+  nativeBytes?: Uint8Array;
   stagedSize?: number;
   dispose?: () => Promise<void>;
   entryType?: "file" | "workspace-capsule" | "workspace-blob";
@@ -521,7 +523,7 @@ export class SyncEngine {
         }
         contentDigest = await computeObjectId(keys.dedupKey, fileBytes);
       }
-      encoded.digests[file.logicalPath] = contentDigest;
+      encoded.digests[file.logicalPath] = await computeNativeSnapshotDigest(keys.dedupKey, file);
       encoded.entries.push({
         namespace: file.namespace,
         keyEpoch: this.keyEpoch,
@@ -2000,7 +2002,7 @@ export class SyncEngine {
       const keys = await this.#scopeKeys(mapping.namespace);
       const digests: Record<string, string> = {};
       for (const file of scanned.filter((candidate) => candidate.namespace === mapping.namespace)) {
-        digests[file.logicalPath] = await computeScannedDigest(keys.dedupKey, file);
+        digests[file.logicalPath] = await computeNativeSnapshotDigest(keys.dedupKey, file);
       }
       config.applied[mapping.namespace] = { revisionId, digests, keyEpoch: this.keyEpoch };
     }
@@ -2427,6 +2429,7 @@ async function walk(
           : logicalPath,
         nativeRelativePath: logicalPath,
         stagedPath: staged.path,
+        nativeStagedPath: staged.nativePath,
         stagedSize: staged.size,
         dispose: staged.dispose,
         ...(staged.workspaceId ? {
@@ -2446,9 +2449,11 @@ async function walk(
     if (!after.isFile() || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs) {
       throw new Error(`file changed while being scanned: ${logicalPath}`);
     }
+    let nativeBytes: Uint8Array | undefined;
     if (classification === "session") {
       const sessionScan = scanCompleteJsonl(bytes);
       bytes = sessionScan.acceptedPrefix;
+      nativeBytes = bytes;
       if (bytes.byteLength === 0) continue;
       const cwd = sessionWorkingDirectory(sessionScan.records);
       const primaryWorkspaceId = cwd
@@ -2463,6 +2468,7 @@ async function walk(
           logicalPath: `portable-sessions/${portable.workspaceId}/${basename(logicalPath)}`,
           nativeRelativePath: logicalPath,
           bytes,
+          nativeBytes,
           session: {
             nativeSessionId: basename(logicalPath).replace(/\.jsonl$/u, ""),
             workspaceId: portable.workspaceId,
@@ -2472,7 +2478,7 @@ async function walk(
         continue;
       }
     }
-    output.push({ namespace: mapping.namespace, logicalPath, bytes });
+    output.push({ namespace: mapping.namespace, logicalPath, bytes, ...(nativeBytes ? { nativeBytes } : {}) });
   }
 }
 
@@ -2485,6 +2491,14 @@ async function computeScannedDigest(dedupKey: Uint8Array, entry: ScannedEntry): 
   return entry.stagedPath
     ? computeObjectIdStream(dedupKey, createReadStream(entry.stagedPath))
     : computeObjectId(dedupKey, requiredMemoryBytes(entry));
+}
+
+/** Applied-file guards compare native bytes, not the portable transport form.
+ * Use the captured complete prefix, never reread a live file after upload. */
+async function computeNativeSnapshotDigest(dedupKey: Uint8Array, entry: ScannedEntry): Promise<string> {
+  if (entry.nativeStagedPath) return computeObjectIdStream(dedupKey, createReadStream(entry.nativeStagedPath));
+  if (entry.nativeBytes) return computeObjectId(dedupKey, entry.nativeBytes);
+  return computeScannedDigest(dedupKey, entry);
 }
 
 function portabilizeSession(

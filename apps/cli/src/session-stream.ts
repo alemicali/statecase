@@ -25,6 +25,7 @@ export interface SessionWorkspace {
 
 export interface StagedSession {
   path: string;
+  nativePath: string;
   size: number;
   workspaceId?: string;
   activity: ActivityReference[];
@@ -195,6 +196,7 @@ export async function stagePortableSession(
 
   return {
     path,
+    nativePath: acceptedPath,
     size,
     ...(workspace ? { workspaceId: workspace.id } : {}),
     activity: [...activity.values()],

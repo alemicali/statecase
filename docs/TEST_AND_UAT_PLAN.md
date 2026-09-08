@@ -894,6 +894,15 @@ relative arguments in source history before encrypted hydration, same-UUID
 target resume, native Read and return/no-op checks. A fixture implementation or
 prior absolute-path pass does not establish this new native result.
 
+AD-MEM-011 return-baseline regressions compare the applied digest with the native
+accepted prefix, not portable bytes. Exercise ordinary and buffered legacy first
+publication, unchanged-source return, an edit injected during object upload, a
+later complete edit and incomplete JSONL tails both before and after capture.
+Uncaptured local work must produce a non-mutating conflict; restoring the exact
+captured fixture bytes then permits return and a no-op push. The native driver
+reports separate return publish/pull/no-op phases and fixed error classes, never
+raw exceptions or transcript content. These diagnostics do not relax assertions.
+
 A release candidate is rejected when:
 
 - a critical/required test is skipped or flaky;

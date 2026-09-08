@@ -427,3 +427,11 @@ wrong collection ownership and noncanonical spellings that could conceal alias
 semantics. Convert before workspace URI rewriting and retain source-local
 activity evidence for dependency checks. This lexical policy does not prove
 physical path identity or close the remaining opaque/migration/version gates.
+
+A successful push records the native captured complete-prefix digest as its
+applied-file baseline, independently of the portable object's content digest.
+Hashing a later live-file version would improperly authorize overwriting work
+never uploaded. Tests mutate the source during upload and add complete edits or
+incomplete tails before/after capture; return pull must preserve those bytes and
+refuse the conflicting transaction. A native representation change alone is not
+an edit when the original captured native prefix is still exactly present.

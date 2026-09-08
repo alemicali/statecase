@@ -1371,3 +1371,11 @@ and noncanonical alias-sensitive spellings fail with the same integrity error.
 Source-local normalization also feeds memory activity/dependency extraction.
 Native relative-history execution must be qualified separately from unit tests;
 freeform patches, historical migration and mixed-version fencing remain open.
+
+Applied-file digests for sessions represent the native complete prefix captured
+for that publication, not its transformed portable payload. Retain the accepted
+native staging path/bytes until hashing and cleanup; do not reread a live source
+after network activity. Portable content digests still address encrypted objects.
+Incomplete tails and post-capture edits are not included as overwrite consent.
+This corrects false source conflicts on relative-to-absolute return hydration;
+it does not waive concurrent edits or qualify historical representation migration.

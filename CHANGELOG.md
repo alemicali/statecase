@@ -4,6 +4,12 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Fix false return conflicts for sessions whose native relative memory arguments
+  are localized to absolute paths: applied guards now hash the captured native
+  complete prefix, separately from portable object content. Preserve concurrent
+  source edits and incomplete tails, including changes during upload. Add
+  ordinary/legacy round-trip regressions and redacted native return diagnostics.
+
 - Resolve canonical relative memory file-tool references from explicit native cwd
   metadata, including cwd changes and Claude record envelopes, before workspace
   path conversion. Include parent-relative reads in memory dependency activity;
