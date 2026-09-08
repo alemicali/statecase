@@ -4,6 +4,14 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Join complete prepared workspaces to the internal profile decision, including
+  HEAD/branch, packed references, native reflogs and temporary retained commits.
+  Recover exact paired state across tested SIGKILL boundaries; refuse foreign
+  pins and concurrent source edits. Check original profile authority before Git
+  acquisition and harden native descriptor/text/configuration observations.
+  Normal-runtime integration, full dependency/fault coverage and production
+  release qualification remain open.
+
 - Integrate repository-derived Git index ownership into the internal durable
   profile checkpoint, including linked-worktree indices outside their checkout.
   Persist all native lock descriptors before publication, hold exclusion through

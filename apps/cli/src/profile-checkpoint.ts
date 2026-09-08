@@ -9,12 +9,15 @@ import { applyRecoverableFileTransaction, recoverFileTransactions, type Material
 import type { FileTransaction } from "./materialize.js";
 import { acquireNativeLock, assertNativeLockHeld, releaseNativeLock, type NativeLockOptions } from "./native-lock.js";
 import { gitIndexFiles, gitIndexGrants, gitIndexSchema, gitMetadataExclusions, prepareGitIndexes, validateGitIndexes, type GitIndexParticipant } from "./git-index-participant.js";
+import { assertNoGitGc, gitReferenceSchema, prepareGitReferences, retainPinOwnership, retireGitPins, validateGitReferences, type GitReferenceParticipant } from "./git-reference-participant.js";
+import type { WorkspaceReferencePlan } from "@statecase/workspace";
 
 const MAX_CHECKPOINT_BYTES = MAX_PROFILE_BYTES * 2 + 2 * 1024 * 1024;
 const hash = z.string().regex(/^[0-9a-f]{64}$/u);
-const schema = z.object({ version: z.union([z.literal(1), z.literal(2)]), id: z.uuid(), phase: z.enum(["prepared", "applying", "settled"]),
+const schema = z.object({ version: z.union([z.literal(1), z.literal(2), z.literal(3)]), id: z.uuid(), phase: z.enum(["prepared", "applying", "settled"]),
   original: z.string().max(MAX_PROFILE_BYTES), beforeHash: hash, afterHash: hash,
   gitIndexes: z.array(gitIndexSchema).max(32).optional(),
+  gitReferences: gitReferenceSchema.optional(),
   settled: z.object({ outcome: z.enum(["rollback", "cleanup"]), profileHash: hash }).strict().optional() }).strict();
 type Checkpoint = z.infer<typeof schema>;
 export interface ProfileCheckpointIO {
@@ -25,8 +28,12 @@ export interface ProfileCheckpointOptions {
   dryRun?: boolean;
   /** Internal prepared participants, restricted to original configured Git roots. */
   workspaceRoots?: readonly string[];
+  workspaceReferences?: readonly WorkspaceReferencePlan[];
+  beforeAdmission?: () => Promise<void>;
   afterBoundary?: (phase: Parameters<NonNullable<MaterializationRecoveryOptions["afterBoundary"]>>[0] |
     `native-${Parameters<NonNullable<NativeLockOptions["afterBoundary"]>>[0]}` |
+    `reference-${Parameters<NonNullable<NativeLockOptions["afterBoundary"]>>[0]}` |
+    "retention-removed" |
     "checkpoint-published" | "file-plan-published" | "checkpoint-applying" | "checkpoint-settled" | "files-finished", index: number) => void | Promise<void>;
 }
 type Roots = (config: LocalConfig) => string[];
@@ -35,6 +42,13 @@ const checkpointPath = (home: string) => join(home, "profile-materialization.jso
 const activePath = (home: string) => join(home, "materialization", "active.jsonl");
 const profilePath = (home: string) => join(home, "config.json");
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
+
+/** Validate the unchanged mapping/authority boundary before any Git acquisition. */
+export function validateCheckpointTransition(before: string, after: string): LocalConfig {
+  const original = decodeProfile(before), desired = decodeProfile(after);
+  if (original.format !== 2 || desired.format !== 2 || invariantProfile(original.config) !== invariantProfile(desired.config)) throw fail();
+  return original.config;
+}
 
 /** A pending checkpoint is never a usable partially updated local profile. */
 export async function assertNoProfileCheckpoint(home: string): Promise<void> {
@@ -53,28 +67,40 @@ export async function applyProfileCheckpoint(home: string, before: string, after
   roots: Roots, io: ProfileCheckpointIO, options: ProfileCheckpointOptions): Promise<void> {
   if (options.dryRun || transaction.lifecycle || transaction.finalWrites?.length) throw fail();
   await assertNoProfileCheckpoint(home);
-  const original = decodeProfile(before), desired = decodeProfile(after);
-  if (original.format !== 2 || desired.format !== 2 || invariantProfile(original.config) !== invariantProfile(desired.config)) throw fail();
+  const original = { config: validateCheckpointTransition(before, after) };
   const gitIndexes = await prepareGitIndexes(original.config, options.workspaceRoots ?? []);
-  let checkpoint: Checkpoint = { version: gitIndexes.length ? 2 : 1, id: crypto.randomUUID(), phase: "prepared", original: before, beforeHash: digest(before), afterHash: digest(after), ...(gitIndexes.length ? { gitIndexes } : {}) };
-  let saved = await publish(home, checkpoint, null, io);
+  const references = options.workspaceReferences?.length ? await prepareGitReferences(gitIndexes, options.workspaceReferences) : undefined;
+  let checkpoint: Checkpoint = { version: references ? 3 : gitIndexes.length ? 2 : 1, id: crypto.randomUUID(), phase: "prepared", original: before, beforeHash: digest(before), afterHash: digest(after), ...(gitIndexes.length ? { gitIndexes } : {}), ...(references ? { gitReferences: references.participant } : {}) };
+  let saved: string;
+  try { saved = await publish(home, checkpoint, null, io); } catch (error) { references?.dispose(); throw error; }
   const bytes = new TextEncoder().encode(after);
   try {
     await options.afterBoundary?.("checkpoint-published", -1);
-    await assertIndexes(original.config, gitIndexes, false);
+    await assertIndexes(original.config, gitIndexes, false, checkpoint.gitReferences);
     for (const [index, participant] of gitIndexes.entries()) await acquireNativeLock(participant.lock, lockOptions(gitIndexes, options, index));
-    await assertIndexes(original.config, gitIndexes, true);
+    if (checkpoint.gitReferences) for (const [index, lock] of checkpoint.gitReferences.locks.entries()) await acquireNativeLock(lock, referenceLockOptions(gitIndexes, checkpoint.gitReferences, options, index));
+    await assertIndexes(original.config, gitIndexes, true, checkpoint.gitReferences);
+    await references?.guard(); await options.beforeAdmission?.();
     const indexes = new Set(gitIndexFiles(gitIndexes));
     if (transaction.deletes.some(path => indexes.has(path)) || transaction.symlinks?.some(link => indexes.has(link.path))) throw fail();
-    await applyRecoverableFileTransaction({ ...transaction, finalWrites: [{ path: profilePath(home), bytes, mode: 0o600 }],
+    const pinPaths = new Set(references?.participant.pins.map(pin => pin.path)); let retentionVerified = !references;
+    await applyRecoverableFileTransaction({ ...transaction,
+      writes: [...(references?.retentionWrites ?? []), ...transaction.writes, ...(references?.files.writes ?? [])], deletes: [...transaction.deletes, ...(references?.files.deletes ?? [])],
+      finalWrites: [{ path: profilePath(home), bytes, mode: 0o600 }],
       beforeCommit: async (index, path) => {
-        await assertIndexes(original.config, gitIndexes, true);
+        await assertIndexes(original.config, gitIndexes, true, checkpoint.gitReferences);
+        await references?.guard(path);
+        // The whole-workspace admission guard ran under every native lock,
+        // before file staging. Staging now adds owned artifacts to the working
+        // tree, so recapturing it here would reject our own transaction. Keep
+        // the per-target source guards (also repeated at mutation) instead.
+        if (!retentionVerified && !pinPaths.has(path)) { await references!.verifyRetention(); retentionVerified = true; }
         if (path === profilePath(home)) { if (await io.read(path) !== before) throw fail(); }
         else await transaction.beforeCommit?.(index, path);
       },
     }, {
-      ...fileAuthority(home, original.config, roots, gitIndexes),
-      beforeMutation: () => assertIndexes(original.config, gitIndexes, true),
+      ...fileAuthority(home, original.config, roots, gitIndexes, checkpoint.gitReferences),
+      beforeMutation: () => assertIndexes(original.config, gitIndexes, true, checkpoint.gitReferences),
       afterBoundary: async (phase, index) => {
         if (phase === "prepared") {
           await options.afterBoundary?.("file-plan-published", -1);
@@ -84,9 +110,10 @@ export async function applyProfileCheckpoint(home: string, before: string, after
         }
         await options.afterBoundary?.(phase, index);
       },
-      beforeForget: async (result) => {
-        await assertIndexes(original.config, gitIndexes, true);
+      beforeForget: async (result, ownership) => {
+        await assertIndexes(original.config, gitIndexes, true, checkpoint.gitReferences);
         checkpoint = await decision(home, checkpoint, result, io);
+        if (checkpoint.gitReferences && result.outcome === "cleanup") checkpoint = { ...checkpoint, gitReferences: retainPinOwnership(checkpoint.gitReferences, ownership) };
         saved = await publish(home, checkpoint, saved, io);
         await options.afterBoundary?.("checkpoint-settled", -1);
       },
@@ -101,7 +128,7 @@ export async function applyProfileCheckpoint(home: string, before: string, after
       if (current) await retire(home, current.value, current.text, io, options);
     }
     throw error;
-  } finally { bytes.fill(0); }
+  } finally { bytes.fill(0); references?.dispose(); }
 }
 
 export async function recoverProfileCheckpoint(home: string, roots: Roots, io: ProfileCheckpointIO,
@@ -112,14 +139,15 @@ export async function recoverProfileCheckpoint(home: string, roots: Roots, io: P
     let checkpoint = loaded.value, saved = loaded.text;
     const original = decodeProfile(checkpoint.original).config, gitIndexes = checkpoint.gitIndexes ?? [];
     const journalExists = await exists(activePath(home));
-    await assertIndexes(original, gitIndexes, journalExists);
+    await assertIndexes(original, gitIndexes, journalExists, checkpoint.gitReferences);
     if (!journalExists) {
       await canRetire(home, checkpoint, io);
+      if (checkpoint.gitReferences) await retireGitPins(gitIndexes, checkpoint.gitReferences, checkpoint.settled?.outcome === "cleanup", { dryRun: true });
       const result: MaterializationRecoveryResult = { pending: true, outcome: checkpoint.settled?.outcome ?? "rollback", targets: 0 };
       if (!options.dryRun) await retire(home, checkpoint, saved, io, options);
       return result;
     }
-    const configured = fileAuthority(home, original, roots, gitIndexes);
+    const configured = fileAuthority(home, original, roots, gitIndexes, checkpoint.gitReferences);
     const preview = await recoverFileTransactions({ ...configured, dryRun: true });
     if (checkpoint.phase === "settled") {
       if (checkpoint.settled!.outcome !== preview.outcome) throw fail();
@@ -131,11 +159,12 @@ export async function recoverProfileCheckpoint(home: string, roots: Roots, io: P
       saved = await publish(home, checkpoint, saved, io);
     }
     const result = await recoverFileTransactions({ ...configured,
-      beforeMutation: () => assertIndexes(original, gitIndexes, true),
+      beforeMutation: () => assertIndexes(original, gitIndexes, true, checkpoint.gitReferences),
       afterBoundary: options.afterBoundary,
-      beforeForget: async (result) => {
-        await assertIndexes(original, gitIndexes, true);
+      beforeForget: async (result, ownership) => {
+        await assertIndexes(original, gitIndexes, true, checkpoint.gitReferences);
         checkpoint = await decision(home, checkpoint, result, io);
+        if (checkpoint.gitReferences && result.outcome === "cleanup") checkpoint = { ...checkpoint, gitReferences: retainPinOwnership(checkpoint.gitReferences, ownership) };
         saved = await publish(home, checkpoint, saved, io);
         await options.afterBoundary?.("checkpoint-settled", -1);
       },
@@ -164,7 +193,9 @@ async function retire(home: string, checkpoint: Checkpoint, saved: string, io: P
   await canRetire(home, checkpoint, io);
   if (await io.read(checkpointPath(home), { maximumBytes: MAX_CHECKPOINT_BYTES, private: true }) !== saved) throw fail();
   const gitIndexes = checkpoint.gitIndexes ?? [];
-  await assertIndexes(decodeProfile(checkpoint.original).config, gitIndexes, false);
+  await assertIndexes(decodeProfile(checkpoint.original).config, gitIndexes, false, checkpoint.gitReferences);
+  if (checkpoint.gitReferences) await retireGitPins(gitIndexes, checkpoint.gitReferences, checkpoint.settled?.outcome === "cleanup", { afterRemoval: index => Promise.resolve(options.afterBoundary?.("retention-removed", index)) });
+  if (checkpoint.gitReferences) for (let index = checkpoint.gitReferences.locks.length - 1; index >= 0; index--) await releaseNativeLock(checkpoint.gitReferences.locks[index], referenceLockOptions(gitIndexes, checkpoint.gitReferences, options, index));
   for (let index = gitIndexes.length - 1; index >= 0; index--) await releaseNativeLock(gitIndexes[index].lock, lockOptions(gitIndexes, options, index));
   await rm(checkpointPath(home));
   const directory = await open(home, "r"); try { await directory.sync(); } finally { await directory.close(); }
@@ -172,7 +203,10 @@ async function retire(home: string, checkpoint: Checkpoint, saved: string, io: P
 function lockOptions(participants: readonly GitIndexParticipant[], options: ProfileCheckpointOptions, index: number): NativeLockOptions {
   return { grants: gitIndexGrants(participants), afterBoundary: phase => options.afterBoundary?.(`native-${phase}`, index) };
 }
-async function assertIndexes(config: LocalConfig, participants: readonly GitIndexParticipant[], held: boolean): Promise<void> {
+function referenceLockOptions(indexes: readonly GitIndexParticipant[], references: GitReferenceParticipant, options: ProfileCheckpointOptions, index: number): NativeLockOptions {
+  return { grants: [validateGitReferences(indexes, references).locks[index]], afterBoundary: phase => options.afterBoundary?.(`reference-${phase}`, index) };
+}
+async function assertIndexes(config: LocalConfig, participants: readonly GitIndexParticipant[], held: boolean, references?: GitReferenceParticipant): Promise<void> {
   await validateGitIndexes(config, participants);
   const grants = gitIndexGrants(participants);
   // Validate the complete set before replaying any file or releasing any lock.
@@ -180,9 +214,17 @@ async function assertIndexes(config: LocalConfig, participants: readonly GitInde
     if (held) await assertNativeLockHeld(participant.lock, { grants });
     else await releaseNativeLock(participant.lock, { grants, dryRun: true });
   }
+  if (references) {
+    const grants = validateGitReferences(participants, references).locks;
+    await assertNoGitGc(participants);
+    for (const [index, lock] of references.locks.entries()) {
+      if (held) await assertNativeLockHeld(lock, { grants: [grants[index]] });
+      else await releaseNativeLock(lock, { grants: [grants[index]], dryRun: true });
+    }
+  }
 }
-function fileAuthority(home: string, config: LocalConfig, roots: Roots, participants: readonly GitIndexParticipant[]) {
-  return { directory: join(home, "materialization"), roots: roots(config), files: [profilePath(home), ...gitIndexFiles(participants)], excludedRoots: gitMetadataExclusions(config, participants) };
+function fileAuthority(home: string, config: LocalConfig, roots: Roots, participants: readonly GitIndexParticipant[], references?: GitReferenceParticipant) {
+  return { directory: join(home, "materialization"), roots: roots(config), files: [profilePath(home), ...gitIndexFiles(participants), ...(references ? validateGitReferences(participants, references).files : [])], excludedRoots: gitMetadataExclusions(config, participants) };
 }
 async function readCheckpoint(home: string, io: ProfileCheckpointIO): Promise<{ value: Checkpoint; text: string } | null> {
   const text = await io.read(checkpointPath(home), { maximumBytes: MAX_CHECKPOINT_BYTES, private: true });
@@ -190,7 +232,7 @@ async function readCheckpoint(home: string, io: ProfileCheckpointIO): Promise<{ 
   try {
     const value = schema.parse(JSON.parse(text));
     if (Buffer.byteLength(value.original) > MAX_PROFILE_BYTES || digest(value.original) !== value.beforeHash || decodeProfile(value.original).format !== 2 ||
-        (value.version === 2 ? !value.gitIndexes?.length : value.gitIndexes !== undefined) ||
+        (value.version >= 2 ? !value.gitIndexes?.length : value.gitIndexes !== undefined) || (value.version === 3) !== Boolean(value.gitReferences) ||
         (value.phase === "settled") !== Boolean(value.settled) || (value.settled && value.settled.profileHash !== (value.settled.outcome === "cleanup" ? value.afterHash : value.beforeHash))) throw fail();
     return { value, text };
   } catch { throw fail(); }

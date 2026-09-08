@@ -9,8 +9,10 @@ import { memoryMappings } from "./memory-bindings.js";
 import { decodeProfile, encodeProfile, MAX_PROFILE_BYTES, ProfileFormatError } from "./profile-format.js";
 import { captureFileGuard } from "./file-guard.js";
 import { HarnessActivityRegistry, type ActivityHandle } from "./activity.js";
-import { applyProfileCheckpoint, assertNoProfileCheckpoint, recoverProfileCheckpoint, serviceControlProfile, type ProfileCheckpointOptions } from "./profile-checkpoint.js";
+import { applyProfileCheckpoint, assertNoProfileCheckpoint, recoverProfileCheckpoint, serviceControlProfile, validateCheckpointTransition, type ProfileCheckpointOptions } from "./profile-checkpoint.js";
+import { validateWorkspaceSelection } from "./git-index-participant.js";
 import type { FileTransaction } from "./materialize.js";
+import { withPreparedWorkspaceTransaction, type WorkspaceApplication, type WorkspaceFileTransaction } from "@statecase/workspace";
 
 export type MappingKind = "drop" | "codex" | "claude";
 export type MappingMode = "two-way" | "publish" | "consume" | "append";
@@ -178,6 +180,13 @@ export class ConfigStore {
   /** Internal coordinator: normal runtime integration also needs durable Git and
    * activity participants. This method never reads or moves credentials. */
   async materializeConfig(config: LocalConfig, transaction: FileTransaction, options: ProfileCheckpointOptions = {}): Promise<void> {
+    await this.#withMaterializationProfile(config, async (before, after) => {
+      await applyProfileCheckpoint(this.home, before, after, transaction, materializationRoots,
+        { read: readConfigText, write: atomicJson }, options);
+    });
+  }
+
+  async #withMaterializationProfile(config: LocalConfig, apply: (before: string, after: string) => Promise<void>): Promise<void> {
     memoryMappings(config);
     const after = encodeProfile(config);
     let lock: ProfileLock;
@@ -187,8 +196,8 @@ export class ConfigStore {
       const before = await readConfigText(join(this.home, "config.json"));
       if (before === null || fingerprint(before) !== this.#observed.get(config)) throw new ConfigStateChanged();
       if (decodeProfile(before).format === 1) throw new ProfileFormatError("PROFILE_UPGRADE_REQUIRED");
-      await applyProfileCheckpoint(this.home, before, after, transaction, materializationRoots,
-        { read: readConfigText, write: atomicJson }, options);
+      validateCheckpointTransition(before, after);
+      await apply(before, after);
       this.#observed.set(config, fingerprint(after));
     } catch (error) {
       this.#observed.delete(config);
@@ -208,6 +217,22 @@ export class ConfigStore {
       return result;
     } catch (error) { this.#observed = new WeakMap(); throw error; }
     finally { await lock.release(); }
+  }
+
+  /** Prepare complete workspace participants before the shared durable decision. */
+  async materializeWorkspaceConfig(config: LocalConfig, workspaces: readonly WorkspaceApplication[], transaction: WorkspaceFileTransaction,
+    options: ProfileCheckpointOptions = {}): Promise<void> {
+    // Preparation can fetch approved objects. It is never a dry-run API and
+    // must not precede profile freshness or persisted workspace authority.
+    if (options.dryRun || options.workspaceRoots || options.workspaceReferences || options.beforeAdmission) throw new ProfileFormatError("PROFILE_RECOVERY_REQUIRED");
+    await this.#withMaterializationProfile(config, async (before, after) => {
+      validateWorkspaceSelection(decodeProfile(before).config, workspaces.map(workspace => workspace.root));
+      await withPreparedWorkspaceTransaction(workspaces, transaction, async plan => {
+        await applyProfileCheckpoint(this.home, before, after, plan.files, materializationRoots,
+          { read: readConfigText, write: atomicJson }, { ...options, workspaceRoots: plan.references.map(reference => reference.root),
+            workspaceReferences: plan.references, beforeAdmission: plan.guard });
+      });
+    });
   }
 
   async loadServiceControlConfig(): Promise<LocalConfig> {

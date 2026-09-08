@@ -4,6 +4,44 @@ Status: foreground sync implemented and deployed; release qualification in progr
 production launch
 Last updated: 2026-09-08
 
+## Complete prepared workspace/profile decision — 2026-09-08
+
+ADR-0035 composes the real prepared workspace with a version-three ConfigStore
+checkpoint: HEAD, branch, packed refs, native reflogs, retained commit pins,
+index, worktree and applied profile state share a durable decision. Original
+profile freshness and selected-root authority precede approved object acquisition.
+Actual SIGKILL/fresh-process tests cover reference/pin installation and retirement,
+every native release boundary, packed/detached/unborn/linked-worktree states,
+foreign-pin preservation and edits before admission or after staging. Native
+reference tests exercise descriptor substitution, malformed control text,
+Git boolean semantics, authority tampering, shared common directories and I/O
+refusal. No operator profile, harness, credentials or cloud bucket was used.
+
+The first complete local check passed 1,292 tests, lint/types/build and package
+smoke, but new reference branches were only 79.22%. Additional adversarial tests
+were added without changing thresholds. The final check passed **1,327 tests in
+72 files**, lint/types/build and clean-installed package smoke. New reference
+branches are **96.13%**, with 100% lines/functions; profile checkpoint branches
+94.89%, index participant 93.75%, native locks 94.73%, file replay 92.30% and
+materializer 95.72%. Global branches are 92.98% (5438/5848).
+
+The earlier index candidate `04b6e06bf46b9e91fe21644708e32792bde16e3f` passed all
+nine hosted jobs in [CI 34242219691](https://github.com/alemicali/statecase/actions/runs/34242219691).
+This is not hosted evidence for the newer reference integration. Its extended
+macOS/native/quality checks remain pending. All work stays in PR7; no new PR,
+merge, release or live cutover is implied by the local checkpoint.
+
+**Next required integration:** prepare the SyncEngine's authenticated applied and
+session-binding proposal before coordinated publication; pass the full workspace
+plan and source guards into ConfigStore; preserve in-memory proposal rollback;
+wire foreground/daemon/shim/hydration activity barriers and explicit recovery.
+Normal runtime remains on the older path until these are qualified. Full retained
+object/shared-index dependency closure, ambient workspace Git routing, reftable,
+LFS/submodules, native-directory transitions, all syscall/power-loss/prepublication
+orphan cases and all broader cross-host, live-service, migration and independent
+review gates remain open. This is not a same-HEAD restriction or a production-ready
+claim. The deployed Worker and real profiles remain unchanged.
+
 ## Git index joins the real profile checkpoint — 2026-09-08
 
 Native-lock candidate `9c8130c` completed all nine jobs successfully in

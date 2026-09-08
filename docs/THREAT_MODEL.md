@@ -370,6 +370,18 @@ This is local observational authority, not journal authentication, atomic CAS,
 object/shared-index retention, HEAD/ref recovery or ordinary runtime enablement.
 Those requirements and the broader release gates above remain open.
 
+ADR-0035 extends the original-profile-derived authority to exact HEAD, destination
+branch, packed-ref, reflog and transaction pin files. Reject stale/unselected
+profiles before preparation can fetch; never accept caller-supplied Git grants.
+Stable bounded descriptor/named-file checks and fatal control-text decoding avoid
+substituted reads and lossy packed-ref rewriting. Pins use durable installed-plan
+fingerprints, are preflighted as a set and are retired before native lock release;
+foreign pins preserve evidence. The collector marker is not a PID/age lease.
+Full object/shared-index closure, arbitrary maintenance/ancestor races, local
+configuration changes, prepublication orphans, active-harness barriers and normal
+runtime integration remain unqualified. A recoverable decision is not atomic
+visibility to uncooperating native readers.
+
 ### Workspace dependency incompleteness
 
 Threats: transcript restores without modified code; missed watcher event;

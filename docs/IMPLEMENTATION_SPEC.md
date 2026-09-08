@@ -795,6 +795,17 @@ their Git participants and preview never mutates. Ordinary Git locking/runtime
 remain unchanged until HEAD/ref/object-retention and activity participants also
 join the prepared-workspace transaction; this is not full Git crash qualification.
 
+ADR-0035 joins the prepared workspace to an internal version-three ConfigStore
+decision: original-profile authority before object acquisition; derived HEAD,
+branch, packed-ref and reflog writes; retained commit roots before operational
+mutation; a single file/index/profile journal; owned pin retirement before native
+lock release. Whole-workspace admission precedes file staging, while per-target
+guards repeat immediately before mutation. Stable descriptor reads, fatal UTF-8
+for rewritten control metadata and native Git reflog boolean parsing are required.
+This API rejects dry-run before preparation; recovery preview remains read-only.
+Full dependency retention, every reference backend/fault case, activity barriers
+and ordinary runtime integration remain required, not implied by these tests.
+
 Baseline blobs that conform to the Git LFS pointer format MUST NOT be treated as
 the referenced content. Capture and hydration report
 `GIT_LFS_CONTENT_UNAVAILABLE` with logical paths while the worktree still holds

@@ -524,6 +524,15 @@ unit assertion for historical executable evidence.
   forward/caught/restart paths, layout/grant/descriptor tampering, non-mutating
   preview, ambient Git redirection and sibling/index-kind refusal. Full HEAD/ref,
   prepared-workspace/runtime and cross-host qualification still remain required.
+  ADR-0035 adds complete prepared-workspace/profile tests: branch, packed,
+  detached, unborn and linked-worktree transitions; actual SIGKILL at pin,
+  reference/reflog installation and native release boundaries; fresh-process
+  rollback/cleanup, preview immutability and foreign pin refusal. Regressions
+  require original profile/root authority before object acquisition, stable
+  descriptor identities, valid rewritten UTF-8 and native reflog semantics.
+  Preserve concurrent edits observed before admission or after staging. These
+  internal tests do not replace normal-runtime/cross-host qualification, full
+  dependency retention or the exhaustive low-level fault matrix.
 - `RT-007`: two daemons for one profile cannot run concurrently.
 - `RT-008`: sleep/wake and network change trigger reconcile without a storm.
 - `RT-009`: rapid file events debounce but the maximum publish deadline holds.

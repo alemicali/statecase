@@ -30,6 +30,8 @@ Branch protection should require these logical checks on pull requests:
    SIGKILL/recovery and refusal to remove foreign or changed lock evidence.
    Include ADR-0034 repository-derived grants and the real ConfigStore Git-index
    checkpoint suites, including linked worktrees and interrupted release/replay.
+   Include ADR-0035 complete workspace/reference/profile and stable native
+   reference observation suites; these use synthetic Git repositories only.
 6. `background-sync` — two authenticated daemon processes with local
    workerd/D1/R2, interrupted object upload, durable journal replay, offline
    restart, disjoint updates, deletion, and idle no-op verification. All account

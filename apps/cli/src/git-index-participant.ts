@@ -24,7 +24,7 @@ export async function prepareGitIndexes(config: LocalConfig, roots: readonly str
   try { return await prepareIndexes(config, roots); } catch { throw fail(); }
 }
 async function prepareIndexes(config: LocalConfig, roots: readonly string[]): Promise<GitIndexParticipant[]> {
-  validateSelection(config, roots);
+  validateWorkspaceSelection(config, roots);
   const layouts: Layout[] = [];
   for (const root of roots) {
     const layout = await observeLayout(root);
@@ -56,7 +56,7 @@ async function prepareIndexes(config: LocalConfig, roots: readonly string[]): Pr
 export async function validateGitIndexes(config: LocalConfig, values: readonly GitIndexParticipant[]): Promise<void> {
   try {
     const participants = z.array(gitIndexSchema).max(32).parse(values);
-    validateSelection(config, participants.map(participant => participant.layout.root));
+    validateWorkspaceSelection(config, participants.map(participant => participant.layout.root));
     if (new Set(participants.map(participant => participant.layout.indexPath)).size !== participants.length) throw fail();
     for (const { layout, lock } of participants) {
       if (JSON.stringify(await observeLayout(layout.root)) !== JSON.stringify(layout) ||
@@ -72,7 +72,7 @@ export function gitMetadataExclusions(config: LocalConfig, participants: readonl
   return [...new Set([...config.workspaces.map(workspace => join(resolve(workspace.path), ".git")), ...participants.flatMap(({ layout }) => [layout.gitDir, layout.commonDir])])];
 }
 
-function validateSelection(config: LocalConfig, roots: readonly string[]) {
+export function validateWorkspaceSelection(config: LocalConfig, roots: readonly string[]) {
   if (roots.length > 32 || new Set(roots).size !== roots.length || roots.some(root => !canonical(root) ||
       !config.workspaces.some(workspace => workspace.sync !== "identity-only" && resolve(workspace.path) === root))) throw fail();
 }

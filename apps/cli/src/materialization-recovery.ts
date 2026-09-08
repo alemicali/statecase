@@ -27,7 +27,7 @@ export interface MaterializationRecoveryOptions {
   excludedRoots?: readonly string[];
   dryRun?: boolean;
   /** An outer coordinator must durably record its decision before journal removal. */
-  beforeForget?: (result: MaterializationRecoveryResult) => Promise<void>;
+  beforeForget?: (result: MaterializationRecoveryResult, ownership: MaterializationOwnership) => Promise<void>;
   /** Observational outer-participant barrier; also required for caught rollback. */
   beforeMutation?: () => Promise<void>;
   /** Isolated fault-injection boundary, never exposed as a CLI flag. */
@@ -37,6 +37,7 @@ export class MaterializationRecoveryError extends Error {
   constructor() { super("materialization recovery cannot proceed safely; local work and recovery files retained"); this.name = "MaterializationRecoveryError"; }
 }
 export interface MaterializationRecoveryResult { pending: boolean; outcome: "none" | "rollback" | "cleanup"; targets: number }
+export type MaterializationOwnership = ReadonlyArray<{ path: string; installedFingerprint?: string }>;
 
 /** Internal file-transaction primitive. CLI/Git/profile coordination must opt in
  * only when their outer durable transaction is also implemented. */
@@ -180,7 +181,7 @@ async function replayJournal(options: MaterializationRecoveryOptions): Promise<M
     await cleanEntry(entry, journal.intents[index], journal.committed);
     await options.afterBoundary?.("cleanup", index);
   }
-  await options.beforeForget?.(result);
+  await options.beforeForget?.(result, entries.map(entry => ({ path: entry.path, installedFingerprint: entry.installedFingerprint })));
   if (fileIdentity(await lstat(journalPath(options))) !== identity) throw new MaterializationRecoveryError();
   await rm(journalPath(options)); await syncDirectory(options.directory);
   return result;
@@ -260,7 +261,7 @@ async function readJournal(options: MaterializationRecoveryOptions): Promise<{ j
 function validateOptions(options: MaterializationRecoveryOptions): void {
   if (!canonicalPath(options.directory) || (options.roots.length === 0 && !options.files?.length) ||
       (options.excludedRoots?.length ?? 0) > 1024 || options.excludedRoots?.some(path => !canonicalPath(path)) ||
-      (options.files?.length ?? 0) > 128 || options.files?.some((path) => !canonicalPath(path) || contains(path, options.directory) || contains(options.directory, path)) ||
+      (options.files?.length ?? 0) > 512 || options.files?.some((path) => !canonicalPath(path) || contains(path, options.directory) || contains(options.directory, path)) ||
       options.roots.some((root) => !canonicalPath(root) || contains(root, options.directory) || contains(options.directory, root))) throw new MaterializationRecoveryError();
 }
 function selectedRoot(path: string, options: MaterializationRecoveryOptions): string {
