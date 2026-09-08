@@ -2,7 +2,7 @@
 
 Date: 2026-09-08
 Test IDs: AU-012, AU-013, CR-011
-Status: explicit native macOS/package flow passed; launchd-selection follow-up pending CI
+Status: explicit native macOS/package flow and launchd keychain selection passed
 
 ## Failing-first evidence
 
@@ -55,8 +55,18 @@ dictionaries; the lifecycle driver now checks the native manager's effective
 environment using an unused synthetic keychain path. A fixed original Linux
 envelope context also verifies compatibility independently of the new writer.
 The full local check passed 574 tests, 90.66% global branches (3380/3728),
-credentials 93.33% and service 100% branches. This follow-up still requires its
-own CI; it was not part of `ad0dec8`'s package evidence above.
+credentials 93.33% and service 100% branches.
+
+Follow-up CI [34189968387](https://github.com/alemicali/statecase/actions/runs/34189968387)
+on `e23475cf3b0aa793d64c49765ffbc7523f95cf15` passed all nine jobs, including
+native macOS credentials, launchd, background sync, both native harnesses,
+Node 22/24 and quality/workerd/audit. The launchd job explicitly reported
+`selectedKeychainEnvironment: true`, alongside lifecycle, SIGKILL recovery,
+profile isolation and cleanup. The clean macOS package hash is
+`cad81a57f9f52196d4768983cd60ce3f4f00bfc80a4f824e84a8babd52097ed2`;
+the credential driver hash is unchanged. This is independent evidence for
+credential protection and an unauthenticated daemon's environment/lifecycle,
+not proof of authenticated native background cloud/harness parity.
 
 Default-keychain UI, login-session behavior, reboot/sleep,
 credential recovery/downgrade, orphan-key cleanup and independent security

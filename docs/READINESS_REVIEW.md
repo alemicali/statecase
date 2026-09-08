@@ -431,5 +431,6 @@ clean-package native macOS keychain drill and verified fixture cleanup. See the
 [recorded credential evidence](uat/2026-09-08-macos-credentials.md).
 A subsequent launchd-selection fix now pins the chosen keychain path for the
 background service. It passes the local 574-test check (90.66% global branches)
-but still needs its exact-commit CI. These checks do not close default-keychain
+and all nine jobs in CI `34189968387` on `e23475c`, including the manager's
+effective selected-keychain environment. These checks do not close default-keychain
 UI/reboot, harness configuration, workspace crash recovery or wider release gates.
