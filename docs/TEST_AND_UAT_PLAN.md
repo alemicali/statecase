@@ -494,6 +494,12 @@ unit assertion for historical executable evidence.
   backup preservation, directory substitution, unknown-child preservation and
   actual SIGKILL between file installations. That kill test verifies exact
   retained originals, not restart recovery; full durable replay remains open.
+  ADR-0030 subsequently adds an internal coordinator and separate-process actual
+  SIGKILL/replay tests for prepared/intent/backup/install/commit boundaries,
+  interrupted recovery, file creation/deletion/symlinks, two roots, committed
+  cleanup, changed original descriptors, corrupt journals and bounded approved
+  paths. This is not ordinary CLI/Git/profile crash qualification; those outer
+  transaction and full fault-injection requirements remain open.
 - `RT-007`: two daemons for one profile cannot run concurrently.
 - `RT-008`: sleep/wake and network change trigger reconcile without a storm.
 - `RT-009`: rapid file events debounce but the maximum publish deadline holds.

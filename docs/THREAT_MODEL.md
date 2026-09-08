@@ -316,6 +316,17 @@ SIGKILL test verifies retained original bytes at one partial-install boundary;
 it does not establish automatic replay, power-loss durability or open-descriptor
 writer safety. Those gates above remain unchanged.
 
+The ADR-0030 internal file replay coordinator adds a private bounded append
+journal and per-target durable intent. Full-scope preflight and per-action
+reobservation guard root/artifact identities, prepared/original bytes, partial
+rollback and cleanup. Completed commits preserve independently changed destination
+files; changed backup content, including an observed original-descriptor write,
+is retained. Invalid/out-of-scope journals fail closed with fixed recovery errors.
+Journal metadata is device-local plaintext, not an authenticated cloud snapshot.
+Normal CLI/Git/profile integration, full low-level fault coverage, ancestry and
+check-to-mutation races, power loss, orphan cleanup and malicious local tampering
+remain open; the primitive is not an active-writer safety guarantee.
+
 ### Workspace dependency incompleteness
 
 Threats: transcript restores without modified code; missed watcher event;

@@ -13,6 +13,10 @@ Branch protection should require these logical checks on pull requests:
    clean-packaged/installed in disposable roots to verify explicit local-profile
    upgrade and old config-dependent command refusal, without native harnesses
    or remote service credentials.
+   The file-recovery suite additionally bundles the internal materializer into
+   disposable children, uses actual SIGKILL and replays in fresh processes on
+   synthetic roots. These checks do not enable or qualify the still-pending
+   outer CLI/Git/profile recovery integration.
 2. `compatibility` — build and tests on every supported Node major.
 3. `CodeQL` — JavaScript/TypeScript static security analysis, required once
    GitHub code scanning is available for the repository.

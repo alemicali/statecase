@@ -1,5 +1,4 @@
 import { chmod, constants, copyFile, lstat, mkdir, open, readdir, readlink, rename, rm, rmdir, symlink } from "node:fs/promises";
-import { createReadStream } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 
@@ -21,9 +20,11 @@ export interface FileTransaction {
   deletes: readonly string[];
   /** Fault-injection boundary used by isolated recovery tests. */
   beforeCommit?: (index: number, path: string) => void | Promise<void>;
+  /** Internal durability coordinator; does not replace the per-target guard. */
+  lifecycle?: MaterializationLifecycle;
 }
 
-interface PreparedTarget {
+export interface PreparedTarget {
   path: string;
   artifact?: { path: string; identity: string };
   staging?: string;
@@ -33,6 +34,15 @@ interface PreparedTarget {
   symbolic?: boolean;
   installedFingerprint?: string;
   preserveBackup?: boolean;
+}
+
+export interface MaterializationLifecycle {
+  prepare(id: string, targets: readonly PreparedTarget[]): Promise<void>;
+  intent(index: number, target: PreparedTarget): Promise<void>;
+  guard(index: number, target: PreparedTarget): Promise<void>;
+  mutation(phase: "backup" | "install", index: number, target: PreparedTarget): Promise<void>;
+  settle(outcome: "commit" | "rollback", targets: readonly PreparedTarget[]): Promise<void>;
+  cleanup(targets: readonly PreparedTarget[]): Promise<void>;
 }
 
 /** Applies one remote revision as an all-or-rollback local filesystem transaction. */
@@ -85,6 +95,7 @@ export async function applyFileTransaction(transaction: FileTransaction): Promis
       target.installedFingerprint = await targetFingerprint(target.staging);
     }
 
+    await transaction.lifecycle?.prepare(transactionId, targets);
     for (let index = 0; index < targets.length; index += 1) {
       const target = targets[index];
       await transaction.beforeCommit?.(index, target.path);
@@ -93,14 +104,24 @@ export async function applyFileTransaction(transaction: FileTransaction): Promis
       if (existing && !existing.isFile() && !existing.isSymbolicLink()) {
         throw new Error(`refusing to replace non-regular file: ${target.path}`);
       }
+      if (existing && !target.artifact) await reserveArtifact(target, transactionId);
+      await transaction.lifecycle?.intent(index, target);
+      // Persisting intent may take time. Re-run the caller's conflict guard
+      // before native mutation; durability cannot widen overwrite authority.
+      if (transaction.lifecycle) await transaction.beforeCommit?.(index, target.path);
+      await transaction.lifecycle?.guard(index, target);
+      if (transaction.lifecycle && observationIdentity(existing) !== observationIdentity(await optionalLstat(target.path))) {
+        throw new Error("destination changed while materialization intent was persisted");
+      }
       if (existing) {
-        if (!target.artifact) await reserveArtifact(target, transactionId);
         const backup = join(target.artifact!.path, "backup");
         await rename(target.path, backup);
         target.backup = backup;
+        await transaction.lifecycle?.mutation("backup", index, target);
       }
       if (target.staging) await rename(target.staging, target.path);
       target.installed = true;
+      await transaction.lifecycle?.mutation("install", index, target);
     }
   } catch (cause) {
     const rollbackErrors: unknown[] = [];
@@ -118,15 +139,21 @@ export async function applyFileTransaction(transaction: FileTransaction): Promis
         rollbackErrors.push(error);
       }
     }
-    await cleanupTemporary(targets);
+    if (rollbackErrors.length === 0) await transaction.lifecycle?.settle("rollback", targets);
+    if (transaction.lifecycle && rollbackErrors.length === 0) await transaction.lifecycle.cleanup(targets);
+    else await cleanupTemporary(targets);
     if (rollbackErrors.length > 0) throw new AggregateError([cause, ...rollbackErrors], "materialization failed and rollback was incomplete; available recovery backups retained");
     throw cause;
   }
 
-  await cleanupTemporary(targets);
+  // An ambiguous durable commit failure must retain the files and journal for
+  // restart inspection, not silently run rollback after a possibly saved commit.
+  await transaction.lifecycle?.settle("commit", targets);
+  if (transaction.lifecycle) await transaction.lifecycle.cleanup(targets);
+  else await cleanupTemporary(targets);
 }
 
-async function cleanupTemporary(targets: readonly PreparedTarget[]): Promise<void> {
+export async function cleanupTemporary(targets: readonly PreparedTarget[]): Promise<void> {
   await Promise.all(targets.map(async (target) => {
     if (!target.artifact) return;
     await assertArtifact(target);
@@ -165,18 +192,47 @@ function artifactIdentity(info: Awaited<ReturnType<typeof lstat>>): string {
 }
 
 /** Rename preserves inode, content, mode, and mtime, but may change ctime. */
-async function targetFingerprint(path: string): Promise<string> {
+export async function targetFingerprint(path: string, options: { maximumBytes?: number; afterRead?: () => Promise<void> } = {}): Promise<string> {
+  try { return await observeTarget(path, options); }
+  catch { throw new Error("unsafe materialization observation"); }
+}
+
+async function observeTarget(path: string, options: { maximumBytes?: number; afterRead?: () => Promise<void> }): Promise<string> {
+  const maximumBytes = options.maximumBytes ?? 20 * 1024 * 1024 * 1024;
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes <= 0) throw new Error("unsafe materialization observation");
   const info = await optionalLstat(path);
   if (!info) return "absent";
   if (!info.isFile() && !info.isSymbolicLink()) return "non-file";
   let content: string;
-  if (info.isSymbolicLink()) content = await readlink(path);
-  else {
-    const hash = createHash("sha256");
-    for await (const bytes of createReadStream(path)) hash.update(bytes);
-    content = hash.digest("hex");
+  if (info.isSymbolicLink()) {
+    content = await readlink(path);
+    if (observationIdentity(info) !== observationIdentity(await lstat(path))) throw new Error("unsafe materialization observation");
   }
-  return JSON.stringify([info.dev, info.ino, info.mode, info.size, info.mtimeMs, content]);
+  else {
+    const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    try {
+      const before = await handle.stat();
+      if (!before.isFile() || before.size > maximumBytes || observationIdentity(info) !== observationIdentity(before)) throw new Error("unsafe materialization observation");
+      const hash = createHash("sha256"); let position = 0;
+      while (true) {
+        const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, before.size - position + 1), position);
+        if (bytesRead === 0) break;
+        position += bytesRead;
+        if (position > before.size) throw new Error("unsafe materialization observation");
+        hash.update(buffer.subarray(0, bytesRead));
+      }
+      await options.afterRead?.();
+      if (position !== before.size || observationIdentity(before) !== observationIdentity(await handle.stat()) ||
+          observationIdentity(before) !== observationIdentity(await lstat(path))) throw new Error("unsafe materialization observation");
+      content = hash.digest("hex");
+    } finally { buffer.fill(0); await handle.close(); }
+  }
+  return JSON.stringify([info.dev, info.ino, info.mode, info.uid, info.nlink, info.size, info.mtimeMs, content]);
+}
+
+function observationIdentity(info: Awaited<ReturnType<typeof lstat>> | undefined): string {
+  return info ? JSON.stringify([info.dev, info.ino, info.mode, info.uid, info.nlink, info.size, info.mtimeMs, info.ctimeMs]) : "absent";
 }
 
 async function optionalLstat(path: string): Promise<Awaited<ReturnType<typeof lstat>> | undefined> {

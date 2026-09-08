@@ -753,6 +753,13 @@ files, directories, symlinks and legacy sibling backups. Observed directory
 substitutions and unexpected children MUST fail closed without recursive cleanup.
 This ownership prerequisite does not implement persistent transaction replay.
 
+ADR-0030 adds an internal file replay coordinator with a private, bounded,
+versioned append journal, ordered/fsynced per-target intents, an explicit commit
+marker and guarded reverse replay. Separate-process SIGKILL tests cover selected
+file mutation and recovery boundaries, including two approved roots. This primitive
+is not yet used by ordinary CLI sync: the outer Git HEAD/refs/index and applied
+profile/session-binding transaction must be coordinated before enabling it.
+
 Baseline blobs that conform to the Git LFS pointer format MUST NOT be treated as
 the referenced content. Capture and hydration report
 `GIT_LFS_CONTENT_UNAVAILABLE` with logical paths while the worktree still holds

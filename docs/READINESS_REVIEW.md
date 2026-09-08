@@ -4,6 +4,30 @@ Status: foreground sync implemented and deployed; release qualification in progr
 production launch
 Last updated: 2026-09-08
 
+## Internal persistent file replay checkpoint — 2026-09-08
+
+Artifact-ownership candidate `d5b7199` passed all nine jobs in CI `34225382601`;
+the exact source and job-log evidence is attached to PR7. ADR-0030 now adds an
+internal persistent file replay primitive using a private append journal and
+the existing kernel-backed mutex. Actual SIGKILL tests recover in independent
+processes at selected preparation/intent/backup/install/commit boundaries, repeat
+after interruption of recovery, restore create/delete/symlink operations and
+two roots, preserve independent edits and detect a write through a real already-
+open original descriptor. Corrupt journals and invalid authority fail closed.
+
+The complete local check passes 1,022 tests in 65 files, lint, types, build and
+clean-installed package smoke. Recovery branches are 91.87%, materializer 95.49%
+and global 92.67% (4860/5244). Hosted exact-candidate qualification remains required.
+The new primitive is not yet connected to normal CLI/daemon/shim paths. Ordinary
+materialization does gain bounded no-follow descriptor fingerprint reads.
+
+Full RT-006 remains open: outer Git HEAD/refs/index and applied-profile/session-
+binding coordination, native activity barriers, normal runtime integration,
+all low-level interruption/failure boundaries, power loss, pre-publication orphan
+cleanup, uncooperative local races, packaged cross-host and largest-file tests
+are still required. No operator profile, real harness state, credentials or live
+Cloudflare resource was read or changed by these tests.
+
 ## Materialization artifact ownership checkpoint — 2026-09-08
 
 The preceding profile candidate `5214917` passed all nine jobs in CI

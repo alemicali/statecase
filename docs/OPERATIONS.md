@@ -323,6 +323,12 @@ These individual backup files are not emergency snapshot manifests: do not
 pass them to `emergency rollback`. Automated recovery after process/power loss
 and an operator-facing transaction recovery command remain release gates.
 
+ADR-0030 implements an internal file replay primitive tested with separate killed
+and recovering processes. It is not yet enabled in normal CLI/daemon/shim sync and
+does not add a user-facing recovery command. Do not treat it as an available
+remedy for a real partially applied Git/profile transaction; preserve the affected
+state under the procedure above until the complete recovery workflow is qualified.
+
 Cloudflare Worker versions can be rolled back from deployment history. Do not
 roll D1 backward destructively; ship a forward migration. R2 objects and
 Durable Object revisions are immutable/append-only in the current release. If a deploy is

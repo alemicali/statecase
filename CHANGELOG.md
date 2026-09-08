@@ -4,6 +4,14 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Implement an internal persistent file-materialization replay coordinator with
+  bounded private journals, ordered fsynced intents, explicit commit decisions
+  and guarded restart rollback/cleanup. Qualify selected boundaries with actual
+  SIGKILL and independent recovering processes, including interrupted recovery
+  and two roots. Bound/no-follow materialization fingerprint reads. Ordinary
+  CLI/daemon integration and the outer Git/profile transaction remain open;
+  this does not claim complete crash recovery for normal command paths.
+
 - Fix materialization artifact collisions that could delete existing staging
   files/symlinks or overwrite recovery backups. Reserve private same-filesystem
   directories exclusively, detect observed substitution, preserve unknown
