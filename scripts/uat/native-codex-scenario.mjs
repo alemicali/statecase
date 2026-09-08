@@ -35,6 +35,7 @@ let fixtureError;
 let sessionId;
 let key;
 let expectedEffort = "low";
+let preferenceProbe;
 const inputBytes = "synthetic input continuity\n";
 const environment = (machine) => ({
   PATH: process.env.PATH, HOME: machine.home,
@@ -168,12 +169,14 @@ try {
   assert.equal(Object.keys(b.sessionBindings).length, 1);
   phase = "native-preferences";
   for (const override of [false, true]) {
+    preferenceProbe = override ? "override" : "synced";
     requests = 0; expectedEffort = override ? "high" : "low";
+    const beforeProbeSettings = await readFile(join(target.home, "codex", "config.toml"), "utf8");
     const fresh = await harness(target, [...(override ? ["-c", 'model_reasoning_effort="high"'] : []),
       "exec", "--skip-git-repo-check", "--json", "-C", target.project, "Reply with fixture completion text."]);
     assert.match(fresh, /^[a-f0-9-]{36}$/u);
     assert.notEqual(fresh, sessionId, "preference qualification reused session metadata");
-    assert.equal(await readFile(join(target.home, "codex", "config.toml"), "utf8"), hydratedSettings);
+    assert.equal(await readFile(join(target.home, "codex", "config.toml"), "utf8"), beforeProbeSettings);
   }
   console.log(JSON.stringify({ result: "pass", harness: version, node: process.version,
     backend: "in-memory-reference", topology: "two-homes-one-host", inference: "deterministic-loopback",
@@ -186,7 +189,7 @@ try {
   const conflictKinds = Array.isArray(error.paths) ? [...new Set(error.paths.map((path) =>
     path.startsWith("harness:codex:default:") ? "codex" : path.startsWith("workspace:ws_native:") ? "workspace" : "other"))] : undefined;
   console.error(JSON.stringify({ result: "fail", phase, error: error.name, fixtureError: fixtureError?.name,
-    preferenceFailure: fixtureError?.code, conflictKinds }));
+    preferenceFailure: fixtureError?.code, preferenceProbe, requests, conflictKinds }));
   process.exitCode = 1;
 } finally {
   key?.fill(0);

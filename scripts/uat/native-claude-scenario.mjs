@@ -199,7 +199,10 @@ try {
 }
 
 async function harness(machine, prompt, resume, effortOverride) {
-  const args = ["--restricted", "--disable-slash-commands", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+  // Restricted mode intentionally ignores user settings. This scenario is
+  // gated to disposable hosts and loads only its synthetic user root; explicit
+  // file-tool/MCP/browser restrictions remain in force.
+  const args = ["--setting-sources", "user", "--disable-slash-commands", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
     "--no-chrome", "--tools", "Read,Write,Edit", "--allowedTools", "Read,Write,Edit", "--permission-mode", "acceptEdits",
     ...(effortOverride ? ["--effort", effortOverride] : []), "--max-turns", "6", "--system-prompt", "Execute the synthetic file-tool fixture.",
     "--output-format", "json", ...(resume ? ["--resume", resume] : []), "-p", prompt];

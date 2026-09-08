@@ -80,3 +80,14 @@ launchd and the existing native Codex/Claude session scenarios. Those original
 native scenarios did not assert effective synced preferences: Codex rewrote
 its target fixture config and Claude selected its model through a CLI flag.
 AD-CFG-012 removes those alternative explanations and requires new evidence.
+
+The first strengthened native run, commit `4944c6f` / CI `34194327941`, failed:
+Claude did not select the configured model; Codex passed resume but failed in
+the fresh-preferences phase. Claude's `--restricted` mode intentionally ignores
+user settings, as documented in the
+[official CLI reference](https://code.claude.com/docs/en/cli-usage). The test therefore
+uses `--setting-sources user` only inside its already-required disposable host,
+retaining explicit Read/Write/Edit tools, no browser and empty MCP configuration.
+The operator's harness configuration and permissions are not changed. Codex's
+probe compares file stability around each fresh invocation and reports only
+bounded diagnostic categories; subsequent execution remains required.
