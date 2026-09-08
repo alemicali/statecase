@@ -98,11 +98,12 @@ export async function isCompleteJsonlFileRecordSupersequence(
   localPath: string,
   remotePath: string,
   maxRecordBytes = DEFAULT_MAX_RECORD_BYTES,
+  projections?: { local: (record: unknown) => unknown; remote: (record: unknown) => unknown },
 ): Promise<boolean> {
   validatePositiveLimit(maxRecordBytes, "maximum JSONL record size");
+  const local = parsedRecords(localPath, maxRecordBytes, 0, projections?.local)[Symbol.asyncIterator]();
+  const remote = parsedRecords(remotePath, maxRecordBytes, 0, projections?.remote)[Symbol.asyncIterator]();
   try {
-    const local = parsedRecords(localPath, maxRecordBytes)[Symbol.asyncIterator]();
-    const remote = parsedRecords(remotePath, maxRecordBytes)[Symbol.asyncIterator]();
     let expected = await local.next();
     let candidate = await remote.next();
     if (expected.done) {
@@ -124,6 +125,10 @@ export async function isCompleteJsonlFileRecordSupersequence(
     return true;
   } catch {
     return false;
+  } finally {
+    // Early divergence must close both file streams, including a projector
+    // refusing unsupported native references partway through the history.
+    await Promise.all([local.return(undefined), remote.return(undefined)]).catch(() => undefined);
   }
 }
 
@@ -138,7 +143,7 @@ async function validateCompleteFile(path: string, maxRecordBytes: number, start 
   }
 }
 
-async function* parsedRecords(path: string, maxRecordBytes: number, start = 0): AsyncGenerator<unknown> {
+async function* parsedRecords(path: string, maxRecordBytes: number, start = 0, project?: (record: unknown) => unknown): AsyncGenerator<unknown> {
   let parts: Uint8Array[] = [];
   let length = 0;
   for await (const rawChunk of createReadStream(path, { highWaterMark: READ_BUFFER_BYTES, start })) {
@@ -156,7 +161,8 @@ async function* parsedRecords(path: string, maxRecordBytes: number, start = 0): 
         : original.byteLength - 1;
       if (contentEnd > 0) {
         try {
-          yield JSON.parse(new TextDecoder("utf8", { fatal: true, ignoreBOM: false }).decode(original.subarray(0, contentEnd))) as unknown;
+          const record = JSON.parse(new TextDecoder("utf8", { fatal: true, ignoreBOM: false }).decode(original.subarray(0, contentEnd))) as unknown;
+          yield project ? project(record) : record;
         } catch {
           throw new JsonlFileError("malformed-record");
         }

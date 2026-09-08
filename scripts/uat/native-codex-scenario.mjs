@@ -30,6 +30,7 @@ const originalCwd = process.cwd();
 const marker = `native-canary-${randomBytes(12).toString("hex")}`;
 const instructionMarker = `instruction-${randomBytes(12).toString("hex")}`;
 const fallbackMarker = `fallback-${randomBytes(12).toString("hex")}`;
+const concurrentMarker = `concurrent-${randomBytes(12).toString("hex")}`;
 const source = { home: join(root, "source-home"), project: join(root, "source-project") };
 const target = { home: join(root, "target-home"), project: join(root, "different", "target-project") };
 const memoryPath = (machine) => join(machine.home, "selected-memory", "topic.md");
@@ -74,7 +75,13 @@ const provider = createServer(async (request, response) => {
     const machine = stage === "source" ? source : target;
     const outputs = body.input.filter((item) => ["function_call_output", "custom_tool_call_output"].includes(item.type));
     let item;
-    if (phase === "native-preferences") {
+    if (phase === "native-concurrent") {
+      assert.equal(stage, "source");
+      const historicalPatch = body.input.find((entry) => entry.type === "custom_tool_call" && entry.call_id === "patch_source");
+      assert.equal(historicalPatch?.input, sourcePatch(relative(source.project, memoryPath(source))));
+      item = { id: "msg_concurrent", type: "message", role: "assistant", status: "completed",
+        content: [{ type: "output_text", text: concurrentMarker, annotations: [] }] };
+    } else if (phase === "native-preferences") {
       item = { id: "msg_preferences", type: "message", role: "assistant", status: "completed",
         content: [{ type: "output_text", text: "Fixture preferences confirmed.", annotations: [] }] };
     } else if (requests === 1) {
@@ -102,7 +109,7 @@ const provider = createServer(async (request, response) => {
       item = { id: `msg_${stage}`, type: "message", role: "assistant", status: "completed",
         content: [{ type: "output_text", text: "Fixture turn completed.", annotations: [] }] };
     }
-    const responseScope = phase === "native-preferences" ? `preferences_${preferenceProbe}` : stage;
+    const responseScope = phase === "native-preferences" ? `preferences_${preferenceProbe}` : phase === "native-concurrent" ? "concurrent" : stage;
     const completed = { id: `resp_${responseScope}_${requests}`, object: "response", created_at: Math.floor(Date.now() / 1000),
       model: body.model, status: "completed", output: [item], usage: { input_tokens: 30, output_tokens: 10, total_tokens: 40 } };
     const events = nativeResponseEvents(completed);
@@ -190,15 +197,33 @@ try {
   assert.equal(await readFile(memoryPath(source), "utf8"), `${marker}\n`);
   phase = "return-publish";
   assert.equal((await engine.push(b)).outcome, "pushed");
+  phase = "native-concurrent";
+  stage = "source"; requests = 0;
+  process.chdir(source.project);
+  assert.equal(await harness(source, ["exec", "-C", source.project, "resume", "--skip-git-repo-check", "--json", sessionId,
+    "Record a short continuation without changing files."]), sessionId);
+  assert.equal(await readFile(memoryPath(source), "utf8"), `${marker}\n`);
+  const beforeMergedPublish = structuredClone(a.applied["harness:codex:default"]);
+  phase = "concurrent-publish";
+  assert.equal((await engine.push(a)).outcome, "pushed");
+  assert.deepEqual(a.applied["harness:codex:default"], beforeMergedPublish);
   phase = "return-pull";
   process.chdir(source.project);
   assert.equal((await engine.pull(a)).outcome, "pulled");
   assert.equal(await readFile(join(source.project, "artifact.txt"), "utf8"), `${marker}\ncontinued on target\n`);
   assert.equal(await readFile(memoryPath(source), "utf8"), `${marker}\ncontinued memory on target\n`);
   assert.equal((await engine.push(a)).outcome, "unchanged");
+  const returnedRecords = (await readFile(join(sourceSessions, sourceNames[0]), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(returnedRecords.filter((record) => record.type === "response_item" && record.payload?.type === "message" &&
+    record.payload.content?.some((part) => part.text === concurrentMarker)).length, 1);
+  assert.equal(returnedRecords.filter((record) => record.type === "response_item" && record.payload?.type === "custom_tool_call" && record.payload.call_id === "patch_target").length, 1);
+  process.chdir(target.project);
+  assert.equal((await engine.pull(b)).outcome, "pulled");
+  assert.equal((await engine.push(b)).outcome, "unchanged");
   assert.equal(Object.keys(a.sessionBindings).length, 1);
   assert.equal(Object.keys(b.sessionBindings).length, 1);
   phase = "native-preferences";
+  stage = "target";
   for (const override of [false, true]) {
     preferenceProbe = override ? "override" : "synced";
     requests = 0; expectedEffort = override ? "high" : "low";
@@ -221,6 +246,8 @@ try {
     nativeGlobalInstructions: true, nativeInstructionOverridePrecedence: true,
     nativeMemoryPatchWrite: true, sourceRelativeMemoryPatchHistory: true, localizedMemoryPatchHistory: true,
     memoryPatchDependency: true, exactMemoryPatchReturn: true, canonicalNoOpRoundTrip: true,
+    nativeConcurrentSessionAppend: true, mergedAppliedMarkerPreserved: true, bothNativeBranchesRetained: true,
+    bothPeersConverged: true,
     encryptedObjects: remote.objectCount() }));
 } catch (error) {
   const conflictKinds = Array.isArray(error.paths) ? [...new Set(error.paths.map((path) =>
@@ -261,7 +288,7 @@ async function harness(machine, args) {
     }
   }
   if (cleanupError) throw cleanupError;
-  assert.equal(requests, phase === "native-preferences" ? 1 : 3);
+  assert.equal(requests, phase === "native-preferences" || phase === "native-concurrent" ? 1 : 3);
   assert.equal(fixtureError, undefined);
   const events = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
   requireNative(events.some((event) => event.type === "turn.completed"), "NATIVE_TURN_INCOMPLETE");

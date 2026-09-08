@@ -746,3 +746,38 @@ for versions, topology and limits. This does not qualify Codex automatic memory,
 arbitrary workspace/Drop patch paths or the independent-host packaged workflow.
 The whole `34215976635` run subsequently finished successfully in all nine jobs,
 including background synchronization and the quality/workerd/audit gate.
+
+## Late-write protection and concurrent memory history — 2026-09-08
+
+SY-012 reproduced eight cases in which a local change after conflict preflight
+was overwritten/deleted by the ordinary materializer. ADR-0026 now captures
+bounded descriptor digests and native/parent identities for every ordinary file
+and tombstone, then checks the same target immediately before mutation. The
+tests preserve streamed-session appends, incomplete tails, Drop edits, new files,
+initially identical destinations, replacement and symlink substitutions while
+rolling back earlier writes and keeping configuration unchanged. A ninth
+regression binds the subsequent buffered conflict read to its captured digest.
+Observation tests additionally cover growth/truncation, missing parents, parent
+replacement, metadata/link changes, chunk bounds and buffer wiping.
+
+Two failing-first AD-MEM-011 engine tests separately reproduced false return
+conflicts after concurrent structured/raw-patch appends with relative memory
+history. The streamed ordered-occurrence comparison now projects only reviewed
+memory fields on both native sequences with independent cwd state. It preserves
+authored content and duplicates, validates all complete records including remote
+suffixes, refuses incomplete/unsupported history and closes early-exit streams.
+Byte-identical portable merge bases and namespace authority rules do not change.
+Unchanged applied native files bypass the unnecessary supersequence comparison.
+
+The exact local check passes 891 tests in 61 files, lint, types, build and the
+clean-installed package test. Global branches are 92.54% (4495/4857); file guards
+97.77% (44/45), streamed merge 93.75% (75/80). The native Codex scenario now
+requires actual original-UUID continuations on both homes before reconciliation,
+preserved applied markers until pull, both contributions once and no-op pushes
+on both peers. Its new native CI result is pending execution.
+
+These guards are not atomic filesystem compare-and-swap, arbitrary active-writer
+hydration safety, persistent SIGKILL recovery, historical/mixed-client migration,
+or packaged independent-host qualification. The final-check/rename window and
+writes through existing descriptors remain explicit release risks. Generic Drop
+permission policy is preserved; dedicated native context restrictions remain.

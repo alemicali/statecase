@@ -1388,3 +1388,19 @@ structured tools. Malformed patches with selected source memory fail before
 publication, including relative-only input. The mapper does not execute patches
 or resolve filesystem aliases. Workspace/Drop raw patch conversion and native
 automatic memory consumption/generation require separate implementation/evidence.
+
+## Precommit file observations and concurrent native equivalence
+
+ADR-0026 binds ordinary file/tombstone conflict preflight to a scope-keyed,
+descriptor-based observation, rechecked immediately before each native mutation.
+Use bounded 64 KiB chunks, reject unsafe file kinds/parent substitution and
+preserve absent destinations. Changes after preflight are conflict exit 5,
+including during explicit overwrite operations. Roll back earlier writes and
+leave local configuration untouched; do not weaken native context permissions.
+This is not an atomic filesystem compare-and-swap or crash-recovery completion.
+
+For accepting merged sessions, project reviewed memory references on each native
+stream to logical IDs with independent cwd state before comparing ordered record
+occurrences. Validate complete JSONL and all remote suffixes, preserve authored
+content and close iterators on refusal. Portable merge bases remain byte-exact;
+no old-history migration or scoped permission expansion is implied.

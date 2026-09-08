@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { isCompleteJsonlFileRecordSupersequence, mergeJsonlAppendFiles } from "../src/append-merge-file.js";
+import { createMemoryReferenceRewriter } from "../src/session-memory-paths.js";
 
 const temporary: string[] = [];
 
@@ -13,6 +14,30 @@ afterEach(async () => {
 });
 
 describe("bounded-memory JSONL file append merge (SY-004, SY-005, PERF-003)", () => {
+  it("compares reviewed memory projections once per record without hiding changes or incomplete tails (AD-MEM-011)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "statecase-projected-supersequence-")); temporary.push(root);
+    const localPath = join(root, "local.jsonl"), remotePath = join(root, "remote.jsonl");
+    const metadata = { type: "session_meta", cwd: "/fixture/project" };
+    const read = (path: string, content = "historical") => ({ type: "tool_call", name: "read_file", arguments: { path, content } });
+    const local = [metadata, read("../memory/topic.md"), read("../memory/topic.md")];
+    const remote = [metadata, { id: "remote-only" }, read("/fixture/memory/topic.md"), read("/fixture/memory/topic.md")];
+    const encode = (records: unknown[]) => records.map((record) => JSON.stringify(record)).join("\n") + "\n";
+    await writeFile(localPath, encode(local)); await writeFile(remotePath, encode(remote));
+    const projections = () => ({ local: createMemoryReferenceRewriter([{ id: "recall", path: "/fixture/memory" }], "portable"),
+      remote: createMemoryReferenceRewriter([{ id: "recall", path: "/fixture/memory" }], "portable") });
+    await expect(isCompleteJsonlFileRecordSupersequence(localPath, remotePath)).resolves.toBe(false);
+    await expect(isCompleteJsonlFileRecordSupersequence(localPath, remotePath, undefined, projections())).resolves.toBe(true);
+    for (const records of [remote.slice(0, -1), [metadata, read("/fixture/memory/topic.md", "changed"), read("/fixture/memory/topic.md")],
+      [metadata, read("/fixture/memory/topic.md"), read("/fixture/memory/topic.md"), read("statecase://memory/unknown/topic.md")]]) {
+      await writeFile(remotePath, encode(records));
+      await expect(isCompleteJsonlFileRecordSupersequence(localPath, remotePath, undefined, projections())).resolves.toBe(false);
+    }
+    await writeFile(remotePath, encode(remote));
+    await writeFile(localPath, encode(local) + '{"pending":');
+    await expect(isCompleteJsonlFileRecordSupersequence(localPath, remotePath, undefined, projections())).resolves.toBe(false);
+    await writeFile(localPath, encode(local.slice(1)));
+    await expect(isCompleteJsonlFileRecordSupersequence(localPath, remotePath, undefined, projections())).resolves.toBe(false);
+  });
   it("streams an arbitrarily large common base while bounding only each suffix", async () => {
     const root = await mkdtemp(join(tmpdir(), "statecase-file-merge-"));
     temporary.push(root);

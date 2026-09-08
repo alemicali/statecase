@@ -26,7 +26,7 @@ try {
   for (const line of String(error.stderr ?? "").split("\n")) {
     try {
       const record = JSON.parse(line);
-      if (["setup", "native-source", "encrypted-transfer", "native-resume", "return-publish", "return-pull", "native-preferences"].includes(record.phase)) phase = record.phase;
+      if (["setup", "native-source", "encrypted-transfer", "native-resume", "return-publish", "native-concurrent", "concurrent-publish", "return-pull", "native-preferences"].includes(record.phase)) phase = record.phase;
       if (["NATIVE_MODEL_MISMATCH", "NATIVE_EFFORT_MISMATCH", "NATIVE_INSTRUCTIONS_MISMATCH"].includes(record.preferenceFailure)) preferenceFailure = record.preferenceFailure;
       if (["synced", "override"].includes(record.preferenceProbe)) preferenceProbe = record.preferenceProbe;
       if (["Error", "AssertionError", "MemoryReferenceError", "MemoryIdentityError", "SessionDependencyError", "SyncConflict"].includes(record.error)) nativeError = record.error;

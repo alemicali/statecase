@@ -4,6 +4,14 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Guard ordinary file/session writes and deletions against changes after conflict
+  preflight using bounded descriptor observations immediately before commit.
+  Preserve late local work and roll back earlier writes; report redacted conflicts.
+  Recognize reviewed relative/absolute memory references when proving that a
+  merged native session retains both branches, without changing authored content
+  or weakening byte-exact portable merge prefixes. Extend native qualification
+  to two independent continuations of the same original session.
+
 - Localize reviewed raw memory patch headers by collection identity, including
   native-cwd-relative paths and renames, while preserving authored hunks and
   LF/CRLF bytes. Share whole-envelope validation with dependency extraction;

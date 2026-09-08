@@ -42,6 +42,7 @@ import type { StatecaseClient, RemoteNamespaceHead, RemoteNamespaceRevision } fr
 import { isCompleteJsonlRecordSupersequence } from "./append-merge.js";
 import { isCompleteJsonlFileRecordSupersequence, mergeJsonlAppendFiles } from "./append-merge-file.js";
 import { applyFileTransaction, type FileTransaction } from "./materialize.js";
+import { captureFileGuard, type FileGuard } from "./file-guard.js";
 import { readSettingsSnapshot } from "./settings-file.js";
 import { prepareSettingsPlan, settingsDocuments, settingsField, type IncomingSetting, type SettingsPlan } from "./settings-sync.js";
 import { instructionPath, scanInstructions, prepareInstructionPlan, type IncomingInstruction, type InstructionPlan } from "./instructions-sync.js";
@@ -1426,22 +1427,40 @@ export class SyncEngine {
       async (namespace, epoch, bytes) => computeObjectId((await this.#scopeKeys(namespace, epoch)).dedupKey, bytes), selected.filter((mapping) => mapping.memory));
     assertDistinctMaterializationPaths([...materialized, ...settingsPlan.targets, ...instructionPlan.targets, ...memoryPlan.targets], deletions);
     const conflicts: string[] = [...settingsPlan.conflicts, ...instructionPlan.conflicts, ...memoryPlan.conflicts];
+    const fileGuards = new Map<string, FileGuard>();
+    const guardFile = async (item: { mapping: RootMapping; path: string }): Promise<FileGuard> => {
+      try {
+        const keys = await this.#scopeKeys(item.mapping.namespace, config.applied[item.mapping.namespace]?.keyEpoch ?? 1);
+        const guard = await captureFileGuard(item.mapping.path, item.path, keys.dedupKey,
+          { maximumBytes: item.mapping.kind === "drop" ? MAX_FILE_BYTES : MAX_STREAMED_SESSION_BYTES });
+        fileGuards.set(resolve(item.path), guard);
+        return guard;
+      } catch { throw new SyncConflict([item.path]); }
+    };
     for (const item of materialized) {
+      const guard = await guardFile(item);
       if (item.sourcePath !== undefined) {
         const remoteSourcePath = item.sourcePath;
-        const appliedKeyEpoch = config.applied[item.mapping.namespace]?.keyEpoch ?? 1;
-        const currentDigest = await optionalFileDigest(item.path, await this.#scopeKeys(item.mapping.namespace, appliedKeyEpoch));
+        const currentDigest = guard.digest;
         if (!currentDigest || currentDigest === item.digest) continue;
         const prior = config.applied[item.mapping.namespace]?.digests[item.logicalPath];
-        const safeSessionMerge = await isCompleteJsonlFileRecordSupersequence(item.path, remoteSourcePath);
-        if (currentDigest !== prior && !safeSessionMerge) conflicts.push(item.path);
+        if (currentDigest !== prior) {
+          const memories = sessionMemoryRoots(memoryRoots, item.mapping.namespace);
+          const workspaceId = portableSession(item.logicalPath)?.workspaceId;
+          const safeSessionMerge = await isCompleteJsonlFileRecordSupersequence(item.path, remoteSourcePath, undefined, {
+            local: createMemoryReferenceRewriter(memories, "portable", workspaceId),
+            remote: createMemoryReferenceRewriter(memories, "portable", workspaceId),
+          });
+          if (!safeSessionMerge) conflicts.push(item.path);
+        }
         continue;
       }
       const current = await optionalFile(item.path);
-      if (!current || bytesEqual(current, item.bytes)) continue;
       const appliedKeyEpoch = config.applied[item.mapping.namespace]?.keyEpoch ?? 1;
       const keys = await this.#scopeKeys(item.mapping.namespace, appliedKeyEpoch);
-      const currentDigest = await computeObjectId(keys.dedupKey, current);
+      const currentDigest = current === undefined ? undefined : await computeObjectId(keys.dedupKey, current);
+      if (currentDigest !== guard.digest) throw new SyncConflict([item.path]);
+      if (!current || bytesEqual(current, item.bytes)) continue;
       const prior = config.applied[item.mapping.namespace]?.digests[item.logicalPath];
       const safeSessionMerge = item.mapping.kind !== "drop" && portableSession(item.logicalPath) !== undefined && isCompleteJsonlRecordSupersequence(current, item.bytes);
       if (currentDigest !== prior && !safeSessionMerge && !(item.mapping.id.startsWith("workspace_") && !prior && await cleanGitDestination(item.mapping.path, item.path))) {
@@ -1449,11 +1468,8 @@ export class SyncEngine {
       }
     }
     for (const item of deletions) {
-      const current = await optionalFile(item.path);
-      if (!current) continue;
-      const appliedKeyEpoch = config.applied[item.mapping.namespace]?.keyEpoch ?? 1;
-      const keys = await this.#scopeKeys(item.mapping.namespace, appliedKeyEpoch);
-      const currentDigest = await computeObjectId(keys.dedupKey, current);
+      const currentDigest = (await guardFile(item)).digest;
+      if (!currentDigest) continue;
       const prior = config.applied[item.mapping.namespace]?.digests[item.logicalPath];
       if (!prior || currentDigest !== prior) conflicts.push(item.path);
     }
@@ -1490,6 +1506,8 @@ export class SyncEngine {
             await settingsPlan!.guard(path);
             await instructionPlan!.guard(path);
             await memoryPlan!.guard(path);
+            try { await fileGuards.get(resolve(path))?.assertUnchanged(); }
+            catch { throw new SyncConflict([path]); }
           },
         }) },
       );

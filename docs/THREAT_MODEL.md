@@ -444,3 +444,19 @@ Preserve authored hunks and line endings exactly. With a selected source memory
 collection, an unsupported raw patch cannot silently omit relative dependencies.
 This reviewed grammar does not establish arbitrary freeform/shell closure,
 physical alias identity or historical/mixed-client compatibility.
+
+Ordinary file preflight now captures bounded descriptor digests and native/parent
+identities and rechecks them at each precommit boundary (ADR-0026). Detect later
+creation, modification, deletion and alias substitution before that write;
+rollback preserves earlier destinations and leaves applied state unchanged.
+These observations do not change generic Drop permissions or weaken the stricter
+native context policy. They do not exclude a race after the final check, writes
+through old open descriptors, ancestors above the selected root or process-death
+recovery; those remain release gates.
+
+Concurrent native history equivalence maps only reviewed memory path fields and
+patch headers to authenticated logical identities. Each stream tracks its own
+native cwd; content and record order/multiplicity remain exact. Unknown
+references, malformed/incomplete records and changed authored content fail the
+proof, including in otherwise unmatched remote suffixes. This is not authority
+to rewrite portable history or access an unbound collection.

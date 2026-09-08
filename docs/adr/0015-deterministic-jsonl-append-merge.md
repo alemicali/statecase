@@ -114,3 +114,34 @@ namespace entries are rejected before object download. Device-local tests prove
 origin-path writeback, canonical first-pull binding, supervised-final-flush
 persistence, deletion cleanup, non-mutating dry-run, traversal rejection, and
 pre-apply destination-collision rejection.
+
+## Reviewed native memory representation comparison — 2026-09-08
+
+AD-MEM-011 local return tests reproduced a false conflict after a successful
+concurrent merge: the source retained relative memory paths while the incoming
+native file localized those same references to absolute paths. The portable
+common-prefix check and authenticated merge succeeded, but literal native record
+comparison could not prove preservation of the source branch.
+
+The streamed accepting-pull comparator now optionally projects reviewed memory
+references on both native sequences to the same logical collection IDs. Each
+side has independent per-record cwd state and each record is projected once.
+Only the existing reviewed tool fields/raw patch headers can change; content,
+prose, output, record occurrences, initial-record identity and branch order stay
+part of the comparison. All bytes must still form complete valid bounded JSONL.
+Unsupported references, missing context or failed projections refuse the proof;
+even unmatched remote tail records must validate. Early refusal closes both
+iterators. No transformed copy of the full file is needed.
+
+This refines native materialization equivalence only: authenticated portable
+base prefixes must still be byte-identical for the merge itself. It does not
+accept an edited portable prefix, migrate unknown old histories or widen scoped
+append authority. ADR-0026 separately binds the observed local file to the
+precommit boundary, so a successful comparison cannot authorize later edits.
+
+Local tests cover relative structured and raw-patch concurrent returns with each
+branch retained once and the old applied marker held until pull, plus missing
+duplicates, changed authored content, unsupported remote-tail references and
+incomplete local tails. The native Codex drill is extended to fork the original
+session on both homes before reconciliation; an executed pass is required
+before claiming native concurrent-history qualification.

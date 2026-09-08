@@ -130,6 +130,12 @@ regression ID.
   content as locally applied, including unsupported future harness paths. A
   repeated push preserves the remote head; supported content subsequently
   hydrates, while unsupported content fails closed without advancing markers.
+- `SY-012`: a destination changed or created after preflight must not be
+  overwritten or deleted. Inject changes immediately before commit for streamed
+  sessions, Drops, tombstones, absent/initially identical files, incomplete tails,
+  replacement and symlinks; require earlier-write rollback and unchanged applied
+  state. Verify bounded descriptor hashing, buffer cleanup, read-time growth/
+  truncation, parent/metadata/link changes and redacted refusal (ADR-0026).
 
 ### 4.2a Portable settings (ADR-0023)
 
@@ -913,6 +919,16 @@ history, actual same-UUID resume with target-local memory headers, native target
 patch execution, preview non-mutation, exact return and two no-op pushes. This
 does not imply automatic native memory generation or workspace/Drop raw patch
 conversion. Exact candidate CI evidence must be recorded separately.
+
+AD-MEM-011 concurrent-return tests project only reviewed memory references to
+logical identity while retaining complete-record order and occurrence counts.
+Require both native branches after ordinary and raw-patch concurrent publication,
+old applied markers until verified pull, preserved authored content, missing-
+duplicate denial, invalid references even in unmatched remote suffixes and
+incomplete-tail refusal. The native Codex fixture must resume the original UUID
+on both homes before source hydration, merge, preserve both native contributions
+exactly once, converge both peers and produce no-op pushes. This does not close
+arbitrary active-writer races or historical/mixed-client migration.
 
 A release candidate is rejected when:
 

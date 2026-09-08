@@ -15,6 +15,7 @@ import { SyncConflict, SyncEngine, type VaultKeyring } from "../src/sync.js";
 import * as streamTransfer from "../src/stream-transfer.js";
 import * as appendMerge from "../src/append-merge-file.js";
 import * as materialization from "../src/materialize.js";
+import * as fileGuards from "../src/file-guard.js";
 import { memoryMappings } from "../src/memory-bindings.js";
 
 const temporary: string[] = [];
@@ -26,7 +27,56 @@ afterEach(async () => {
 });
 
 describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, WS-003, WS-004)", () => {
-  it.each(["unchanged", "legacy", "patch", "legacy-patch", "post-scan-edit", "local-edit", "incomplete-tail", "initial-tail"])("returns relative-memory history without overwriting uncaptured native work: %s (AD-MEM-011)", async (mode) => {
+  it.each(["session", "drop", "delete", "create", "identical", "tail", "replacement", "symlink", "buffered-read-race"])("preserves local work changed after preflight and rolls back earlier writes: %s (SY-012)", async (mode) => {
+    const root = await mkdtemp(join(tmpdir(), "statecase-precommit-race-")); temporary.push(root);
+    const source = join(root, "source"), target = join(root, "target");
+    const session = mode === "session" || mode === "tail";
+    const a = session ? harnessConfig(source, join(root, "project")) : config(source);
+    const b = session ? harnessConfig(target, join(root, "project")) : config(target);
+    const folder = session ? "sessions" : "";
+    await mkdir(join(source, folder), { recursive: true });
+    const first = session ? "a.jsonl" : "a.txt", second = session ? "b.jsonl" : "b.txt";
+    const initial = session ? '{"id":"original"}\n' : "original";
+    const updated = session ? initial + '{"id":"remote"}\n' : "remote";
+    await writeFile(join(source, folder, first), initial);
+    if (mode !== "create") await writeFile(join(source, folder, second), initial);
+    const remote = new MemoryRemote(), engine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", await randomKey());
+    await engine.push(a); await engine.pull(b);
+    await writeFile(join(source, folder, first), updated);
+    if (mode === "delete") await rm(join(source, folder, second));
+    else if (mode !== "identical") await writeFile(join(source, folder, second), updated);
+    await engine.push(a);
+    const destination = join(target, folder, second), before = structuredClone(b);
+    const localWork = mode === "tail" ? initial + '{"pending":' : session ? initial + '{"id":"local"}\n' : "uncaptured local work";
+    const external = join(root, "external.txt"); await writeFile(external, localWork);
+    let injected = false;
+    if (mode === "buffered-read-race") {
+      const capture = fileGuards.captureFileGuard;
+      vi.spyOn(fileGuards, "captureFileGuard").mockImplementation(async (...args) => {
+        const guard = await capture(...args);
+        if (args[1] === destination) { injected = true; await writeFile(destination, localWork); }
+        return guard;
+      });
+    }
+    const real = materialization.applyFileTransaction;
+    vi.spyOn(materialization, "applyFileTransaction").mockImplementationOnce((transaction) => real({ ...transaction,
+      beforeCommit: async (index, path) => {
+        if (path === destination) {
+          injected = true;
+          if (mode === "replacement" || mode === "symlink") await rm(destination);
+          if (mode === "symlink") await symlink(external, destination);
+          else await writeFile(destination, localWork);
+        }
+        await transaction.beforeCommit?.(index, path);
+      },
+    }));
+    await expect(engine.pull(b)).rejects.toBeInstanceOf(SyncConflict);
+    expect(injected).toBe(true); expect(b).toEqual(before);
+    expect(await readFile(destination, "utf8")).toBe(localWork);
+    expect(await readFile(join(target, folder, first), "utf8")).toBe(initial);
+    expect(await readFile(external, "utf8")).toBe(localWork);
+  });
+  it.each(["unchanged", "legacy", "patch", "legacy-patch", "concurrent", "concurrent-patch", "post-scan-edit", "local-edit", "incomplete-tail", "initial-tail"])("returns relative-memory history without overwriting uncaptured native work: %s (AD-MEM-011)", async (mode) => {
     const root = await mkdtemp(join(tmpdir(), "statecase-relative-memory-return-")); temporary.push(root);
     const project = join(root, "project"), memory = join(root, "memory"), harness = join(root, "harness");
     await initializeRepository(project); await mkdir(memory, { mode: 0o700 }); await mkdir(join(harness, "sessions"), { recursive: true });
@@ -66,9 +116,15 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     await writeFile(targetSession, await readFile(targetSession, "utf8") + JSON.stringify({ type: "tool_call", name: "write_file", arguments: { path: join(b.memories[0]!.path, "topic.md"), content: "After return" } }) + "\n");
     await writeFile(join(b.memories[0]!.path, "topic.md"), "After return", { mode: 0o600 });
     await engine.push(b);
+    if (mode.startsWith("concurrent")) {
+      await writeFile(originalPath, originalBytes + JSON.stringify({ type: "tool_call", id: "local-branch", name: "read_file", arguments: { path: "../memory/topic.md" } }) + "\n");
+      const applied = structuredClone(a.applied["harness:codex:default"]);
+      await expect(engine.push(a)).resolves.toMatchObject({ outcome: "pushed" });
+      expect(a.applied["harness:codex:default"]).toEqual(applied);
+    }
     if (mode === "local-edit") await writeFile(originalPath, uncommitted);
     if (mode === "incomplete-tail") await writeFile(originalPath, originalBytes + '{"pending":');
-    if (!["unchanged", "legacy", "patch", "legacy-patch"].includes(mode)) {
+    if (!["unchanged", "legacy", "patch", "legacy-patch", "concurrent", "concurrent-patch"].includes(mode)) {
       const localBytes = await readFile(originalPath), applied = structuredClone(a.applied);
       await expect(engine.pull(a)).rejects.toBeInstanceOf(SyncConflict);
       expect(await readFile(originalPath)).toEqual(localBytes); expect(a.applied).toEqual(applied);
@@ -80,6 +136,12 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     const history = (await readFile(originalPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line))[1];
     if (patchMode) expect(history.input).toBe(patch(join(memory, "topic.md")));
     else expect(history.arguments.path).toBe(join(memory, "topic.md"));
+    if (mode.startsWith("concurrent")) {
+      const records = (await readFile(originalPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+      expect(records).toHaveLength(4);
+      expect(records.filter((record) => record.id === "local-branch")).toHaveLength(1);
+      expect(records.filter((record) => record.name === "write_file")).toHaveLength(1);
+    }
     expect((await engine.push(a)).outcome).toBe("unchanged");
   });
   it("transfers explicitly bound global memory between different native roots (AD-MEM-003)", async () => {
@@ -2057,7 +2119,7 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
         prepared = true;
         return { rollback: async () => undefined };
       },
-    })).rejects.toThrow("symlinked");
+    })).rejects.toBeInstanceOf(SyncConflict);
     expect(prepared).toBe(false);
     expect(await readFile(join(outside, "context.txt"), "utf8")).toBe("outside must survive\n");
 
@@ -2068,7 +2130,7 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
         prepared = true;
         return { rollback: async () => undefined };
       },
-    })).rejects.toThrow(/not a directory|ENOTDIR/u);
+    })).rejects.toBeInstanceOf(SyncConflict);
     expect(prepared).toBe(false);
   });
 
