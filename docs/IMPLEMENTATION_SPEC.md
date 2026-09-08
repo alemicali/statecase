@@ -982,6 +982,11 @@ The canonical skill is installed in each harness-native discovery path.
 For Codex, user scope is `$HOME/.agents/skills/statecase`; repository-specific
 skills under `.agents/skills` remain source-controlled. Installation MAY use a
 symlink because Codex supports symlinked skill directories.
+For Claude, install/verify/uninstall MUST use the adapter's resolved
+`CLAUDE_CONFIG_DIR` (or `$HOME/.claude` when unset), including relative overrides.
+`setup` MUST NOT silently install into an unused default Claude root. Packaged
+verification uses an isolated HOME and explicit native roots, never operator
+profiles or inherited provider credentials.
 
 The skill MUST:
 

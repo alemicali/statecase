@@ -62,6 +62,11 @@ The corresponding [Claude Code 2.1.263 drill](docs/uat/2026-09-08-native-claude-
 also passed native Read/Edit/Write, original-session resume in a different home
 and checkout, and return sync, with the same one-host/reference-backend and
 deterministic-provider limits. Both have pinned native CI jobs.
+The subsequent [packaged Claude/live-cloud drill](docs/uat/2026-09-08-cloud-native-claude.md)
+passed foreground shim launch, original-session resume, and file/history return
+across two independent Daytona instances through real Cloudflare. Model replies
+were still deterministic; Codex on that combined topology, background continuity,
+and the report's other release gates remain separate work.
 The packaged post-revocation rotation, multi-epoch offline catch-up, clean-device
 recovery, scoped reissuance, and historical Drop restore passed a live Daytona
 drill against Cloudflare.

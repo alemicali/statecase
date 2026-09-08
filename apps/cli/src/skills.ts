@@ -3,11 +3,13 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { resolveClaudeRoot, type ClaudeRootOptions } from "@statecase/adapter-claude";
+
 const bundledSource = fileURLToPath(new URL("./skills/statecase", import.meta.url));
 const repositorySource = fileURLToPath(new URL("../../../skills/statecase", import.meta.url));
 
-export function defaultSkillTargets(): string[] {
-  return [join(homedir(), ".agents", "skills", "statecase"), join(homedir(), ".claude", "skills", "statecase")];
+export function defaultSkillTargets(options: ClaudeRootOptions = { home: homedir(), env: process.env }): string[] {
+  return [join(options.home, ".agents", "skills", "statecase"), join(resolveClaudeRoot(options), "skills", "statecase")];
 }
 
 export async function installSkill(targets = defaultSkillTargets()): Promise<string[]> {

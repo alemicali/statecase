@@ -3,8 +3,8 @@
 Status: deployed service
 Last deployment verified: 2026-09-08
 
-Last verified Worker version: `dd6894cf-d042-425b-9e3e-7906b75ede04`
-(see the [native/live background report](uat/2026-09-08-native-cloud-background.md)).
+Last verified Worker version: `3460deaa-bf3c-4244-bc13-9f0979b521b3`
+(see the [packaged cross-peer Claude report](uat/2026-09-08-cloud-native-claude.md)).
 Remote D1 migrations through `0005_vault_key_epochs.sql` are applied. The live
 health endpoint advertises scoped protocol `1.1` and legacy migration protocol
 `1.0`.
@@ -151,6 +151,14 @@ only file tools in restricted mode, and uses synthetic loopback provider
 credentials. Never supply an existing agent profile. No hosted model account
 or live Cloudflare service is involved. See the
 [Claude execution report](uat/2026-09-08-native-claude-resume.md).
+
+The [packaged cross-peer Claude drill](uat/2026-09-08-cloud-native-claude.md)
+separately passed foreground shim publication/resume/return against live
+Cloudflare across two independently provisioned Daytona instances. Its peer
+driver requires explicit remote-write confirmation, private synthetic enrollment
+inputs, and external exact-target cleanup. It is not part of credential-free
+CI. Follow the report's package hashes, phases, and limits; do not substitute
+production agent profiles or assume the later skill-root fix was in that tarball.
 
 ## Deploy
 

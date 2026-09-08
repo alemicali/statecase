@@ -351,3 +351,40 @@ that exact probe allowed the drill to finish without changes to product code.
 A dedicated pinned-harness CI job now repeats this scope. Interactive listing,
 pre-apply runtime compatibility checks, other harness versions, and the combined
 packaged/live-cloud cross-host path remain release gates.
+
+### Packaged Claude/live-cloud checkpoint — 2026-09-08
+
+The [cross-peer foreground drill](uat/2026-09-08-cloud-native-claude.md) now passes
+on the package built from `8f33128`: independently authorized installations in
+two Daytona instances, real transparent Claude shims, live Cloudflare storage,
+strict non-mutating preview and hydration, original UUID/prompt/tool history,
+native Read/Edit/Write, final-flush publication, and source file/history return.
+The model provider is deterministic loopback; underlying physical host placement
+is not asserted. This closes that recorded Claude foreground topology's missing
+evidence, not Codex parity, daemon/sleep/reboot, interactive listing, complete
+read observation, or full product UAT. All fixture R2/account/sandbox and local
+credential cleanup was verified; opaque DO metadata was not explicitly purged.
+
+The drill also exposed a real installer mismatch: `CLAUDE_CONFIG_DIR` affected
+the adapter but not default skill placement. A separate correction now resolves
+install/verify/uninstall through the same adapter. Failing-first root tests,
+isolated-HOME lifecycle, and clean-prefix package setup/verify/uninstall pass;
+the complete check reports 503 tests and 90.39% global branches. That later fix
+was not in the live tarball above and requires its own CI/fresh qualification.
+
+### Implementation gaps confirmed by source audit
+
+Release work includes missing implementation, not only additional testing:
+
+- ADR-0004 requires OS credential-store persistence, but `ConfigStore` currently
+  serializes tokens and vault keys in an owner-only `credentials.json`. That
+  file-backed implementation is not evidence of the required credential-store
+  integration. A supported secure-store strategy, migration/recovery behavior,
+  and native qualification remain necessary before claiming this requirement.
+- The current sync admission path accepts native sessions and skills; adapter
+  `config-filtered` entries are still excluded. The agreed portable harness
+  settings/memory/configuration scope therefore needs its actual filtering and
+  materialization implementation, with secret/host-specific field exclusions
+  and compatibility tests. Session continuity does not establish config parity.
+
+Neither gap is waived by successful round-trip UAT or overall coverage.

@@ -434,6 +434,9 @@ deployed Worker test environment.
 
 - `SK-001`: installer places/symlinks the canonical skill into each supported
   harness discovery path and is idempotent.
+  Claude install/verify/uninstall must resolve the same `CLAUDE_CONFIG_DIR`
+  as the adapter, including relative overrides and unchanged defaults. An
+  isolated HOME test must prove no unused default `.claude` tree is created.
 - `SK-002`: explicit "connect to Statecase" invokes status then the correct
   deterministic command.
 - `SK-003`: implicit hydrate/publish/snapshot/conflict prompts select the skill.
@@ -562,7 +565,24 @@ Create a Claude session with reads of tracked files, a write to a tracked file,
 and a permitted untracked note. Hydrate on another machine.
 
 Acceptance: session is discoverable/resumable; baseline satisfies read-only
-files; overlay contains changed/untracked content; dependency report is empty.
+files; overlay contains changed/untracked content; the dependency report has
+zero unresolved entries (resolved dependencies must remain visible).
+
+The packaged/live-cloud peer driver is
+`scripts/uat/cloud-native-claude-peer.mjs`. Run independent `init` phases on two
+disposable sandbox installations, then source `source`, target `hydrate` and
+`resume`, and source `return`. Native turns run through the installed transparent
+shim, not a source-imported engine. Assert independent device authorization,
+identical synthetic Git baseline on isolated filesystems, strict non-mutating
+preview, changed native project path, original UUID/prompt/tool results, remote
+capsule advancement from the shim's final flush, and return of files plus native
+history. Transfer no transcript/workspace/profile outside Statecase; only the
+encrypted recovery kit and opaque IDs cross the orchestration channel.
+Pin package hash, harness version, both sandbox identities and cloud deployment.
+Temporary signup access must be restored even on failure; exact fixture account,
+vault objects, and owned sandbox cleanup require separately recorded verification.
+Deterministic loopback model responses do not qualify hosted inference, and a
+foreground shim run does not establish daemon/sleep/reboot behavior.
 
 ### UAT-04 External dependency and Drop
 

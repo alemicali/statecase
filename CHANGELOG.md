@@ -4,6 +4,17 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Qualified the recorded CLI package's Claude foreground shim/live-cloud round
+  trip across two independent Daytona peers: distinct device enrollment, strict
+  preview/hydration, original UUID/history, native Read/Edit/Write, shim final
+  flush, and source file/session return. Exact-target account/R2/sandbox cleanup
+  was verified. Hosted inference and background/native Codex parity remain open.
+
+- Fixed agent-native skill placement for configured Claude roots: install,
+  verification, and uninstall now use the adapter's `CLAUDE_CONFIG_DIR`
+  resolution rather than always targeting the default home directory. Added
+  absolute/relative/default and isolated-environment lifecycle regressions.
+
 - Closed a case-variant bypass of reserved recovery artifacts: upper/mixed-case
   transaction names and parent components are now excluded from sync and
   rejected in workspace capsules. Failing-first tests demonstrated unintended
