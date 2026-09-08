@@ -82,7 +82,7 @@ const gitObjectId = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u);
 
 export const dependencyReferenceSchema = z.object({
   logicalPath: z.string().min(1).max(4096),
-  source: z.enum(["git-baseline", "workspace-overlay", "drop", "external"]),
+  source: z.enum(["git-baseline", "workspace-overlay", "drop", "memory", "external"]),
   contentDigest: identifier.optional(),
   gitObjectId: gitObjectId.optional(),
   required: z.boolean(),
@@ -102,6 +102,11 @@ export const sessionCapsuleSchema = z.object({
     baseCommit: gitObjectId.optional(),
   }).strict(),
   drops: z.array(z.object({ dropId: identifier, revisionId: identifier }).strict()).max(1_000),
+  memories: z.array(z.object({
+    memoryId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u),
+    revisionId: identifier,
+  }).strict()).max(128).refine((pins) => new Set(pins.map((pin) => pin.memoryId)).size === pins.length,
+    "memory pins must be unique").optional(),
   dependencies: z.array(dependencyReferenceSchema).max(100_000),
   createdAt: z.iso.datetime(),
   createdByDeviceId: identifier,

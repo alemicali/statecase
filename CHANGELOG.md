@@ -4,11 +4,19 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Connected explicit memory collections to encrypted engine push/pull, guarded
+  native-text transactions, independent scope keys and canonical encrypted
+  identity descriptors. Added exact Session Capsule memory pins, dependency
+  inspection, selective historical hydration and opaque retention references.
+  Verify preview, conflict/deletion, missing context and cross-epoch recovery;
+  prevent generic-restore policy bypass and collisions with native ownership.
+  CLI memory enrollment, native recall/generation and release UAT remain open.
+
 - Added opt-in memory identity/binding and bounded Markdown format foundations
   (ADR-0025). Validate native category, logical workspace and namespace identity
   independently of each device's local path; reject malformed IDs and ownership
-  collisions. Memory CLI/transport/capsule/native integration remains pending;
-  this does not enable memory synchronization.
+  collisions. The subsequent engine integration is recorded above; ordinary
+  harness setup still does not enable memory synchronization.
 - Added redacted background-UAT process diagnostics after CI lost its local
   Worker connection during the idle check. Record expected stops, exit status,
   signals and bounded stderr categories without printing raw child output.

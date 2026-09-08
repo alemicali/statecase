@@ -827,6 +827,18 @@ AD-MEM-001..010 in [ADR-0025](adr/0025-memory-identity-and-local-bindings.md)
 track memory integration separately from global instructions. Binding and format
 unit tests prove only their own boundaries, not native memory portability.
 
+Engine qualification now exercises AD-MEM-002..006 with synthetic temporary
+roots and an encrypted reference transport: differing local paths; canonical
+identity descriptors; no-op/edit/delete/conflict; explicit scope-key denial and
+read/append updates; exact historical and multi-checkpoint hydration; missing
+mapping/namespace/payload before mutation; selection-only capsule refresh and
+opaque retention roots; cross-epoch restore and failed-publication rollback.
+Scanner tests bound files, bytes and directory enumeration, inject lost/changed
+files and trees, and verify redacted failures and plaintext-buffer disposal.
+Restore rejects a request that strips the internal native-memory policy marker.
+These are local tests, not native recall, live GC, server-side revocation,
+CLI enrollment or background/independent-host qualification.
+
 A release candidate is rejected when:
 
 - a critical/required test is skipped or flaky;

@@ -381,3 +381,22 @@ authorization, materialization, deletion/GC, and bootstrap threat surfaces.
 | Harness format changes | fixtures, fail closed, compatibility window pending |
 | User explicitly includes secrets in Drop | warning/scanner/separate scope; user choice |
 | Cryptographic construction defect | release-blocking ADR and independent review |
+
+## Memory collection transport checkpoint
+
+Memory carries behavioral context, not inert backup data. Each explicit
+collection has an independent namespace key and an authenticated encrypted
+category/harness/workspace descriptor. Receiving a matching collection ID is
+insufficient: descriptor identity and native path policy must match before any
+write. Generic Drop restoration must not bypass the memory marker. Selected
+roots cannot overlap other collections, Drops, workspaces, another harness,
+or reviewed native skill/rule/session/configuration/credential/cache ownership.
+Markdown limits and stable no-follow reads are resource/integrity boundaries,
+not sanitization of instructions embedded in memory prose.
+
+Session Capsules retain exact memory checkpoints; hydration filters unrelated
+local collections before application. Explicit read/append grants may update the
+selected memory collection, but do not authorize global instruction changes or
+disclose ungranted memory keys. Local scope tests do not qualify live capability
+revocation, native effective recall, filesystem alias races, complete native
+format coverage or mixed-client fencing. These remain release obligations.

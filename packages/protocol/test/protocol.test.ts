@@ -145,6 +145,25 @@ describe("wire schemas (PR-001, PR-014)", () => {
     expect(manifestSchema.parse(manifest)).toEqual(manifest);
   });
 
+  it("accepts bounded unique memory checkpoint pins and rejects ambiguous identities (AD-MEM-005)", () => {
+    const capsule = {
+      sessionCapsuleId: "cap_memory", sessionKey: "session", harnessRevisionId: "rev_1",
+      harness: { namespace: "harness:codex:default", logicalPath: "portable-sessions/ws/a.jsonl" },
+      workspace: { workspaceId: "ws", capsuleRevisionId: "rev_1" }, drops: [], dependencies: [],
+      createdAt: "2026-09-08T10:00:00.000Z", createdByDeviceId: "dev_test",
+      memories: [{ memoryId: "recall", revisionId: "rev_2" }],
+    };
+    expect(sessionCapsuleSchema.parse(capsule)).toEqual(capsule);
+    for (const memories of [
+      [...capsule.memories, ...capsule.memories],
+      [{ memoryId: "../bad", revisionId: "rev_2" }],
+      [{ memoryId: "other:scope", revisionId: "rev_2" }],
+      [{ memoryId: "recall", revisionId: "" }],
+      [{ ...capsule.memories[0], path: "/private/location" }],
+      Array.from({ length: 129 }, (_, index) => ({ memoryId: `m_${index}`, revisionId: "rev_2" })),
+    ]) expect(sessionCapsuleSchema.safeParse({ ...capsule, memories }).success).toBe(false);
+  });
+
   it("validates atomic namespace updates and rejects duplicate scope or path claims", () => {
     const request = {
       protocolVersion: "1.1",

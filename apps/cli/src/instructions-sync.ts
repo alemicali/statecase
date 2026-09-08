@@ -4,7 +4,7 @@ import { codexInstructionPolicy } from "@statecase/adapter-codex/instructions";
 import { claudeInstructionPolicy } from "@statecase/adapter-claude/instructions";
 import { InstructionError, instructionLogicalPath, instructionNativePath, validateInstructionSet, MAX_INSTRUCTION_FILES, MAX_INSTRUCTION_SET_BYTES } from "@statecase/adapter-common/instructions";
 import type { LocalConfig, RootMapping } from "./config.js";
-import type { MaterializedWrite } from "./materialize.js";
+import { prepareNativeTextPlan, type IncomingNativeText, type NativeTextPlan } from "./native-text-plan.js";
 import { NativeFileError, readNativeFileSnapshot, type NativeFileSnapshot } from "./native-file.js";
 
 const policyFor = (kind: RootMapping["kind"]) => kind === "codex" ? codexInstructionPolicy : claudeInstructionPolicy;
@@ -68,51 +68,18 @@ export async function scanInstructions(mapping: RootMapping): Promise<ScannedIns
   }
 }
 
-export interface IncomingInstruction { mapping: RootMapping; logicalPath: string; bytes?: Uint8Array }
-export interface InstructionPlan {
-  writes: MaterializedWrite[]; deletes: string[];
-  targets: Array<{ mapping: RootMapping; logicalPath: string; path: string }>;
-  digests: Array<{ namespace: string; logicalPath: string; digest: string }>;
-  conflicts: string[];
-  guard(path?: string): Promise<void>;
-  dispose(): void;
-}
+export type IncomingInstruction = IncomingNativeText;
+export type InstructionPlan = NativeTextPlan;
 export async function prepareInstructionPlan(
   incoming: readonly IncomingInstruction[], config: LocalConfig,
   epoch: (namespace: string) => number,
   digest: (namespace: string, epoch: number, bytes: Uint8Array) => Promise<string>,
 ): Promise<InstructionPlan> {
-  const groups = new Map<string, IncomingInstruction[]>(), snapshots = new Map<string, NativeFileSnapshot>();
-  const writes: MaterializedWrite[] = [], deletes: string[] = [], targets: InstructionPlan["targets"] = [], digests: InstructionPlan["digests"] = [], conflicts: string[] = [];
-  const dispose = () => { for (const snapshot of snapshots.values()) snapshot.dispose(); for (const item of incoming) item.bytes?.fill(0); };
-  try {
-    for (const item of incoming) { const group = groups.get(item.mapping.namespace) ?? []; group.push(item); groups.set(item.mapping.namespace, group); }
-    for (const group of groups.values()) {
-      const mapping = group[0]!.mapping, files = new Map<string, Uint8Array>(), seen = new Set<string>();
-      for (const item of group) {
-        const path = instructionPath(mapping.kind, item.logicalPath);
-        if (!path || seen.has(path) || item.mapping.path !== mapping.path || item.mapping.kind !== mapping.kind) throw new InstructionError("INSTRUCTION_FORMAT_INVALID");
-        seen.add(path); if (item.bytes !== undefined) files.set(path, item.bytes);
-      }
-      validateInstructionSet(policyFor(mapping.kind), files);
-      for (const item of group) {
-        const path = instructionPath(mapping.kind, item.logicalPath)!;
-        const snapshot = await readNativeFileSnapshot(mapping.path, path);
-        if (snapshots.has(snapshot.path)) { snapshot.dispose(); throw new InstructionError("INSTRUCTION_FORMAT_INVALID"); }
-        snapshots.set(snapshot.path, snapshot);
-        targets.push({ mapping, logicalPath: item.logicalPath, path: snapshot.path });
-        if (item.bytes !== undefined) digests.push({ namespace: mapping.namespace, logicalPath: item.logicalPath, digest: await digest(mapping.namespace, epoch(mapping.namespace), item.bytes) });
-        const current = snapshot.bytes;
-        if (current === undefined ? item.bytes === undefined : item.bytes !== undefined && Buffer.from(current).equals(item.bytes)) continue;
-        const prior = config.applied[mapping.namespace]?.digests[item.logicalPath];
-        const actual = current === undefined ? undefined : await digest(mapping.namespace, config.applied[mapping.namespace]?.keyEpoch ?? 1, current);
-        if (prior !== actual) conflicts.push(`${mapping.namespace}:${item.logicalPath}`);
-        if (item.bytes === undefined) deletes.push(snapshot.path); else writes.push({ path: snapshot.path, bytes: item.bytes, mode: 0o600 });
-      }
-    }
-    return { writes, deletes, targets, digests, conflicts,
-      async guard(path) { for (const snapshot of snapshots.values()) if (path === undefined || snapshot.path === path) await snapshot.assertUnchanged(); }, dispose };
-  } catch (error) { dispose(); throw error; }
+  return prepareNativeTextPlan(incoming, config, epoch, digest, {
+    nativePath: (mapping, path) => instructionPath(mapping.kind, path),
+    validate: (mapping, files) => validateInstructionSet(policyFor(mapping.kind), files),
+    invalid: () => new InstructionError("INSTRUCTION_FORMAT_INVALID"),
+  });
 }
 async function optionalStat(path: string) {
   try { return await lstat(path); } catch (error) {

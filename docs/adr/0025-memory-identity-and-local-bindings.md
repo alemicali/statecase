@@ -92,6 +92,19 @@ processed after an unbounded allocation.
 - AD-MEM-010: daemon/shim parity, independent-host packaged live-cloud UAT,
   mixed-client fencing and safe unsupported native-version handling.
 
+## Implementation checkpoint
+
+Engine transport uses canonical encrypted descriptor
+bytes and a shared guarded native-text transaction planner. Capsules now carry
+optional bounded unique `{memoryId, revisionId}` pins and `memory` dependencies.
+Hydration filters unrelated configured collections, resolves independently
+pinned checkpoints, and refuses missing/wrongly owned required memory. Explicit
+selection changes refresh capsules without requiring transcript changes; a
+memory-only change preserves an unchanged session's prior pin. Restore keeps
+the native policy marker and never creates a physical descriptor file. Local
+unit/integration evidence does not close AD-MEM-007..010, native format/location
+qualification, complete reference localization or independent-host/live GC UAT.
+
 ## Sources
 
 Fetched 2026-09-08: [Codex memories](https://learn.chatgpt.com/docs/customization/memories)

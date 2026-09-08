@@ -5,8 +5,16 @@ import { exitCodeFor, selectedVault } from "../src/runtime.js";
 import { CredentialStorageError } from "../src/credentials.js";
 import { NativeFileError } from "../src/native-file.js";
 import { InstructionError } from "@statecase/adapter-common/instructions";
+import { MemoryFormatError } from "@statecase/adapter-common/memory";
+import { MemoryIdentityError } from "../src/memory-sync.js";
+import { MemoryBindingError } from "../src/memory-bindings.js";
 
 describe("CLI error contract", () => {
+  it("classifies memory identity and format failures as integrity errors and invalid local bindings as usage (AD-MEM-007)", () => {
+    expect(exitCodeFor(new MemoryIdentityError())).toBe(6);
+    expect(exitCodeFor(new MemoryFormatError())).toBe(6);
+    expect(exitCodeFor(new MemoryBindingError())).toBe(2);
+  });
   it("classifies native instruction failures as authorization, integrity or concurrent-state conflicts (AD-CTX-003, AD-CTX-009)", () => {
     expect(exitCodeFor(new NativeFileError("NATIVE_FILE_CHANGED"))).toBe(5);
     expect(exitCodeFor(new NativeFileError("NATIVE_FILE_UNSAFE"))).toBe(6);

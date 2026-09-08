@@ -3,6 +3,9 @@ import { RemoteError, StatecaseClient } from "./client.js";
 import { CredentialStorageError } from "./credentials.js";
 import { NativeFileError } from "./native-file.js";
 import { InstructionError } from "@statecase/adapter-common/instructions";
+import { MemoryFormatError } from "@statecase/adapter-common/memory";
+import { MemoryIdentityError } from "./memory-sync.js";
+import { MemoryBindingError } from "./memory-bindings.js";
 
 export class StatecaseUsageError extends Error {
   constructor(message: string, readonly exitCode = 2) {
@@ -36,6 +39,8 @@ export function selectedVault(config: LocalConfig, secrets: LocalSecrets): strin
 export function exitCodeFor(error: unknown): number {
   if (error instanceof StatecaseUsageError) return error.exitCode;
   if (error instanceof NativeFileError) return error.code === "NATIVE_FILE_CHANGED" ? 5 : 6;
+  if (error instanceof MemoryBindingError) return 2;
+  if (error instanceof MemoryIdentityError || error instanceof MemoryFormatError) return 6;
   if (error instanceof InstructionError) return error.code === "INSTRUCTION_AUTHORITY_UNVERIFIED" ? 4 : 6;
   if (error instanceof CredentialStorageError) {
     if (error.code === "CREDENTIAL_STATE_CHANGED" || error.code === "CREDENTIAL_STORE_LOCKED") return 5;

@@ -15,6 +15,7 @@ import { SyncConflict, SyncEngine, type VaultKeyring } from "../src/sync.js";
 import * as streamTransfer from "../src/stream-transfer.js";
 import * as appendMerge from "../src/append-merge-file.js";
 import * as materialization from "../src/materialize.js";
+import { memoryMappings } from "../src/memory-bindings.js";
 
 const temporary: string[] = [];
 const runFile = promisify(execFile);
@@ -25,6 +26,214 @@ afterEach(async () => {
 });
 
 describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, WS-003, WS-004)", () => {
+  it("transfers explicitly bound global memory between different native roots (AD-MEM-003)", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-memory-transfer-")); temporary.push(base);
+    const first = join(base, "a"), second = join(base, "b"), memoryA = join(base, "source-memory"), memoryB = join(base, "different-memory");
+    for (const path of [first, second, memoryA]) await mkdir(path, { mode: 0o700 });
+    await writeFile(join(first, "AGENTS.md"), "Synthetic instruction", { mode: 0o600 });
+    await writeFile(join(memoryA, "MEMORY.md"), "Synthetic portable recall", { mode: 0o600 });
+    await writeFile(join(memoryA, "topic.md"), "Synthetic topic", { mode: 0o600 });
+    const a = harnessConfig(first, join(base, "unused")), b = harnessConfig(second, join(base, "unused"));
+    a.memories = [{ id: "recall", kind: "codex-global", harnessNamespace: "harness:codex:default", path: memoryA, mode: "two-way" }];
+    b.memories = [{ ...a.memories[0]!, path: memoryB }];
+    const remote = new MemoryRemote(), key = await randomKey(), engine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    await engine.push(a); expect(remote.namespaceHeads.has("memory:recall")).toBe(true);
+    await engine.pull(b, true); await expect(readFile(memoryB)).rejects.toMatchObject({ code: "ENOENT" }); expect(b.applied).toEqual({});
+    await engine.pull(b); expect(await readFile(join(memoryB, "MEMORY.md"), "utf8")).toBe("Synthetic portable recall");
+    await expect(readFile(join(memoryB, "collection.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await engine.push(b)).outcome).toBe("unchanged");
+    await writeFile(join(memoryB, "MEMORY.md"), "Continued recall", { mode: 0o600 }); await rm(join(memoryB, "topic.md"));
+    await engine.push(b); await engine.pull(a); expect(await readFile(join(memoryA, "MEMORY.md"), "utf8")).toBe("Continued recall");
+    await expect(readFile(join(memoryA, "topic.md"))).rejects.toMatchObject({ code: "ENOENT" });
+    await writeFile(join(memoryA, "MEMORY.md"), "Local divergence", { mode: 0o600 });
+    await writeFile(join(memoryB, "MEMORY.md"), "Remote divergence", { mode: 0o600 }); await engine.push(b);
+    const applied = structuredClone(a.applied); await expect(engine.pull(a)).rejects.toBeInstanceOf(SyncConflict); expect(a.applied).toEqual(applied);
+    expect(await readFile(join(memoryA, "MEMORY.md"), "utf8")).toBe("Local divergence");
+    expect(remote.plaintext).not.toContain("portable recall");
+  });
+
+  it("pins memory to a session checkpoint and hydrates only that collection, not latest or other-project recall (AD-MEM-005)", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-memory-capsule-")); temporary.push(base);
+    const harness = join(base, "codex"), workspace = join(base, "project"), memory = join(base, "recall");
+    await initializeRepository(workspace);
+    await mkdir(join(harness, "sessions"), { recursive: true }); await mkdir(memory, { mode: 0o700 });
+    await writeFile(join(memory, "MEMORY.md"), "Recall at checkpoint", { mode: 0o600 });
+    await writeFile(join(harness, "sessions", "memory-session.jsonl"), [
+      { type: "session_meta", payload: { cwd: workspace } },
+      { type: "tool_call", name: "read_file", arguments: { path: join(memory, "MEMORY.md") } },
+    ].map((record) => JSON.stringify(record)).join("\n") + "\n");
+    const source = harnessConfig(harness, workspace); source.workspaces[0]!.sync = "git";
+    source.memories = [{ id: "recall", kind: "codex-global", harnessNamespace: "harness:codex:default", path: memory, mode: "two-way" }];
+    const remote = new MemoryRemote(), key = await randomKey();
+    const engine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    const first = await engine.push(source);
+    const capsule = (await engine.dependencies())[0]!;
+    expect(capsule).toMatchObject({ memories: [{ memoryId: "recall", revisionId: first.revisionId }] });
+    expect(capsule.dependencies).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: "memory", logicalPath: "recall/MEMORY.md", status: "resolved" }),
+      expect.objectContaining({ source: "memory", logicalPath: "recall/collection.json", status: "resolved" }),
+    ]));
+    await writeFile(join(memory, "MEMORY.md"), "Newer recall not observed by old session", { mode: 0o600 });
+    const advanced = await engine.push(source);
+    expect((await engine.dependencies())[0]!.sessionCapsuleId).toBe(capsule.sessionCapsuleId);
+    await rewriteCurrentCapsulePins(remote, key, capsule.sessionCapsuleId, { workspaceRevisionId: advanced.revisionId!, dropRevisionIds: {} });
+    const target = harnessConfig(join(base, "target-codex"), join(base, "target-project")); target.workspaces[0]!.sync = "git";
+    await runFile("git", ["clone", "-q", workspace, target.workspaces[0]!.path]);
+    target.mappings.push({ id: "claude", name: "Claude", namespace: "harness:claude:default", kind: "claude", path: join(base, "target-claude"), mode: "two-way" });
+    target.workspaces.push({ id: "ws_other", path: join(base, "other-project"), sync: "identity-only" });
+    target.memories = [
+      { ...source.memories[0]!, path: join(base, "target-memory") },
+      { id: "other", kind: "claude-project", harnessNamespace: "harness:claude:default", workspaceId: "ws_other", path: join(base, "other-memory"), mode: "two-way" },
+    ];
+    await mkdir(target.memories[1]!.path, { mode: 0o700 });
+    await writeFile(join(target.memories[1]!.path, "MEMORY.md"), "Private other project", { mode: 0o600 });
+    const before = structuredClone(target);
+    const wrongOwner = structuredClone(target); wrongOwner.memories![0] = { ...target.memories[1]!, id: "recall" }; wrongOwner.memories!.pop();
+    await expect(engine.hydrate(wrongOwner, capsule.sessionCapsuleId, { mode: "best-effort", dryRun: true }))
+      .rejects.toMatchObject({ code: "MEMORY_IDENTITY_MISMATCH" });
+    await expect(engine.hydrate({ ...target, memories: [] }, capsule.sessionCapsuleId, { mode: "strict", dryRun: true }))
+      .rejects.toMatchObject({ unresolved: expect.arrayContaining(["mapping:memory:recall"]) });
+    await engine.hydrate(target, capsule.sessionCapsuleId, { mode: "strict", dryRun: true });
+    expect(target).toEqual(before); await expect(readFile(target.memories[0]!.path)).rejects.toMatchObject({ code: "ENOENT" });
+    const pinned = remote.scopedRevisions.get(first.revisionId!)!;
+    remote.scopedRevisions.set(first.revisionId!, { ...pinned, namespaces: pinned.namespaces.filter((head) => head.namespace !== "memory:recall") });
+    expect((await engine.dependencies())[0]!.dependencies).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: "memory", logicalPath: "recall/collection.json", status: "unresolved" }),
+    ]));
+    await expect(engine.hydrate(target, capsule.sessionCapsuleId, { mode: "strict" })).rejects.toMatchObject({ name: "SessionDependencyError" });
+    expect(target).toEqual(before); remote.scopedRevisions.set(first.revisionId!, pinned);
+    const oldMemory = await readTestNamespaceManifest(remote, key, pinned.namespaces.find((head) => head.namespace === "memory:recall")!);
+    const oldObject = `memory:recall\0${oldMemory.entries.find((entry) => entry.logicalPath.endsWith("/MEMORY.md"))!.objectIds[0]}`;
+    const oldEnvelope = remote.namespaceObjects.get(oldObject)!; remote.namespaceObjects.delete(oldObject);
+    await expect(engine.hydrate(target, capsule.sessionCapsuleId, { mode: "strict" })).rejects.toBeInstanceOf(Error);
+    expect(target).toEqual(before); await expect(readFile(target.mappings[0]!.path)).rejects.toMatchObject({ code: "ENOENT" });
+    remote.namespaceObjects.set(oldObject, oldEnvelope);
+    await engine.hydrate(target, capsule.sessionCapsuleId, { mode: "strict" });
+    expect(await readFile(join(target.memories[0]!.path, "MEMORY.md"), "utf8")).toBe("Recall at checkpoint");
+    expect(await readFile(join(target.memories[1]!.path, "MEMORY.md"), "utf8")).toBe("Private other project");
+    expect(target.applied["memory:other"]).toBeUndefined();
+    expect(target.memories).toEqual(before.memories);
+    expect(remote.namespaceCommitRequests.at(-1)!.updates.find((update) => update.namespace === "harness:codex:default")).toBeUndefined();
+    source.memories![0]!.mode = "consume";
+    source.memories!.push({ ...source.memories![0]!, id: "second", path: join(base, "second-memory"), mode: "two-way" });
+    const selected = await engine.push(source);
+    const refreshed = (await engine.dependencies())[0]!;
+    expect(refreshed.sessionCapsuleId).not.toBe(capsule.sessionCapsuleId);
+    expect(refreshed.memories).toEqual([{ memoryId: "recall", revisionId: selected.revisionId }, { memoryId: "second", revisionId: selected.revisionId }]);
+    expect(remote.namespaceCommitRequests.at(-1)!.updates.find((update) => update.namespace === "harness:codex:default")!.retainedVaultRevisionIds).toEqual([selected.revisionId]);
+    expect((await engine.push(source)).outcome).toBe("unchanged");
+    source.memories = [];
+    expect((await engine.push(source)).outcome).toBe("pushed");
+    expect((await engine.dependencies())[0]!.memories).toBeUndefined();
+    source.memories = [{ id: "missing", kind: "codex-global", harnessNamespace: "harness:codex:default", path: join(base, "not-enrolled"), mode: "consume" }];
+    const beforeMissing = remote.scopedRevisionId;
+    await expect(engine.push(source)).rejects.toMatchObject({ code: "MEMORY_IDENTITY_MISMATCH" });
+    expect(remote.scopedRevisionId).toBe(beforeMissing);
+  });
+
+  it("requires explicit memory scope keys and permits updates only to the granted collection (AD-MEM-004)", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-memory-scope-")); temporary.push(base);
+    const source = harnessConfig(join(base, "owner-harness"), join(base, "unused"));
+    await mkdir(source.mappings[0]!.path, { mode: 0o700 });
+    await writeFile(join(source.mappings[0]!.path, "AGENTS.md"), "Owner instruction", { mode: 0o600 });
+    source.memories = ["granted", "private"].map((id) => ({ id, kind: "codex-global", harnessNamespace: "harness:codex:default", path: join(base, id), mode: "two-way" }));
+    for (const memory of source.memories) {
+      await mkdir(memory.path, { mode: 0o700 }); await writeFile(join(memory.path, "MEMORY.md"), `${memory.id} recall`, { mode: 0o600 });
+    }
+    const key = await randomKey(), remote = new MemoryRemote(), client = new StatecaseClient("https://remote.test", "fixture", remote.fetch);
+    const owner = new SyncEngine(client, "vlt_test", key); await owner.push(source);
+    const namespaceKeys: Record<string, { encryptionKey: string; dedupKey: string }> = {};
+    for (const namespace of ["harness:codex:default", "memory:granted"]) {
+      const keys = await deriveScopeKey(key, namespace);
+      namespaceKeys[namespace] = { encryptionKey: Buffer.from(keys.encryptionKey).toString("base64url"), dedupKey: Buffer.from(keys.dedupKey).toString("base64url") };
+      keys.encryptionKey.fill(0); keys.dedupKey.fill(0);
+    }
+    const access = { vaultId: "vlt_test", namespaces: Object.keys(namespaceKeys), namespaceKeys, actions: ["read", "append"] as Array<"read" | "append">, expiresAt: Date.now() + 60_000 };
+    const sandbox = harnessConfig(join(base, "sandbox-harness"), join(base, "unused")); sandbox.mappings[0]!.mode = "consume";
+    sandbox.memories = [{ ...source.memories[0]!, path: join(base, "sandbox-memory") }];
+    const scoped = new SyncEngine(client, "vlt_test", access);
+    await scoped.pull(sandbox);
+    expect(await readFile(join(sandbox.memories[0]!.path, "MEMORY.md"), "utf8")).toBe("granted recall");
+    expect(Object.keys(sandbox.applied)).not.toContain("memory:private");
+    const denied = structuredClone(sandbox); denied.memories!.push({ ...source.memories[1]!, path: join(base, "sandbox-private") });
+    await expect(scoped.pull(denied)).rejects.toThrow("does not authorize configured namespaces");
+    await expect(scoped.push(denied)).rejects.toThrow("does not authorize configured namespaces");
+    await expect(readFile(join(base, "sandbox-private"))).rejects.toMatchObject({ code: "ENOENT" });
+    await writeFile(join(sandbox.memories[0]!.path, "MEMORY.md"), "Sandbox continued recall", { mode: 0o600 });
+    await expect(new SyncEngine(client, "vlt_test", { ...access, actions: ["read"] }).push(sandbox)).rejects.toThrow("read-only");
+    await scoped.push(sandbox); await owner.pull(source);
+    expect(await readFile(join(source.memories[0]!.path, "MEMORY.md"), "utf8")).toBe("Sandbox continued recall");
+    expect(await readFile(join(source.memories[1]!.path, "MEMORY.md"), "utf8")).toBe("private recall");
+    expect(remote.namespaceCommitRequests.at(-1)!.updates.map((update) => ({ namespace: update.namespace, mode: update.mode })))
+      .toEqual([{ namespace: "memory:granted", mode: "append" }]);
+  });
+
+  it.each([1, 2])("restores memory history at epoch %i without materializing descriptors and rolls back failed publication (AD-MEM-006)", async (epoch) => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-memory-restore-")); temporary.push(base);
+    const root = join(base, "recall"); await mkdir(root, { mode: 0o700 });
+    const primary = join(root, "MEMORY.md"), topic = join(root, "topic.md");
+    await writeFile(primary, "historical", { mode: 0o600 });
+    const remote = new MemoryRemote(), key = await randomKey(), client = new StatecaseClient("https://remote.test", "token", remote.fetch);
+    let engine = new SyncEngine(client, "vlt_test", key); const local = harnessConfig(join(base, "codex"), join(base, "unused"));
+    local.mappings[0]!.mode = "consume";
+    local.memories = [{ id: "recall", kind: "codex-global", harnessNamespace: "harness:codex:default", path: root, mode: "two-way" }];
+    const mapping = memoryMappings(local)[0]!;
+    const historical = await engine.push(local);
+    engine = new SyncEngine(client, "vlt_test", { currentEpoch: epoch, keys: { 1: key, [epoch]: epoch === 1 ? key : await randomKey() } });
+    await writeFile(primary, "current", { mode: 0o600 }); await writeFile(topic, "current topic", { mode: 0o600 }); await engine.push(local);
+    const before = structuredClone(local.applied), head = remote.scopedRevisionId;
+    await expect(engine.restoreInPlace(local, { ...mapping, memory: undefined }, historical.revisionId!, { dryRun: true }))
+      .rejects.toThrow("mapping does not match");
+    await engine.restoreInPlace(local, mapping, historical.revisionId!, { dryRun: true });
+    expect(await readFile(primary, "utf8")).toBe("current"); expect(local.applied).toEqual(before);
+    const prepareRecovery = async (paths: readonly string[]) => {
+      expect([...paths].sort()).toEqual([primary, topic].sort());
+      const snapshot = await createEmergencySnapshot({ id: `restore_${crypto.randomUUID().replaceAll("-", "")}`, createdAt: new Date().toISOString(), statecaseHome: join(base, "statecase"), targetRoot: root, paths });
+      return { rollback: () => restoreEmergencySnapshot(snapshot.path) };
+    };
+    remote.failNextNamespaceCommit = true;
+    await expect(engine.restoreInPlace(local, mapping, historical.revisionId!, { prepareRecovery })).rejects.toMatchObject({ status: 409 });
+    expect(await readFile(primary, "utf8")).toBe("current"); expect(await readFile(topic, "utf8")).toBe("current topic");
+    expect(local.applied).toEqual(before); expect(remote.scopedRevisionId).toBe(head);
+    await engine.restoreInPlace(local, mapping, historical.revisionId!, { prepareRecovery });
+    expect(await readFile(primary, "utf8")).toBe("historical"); await expect(readFile(topic)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(join(root, "collection.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await engine.push(local)).outcome).toBe("unchanged");
+  });
+
+  it.each(["type", "size", "objects", "chunking", "workspace", "layer", "mode", "path", "missing-descriptor", "wrong-descriptor"])("rejects remote memory %s metadata before native materialization (AD-MEM-004)", async (variant) => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-memory-remote-")); temporary.push(base);
+    const source = harnessConfig(join(base, "harness"), join(base, "unused")); source.mappings[0]!.mode = "consume";
+    source.memories = [{ id: "recall", kind: "codex-global", harnessNamespace: "harness:codex:default", path: join(base, "memory"), mode: "two-way" }];
+    await mkdir(source.memories[0]!.path, { mode: 0o700 }); await writeFile(join(source.memories[0]!.path, "MEMORY.md"), "recall", { mode: 0o600 });
+    const remote = new MemoryRemote(), key = await randomKey(), client = new StatecaseClient("https://remote.test", "token", remote.fetch), engine = new SyncEngine(client, "vlt_test", key);
+    await engine.push(source);
+    const head = remote.namespaceHeads.get("memory:recall")!, manifest = await readTestNamespaceManifest(remote, key, head);
+    const entry = manifest.entries.find((entry) => entry.logicalPath.endsWith("/MEMORY.md"))!;
+    if (variant === "type") entry.entryType = "workspace-blob";
+    if (variant === "size") entry.totalSize = 1024 * 1024 + 1;
+    if (variant === "objects") entry.objectIds = Array.from({ length: 257 }, () => entry.objectIds[0]!);
+    if (variant === "chunking") entry.chunking = { strategy: "jsonl-records", targetSize: 100, maxSize: 100 };
+    if (variant === "workspace") entry.workspacePath = "private";
+    if (variant === "layer") entry.workspaceLayer = "worktree";
+    if (variant === "mode") entry.fileMode = 0o100644;
+    if (variant === "path") entry.logicalPath = "portable-memory/v2/unknown.md";
+    if (variant === "missing-descriptor") manifest.entries = [entry];
+    if (variant === "wrong-descriptor") manifest.entries.find((item) => item.logicalPath.endsWith("/collection.json"))!.contentDigest = "obj_other";
+    const scope = await deriveScopeKey(key, head.namespace);
+    manifest.pathClaims = await Promise.all(manifest.entries.map(async (item) => ({ pathId: await testPathId(scope.dedupKey, item.logicalPath), mutation: "add" as const })));
+    scope.encryptionKey.fill(0); scope.dedupKey.fill(0);
+    remote.namespaceHeads.set(head.namespace, { ...head, manifestObjectId: await storeNamespaceManifest(remote, key, manifest) });
+    const target = structuredClone(source); target.applied = {}; target.memories![0]!.path = join(base, "target-memory"); target.mappings[0]!.mode = "publish";
+    await expect(engine.pull(target)).rejects.toBeInstanceOf(Error);
+    expect(target.applied).toEqual({}); await expect(readFile(target.memories![0]!.path)).rejects.toMatchObject({ code: "ENOENT" });
+    if (variant === "missing-descriptor" || variant === "wrong-descriptor") {
+      const before = remote.namespaceObjects.size;
+      await expect(engine.push(source)).rejects.toMatchObject({ code: "MEMORY_IDENTITY_MISMATCH" });
+      expect(remote.namespaceObjects.size).toBe(before);
+    }
+  });
+
   it("keeps conflict diagnostics stable for plural paths and empty legacy heads", async () => {
     expect(new SyncConflict(["a", "b"]).message).toContain("2 paths");
     const remote = new MemoryRemote();

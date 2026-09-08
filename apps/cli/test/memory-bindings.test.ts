@@ -53,6 +53,18 @@ describe("explicit memory binding identity (AD-MEM-001)", () => {
       const config = fixture(); config.memories = [{ ...binding(), path: root }]; expect(() => memoryMappings(config)).toThrow();
     }
   });
+  it("rejects memory bindings inside another harness or native skills, rules and session ownership (AD-MEM-001)", () => {
+    for (const nativePath of ["claude/skills/recall", "claude/rules/recall", "claude/CLAUDE.md", "claude/projects", "claude/projects/local-project", "claude/projects/local-project/subagents", "codex/memories"]) {
+      const config = fixture(); config.memories = [{ ...binding(), path: resolve("synthetic", nativePath) }];
+      expect(() => memoryMappings(config)).toThrow("conflicting ownership");
+    }
+    const config = fixture(); config.memories = [{ ...binding(), path: resolve("synthetic/claude/custom-recall") }];
+    expect(memoryMappings(config)).toHaveLength(1);
+    for (const nativePath of ["skills/recall", "sessions", "archived_sessions", "AGENTS.md", "config.toml"]) {
+      config.memories = [{ id: "recall", kind: "codex-global", harnessNamespace: "harness:codex:default", mode: "two-way", path: resolve("synthetic/codex", nativePath) }];
+      expect(() => memoryMappings(config)).toThrow("conflicting ownership");
+    }
+  });
   it("rejects malformed collections and ambiguous harness/workspace owners", () => {
     for (const memories of [null, {}, "invalid", [null], Array.from({ length: 129 }, binding)]) {
       const config = fixture(); config.memories = memories as unknown as LocalConfig["memories"]; expect(() => memoryMappings(config)).toThrow();

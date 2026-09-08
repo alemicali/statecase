@@ -26,7 +26,8 @@ export function memoryMappings(config: LocalConfig): RootMapping[] {
     const path = resolve(binding.path), namespace = `memory:${binding.id}`;
     if (path === parse(path).root || namespaces.has(namespace) ||
         mappings.some((mapping) => overlaps(path, mapping.path)) ||
-        config.mappings.some((mapping) => mapping.kind === "drop" ? overlaps(path, mapping.path) : contains(path, resolve(mapping.path))) ||
+        config.mappings.some((mapping) => mapping.kind === "drop" ? overlaps(path, mapping.path) :
+          contains(path, resolve(mapping.path)) || collidesWithHarness(path, mapping, binding.harnessNamespace)) ||
         config.workspaces.some((workspace) => overlaps(path, workspace.path))) throw new MemoryBindingError();
     const memory: MemoryIdentity = { kind: binding.kind, harnessNamespace: binding.harnessNamespace,
       ...(binding.workspaceId === undefined ? {} : { workspaceId: binding.workspaceId }) };
@@ -34,6 +35,18 @@ export function memoryMappings(config: LocalConfig): RootMapping[] {
     mappings.push({ id: `memory_${binding.id}`, kind: "drop", mode: binding.mode, name: binding.name ?? binding.id, namespace, path, memory });
   }
   return mappings;
+}
+function collidesWithHarness(path: string, harness: RootMapping, namespace: string): boolean {
+  if (!contains(resolve(harness.path), path)) return false;
+  if (harness.namespace !== namespace) return true;
+  const parts = relative(resolve(harness.path), path).split(sep);
+  const first = parts[0]!;
+  // These trees/files already have native ownership, including intentionally
+  // excluded credentials/cache. A memory binding must not bypass that policy.
+  if (["skills", "rules", "sessions", "archived_sessions", "agents", "commands", "plugins",
+    "credentials", "auth.json", "credentials.json", "config.toml", "settings.json", "settings.local.json",
+    "AGENTS.md", "AGENTS.override.md", "CLAUDE.md", "cache", "tmp", "logs", "debug", "bin"].includes(first)) return true;
+  return harness.kind === "claude" && first === "projects" && (parts.length < 3 || parts[2] !== "memory");
 }
 function contains(parent: string, path: string): boolean {
   const child = relative(parent, path);

@@ -504,3 +504,42 @@ modules each have 100% branch coverage (46/46 and 21/21). Both the original
 background drill and its instrumented follow-up passed locally with verified
 cleanup. Exact-candidate CI is still required; these passes do not establish
 why the earlier hosted-runner service disappeared.
+
+Follow-up CI `34203126879` on `e2a8ceb` completed successfully in all nine jobs,
+including background synchronization. This verifies that candidate, not the
+cause of the preceding service loss; root-cause resolution remains open.
+
+### Memory engine and checkpoint integration — 2026-09-08
+
+Memory collections now participate in encrypted engine push/pull through their
+own scope keys, bounded native Markdown policy and authenticated canonical
+category/harness/workspace descriptors. Internal descriptors are never written
+as native files. Tests cover different device paths, preview, no-op/edit/delete,
+conflicts, ungranted-key and read-only denial, scoped append updates, malformed
+remote metadata, changed/disappearing files/trees and scanner resource bounds.
+
+Session Capsules pin selected memory checkpoints and expose structured memory
+references plus descriptor completeness. Hydration combines independent pins
+and filters unrelated configured collections before validation/materialization.
+Missing mappings/namespaces/objects and wrong project ownership preserve local
+state. Explicit selection changes refresh a capsule without transcript changes;
+memory-only updates preserve the unchanged session's historical context. Pins
+also enter the existing opaque retention root contract.
+
+Historical memory restore tests cover key epochs 1 and 2, physical-file-only
+emergency capture, failed publication rollback, successful restoration/deletion
+and post-restore no-op. A failing-first regression fixed generic-restore policy
+marker stripping; another fixed descriptor digest bookkeeping after restore.
+
+This is engine integration, not complete native memory portability. CLI memory
+enrollment/rebind/removal, native recall/generation and effective root discovery,
+custom/subagent coverage, localization of memory references in native history,
+daemon watches, mixed-client fencing, live capability/GC drills and packaged
+independent-host UAT remain open. No operator native state or live cloud resources
+were accessed by these local tests. Exact-candidate CI remains required.
+
+The complete local `npm run check` passes 788 tests across 56 files, lint,
+type checking, build and clean-installed package smoke. Global branch coverage
+is 91.83% (4171/4542); the new memory scanner/planner is 96.42% and the shared
+native-text planner is 96.87%. The separate local workerd suite passes 12 tests
+(including its deliberate ambiguous-rotation fault); no live deployment changed.

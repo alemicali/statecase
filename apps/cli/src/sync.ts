@@ -46,6 +46,10 @@ import { readSettingsSnapshot } from "./settings-file.js";
 import { prepareSettingsPlan, settingsDocuments, settingsField, type IncomingSetting, type SettingsPlan } from "./settings-sync.js";
 import { instructionPath, scanInstructions, prepareInstructionPlan, type IncomingInstruction, type InstructionPlan } from "./instructions-sync.js";
 import { InstructionError, MAX_INSTRUCTION_BYTES, MAX_INSTRUCTION_FILES, MAX_INSTRUCTION_SET_BYTES } from "@statecase/adapter-common/instructions";
+import { MemoryFormatError, memoryNativePath, MAX_MEMORY_FILES, MAX_MEMORY_FILE_BYTES, MAX_MEMORY_SET_BYTES } from "@statecase/adapter-common/memory";
+import { memoryMappings } from "./memory-bindings.js";
+import { scanMemory, prepareMemoryPlan, memoryDescriptor, MEMORY_DESCRIPTOR_PATH, MemoryIdentityError } from "./memory-sync.js";
+import type { IncomingNativeText, NativeTextPlan } from "./native-text-plan.js";
 import {
   inspectPortableSessionActivity,
   localizePortableSession,
@@ -188,7 +192,7 @@ export class SyncEngine {
     const createdAt = new Date().toISOString();
     const createdByDeviceId = config.deviceId ?? (config.deviceName ? safeIdentifier(config.deviceName, "device") : "device_unknown");
     const writable = [
-      ...config.mappings.filter((mapping) => mapping.mode !== "consume"),
+      ...syncRootMappings(config).filter((mapping) => mapping.mode !== "consume"),
       ...workspaceMappings(config),
     ];
     const scanned = await scanWritableMappings(writable, config.workspaces, false);
@@ -433,8 +437,17 @@ export class SyncEngine {
       const workspaceManifest = await loadRevision(capsule.workspace.capsuleRevisionId);
       const dropManifests = new Map<string, VaultManifestV1 | undefined>();
       for (const drop of capsule.drops) dropManifests.set(drop.dropId, await loadRevision(drop.revisionId));
-      const dependencies = capsule.dependencies.map((dependency) => {
-        const unresolved = dependencyResolutionFailure(dependency, capsule, harnessManifest, workspaceManifest, dropManifests);
+      const memoryManifests = new Map<string, VaultManifestV1 | undefined>();
+      const memoryDependencies: DependencyReference[] = [];
+      for (const memory of capsule.memories ?? []) {
+        const pinned = await loadRevision(memory.revisionId);
+        memoryManifests.set(memory.memoryId, pinned);
+        const descriptor = pinned?.entries.find((entry) => entry.namespace === `memory:${memory.memoryId}` && entry.logicalPath === MEMORY_DESCRIPTOR_PATH);
+        memoryDependencies.push({ logicalPath: `${memory.memoryId}/collection.json`, source: "memory", required: true,
+          ...(descriptor ? { contentDigest: descriptor.contentDigest } : {}) });
+      }
+      const dependencies = [...capsule.dependencies, ...memoryDependencies].map((dependency) => {
+        const unresolved = dependencyResolutionFailure(dependency, capsule, harnessManifest, workspaceManifest, dropManifests, memoryManifests);
         return { ...dependency, status: unresolved ? "unresolved" as const : "resolved" as const, ...(unresolved ? { reason: unresolved } : {}) };
       });
       reports.push({ ...capsule, dependencies });
@@ -451,7 +464,7 @@ export class SyncEngine {
     if (this.scopedAccess && this.scopedAccess.expiresAt <= Date.now()) throw new Error("scoped capability has expired");
     if (this.scopedAccess && !this.scopedAccess.actions.includes("append")) throw new Error("scoped capability is read-only");
     const allowed = this.scopedAccess ? new Set(Object.keys(this.scopedAccess.namespaceKeys)) : undefined;
-    const writable = [...config.mappings.filter((mapping) => mapping.mode !== "consume"), ...workspaceMappings(config)];
+    const writable = [...syncRootMappings(config).filter((mapping) => mapping.mode !== "consume"), ...workspaceMappings(config)];
     const unauthorized = allowed ? writable.filter((mapping) => !allowed.has(mapping.namespace)) : [];
     if (unauthorized.length > 0) {
       throw new Error(`capability does not authorize configured namespaces: ${unauthorized.map((mapping) => mapping.namespace).sort().join(", ")}`);
@@ -525,9 +538,18 @@ export class SyncEngine {
       });
     }
     const remoteManifests = new Map<string, NamespaceManifestV1>();
-    for (const mapping of writable) {
+    for (const mapping of [...writable, ...memoryMappings(config).filter((mapping) => mapping.mode === "consume")]) {
       const head = heads.get(mapping.namespace);
       if (head) remoteManifests.set(mapping.namespace, (await this.#resolveNamespaceManifest(head)).manifest);
+      if (head && mapping.memory) {
+        const descriptors = remoteManifests.get(mapping.namespace)!.entries.filter((entry) => entry.logicalPath === MEMORY_DESCRIPTOR_PATH);
+        if (descriptors.length !== 1) throw new MemoryIdentityError();
+        const entry = descriptors[0]!, expected = encoder.encode(memoryDescriptor(mapping));
+        const keys = await this.#scopeKeys(mapping.namespace, entry.keyEpoch ?? 1);
+        try {
+          if (entry.entryType !== "file" || entry.totalSize !== expected.byteLength || entry.contentDigest !== await computeObjectId(keys.dedupKey, expected)) throw new MemoryIdentityError();
+        } finally { expected.fill(0); keys.encryptionKey.fill(0); keys.dedupKey.fill(0); }
+      }
     }
     const baseManifests = new Map<string, NamespaceManifestV1 | undefined>();
     for (const mapping of writable) {
@@ -600,7 +622,11 @@ export class SyncEngine {
       conflicts: [...remoteManifests.values()].flatMap((manifest) => manifest.conflicts),
       sessionCapsules: [...remoteManifests.values()].flatMap((manifest) => manifest.sessionCapsules ?? []),
     };
-    const capsuleEntries = [...encodedByNamespace.values()].flatMap((encoded) => encoded.entries);
+    const capsuleEntries = [
+      ...[...encodedByNamespace.values()].flatMap((encoded) => encoded.entries),
+      ...memoryMappings(config).filter((mapping) => mapping.mode === "consume")
+        .flatMap((mapping) => remoteManifests.get(mapping.namespace)?.entries ?? []),
+    ];
     const sessionCapsules = await buildSessionCapsules({
       vaultId: this.vaultId,
       revisionId: vaultRevisionId,
@@ -667,7 +693,9 @@ export class SyncEngine {
       if (appendOnly && [...changedEntries, ...tombstones].some((entry) => isInstructionAuthorityPath(namespace, entry.logicalPath))) {
         throw new InstructionError("INSTRUCTION_AUTHORITY_UNVERIFIED");
       }
-      if (changedEntries.length === 0 && tombstones.length === 0 && (!head || (head.keyEpoch ?? 1) === this.keyEpoch)) {
+      const namespaceCapsules = sessionCapsules.filter((capsule) => capsule.harness.namespace === namespace);
+      const capsulesChanged = canonicalJson(namespaceCapsules) !== canonicalJson(remoteManifest?.sessionCapsules ?? []);
+      if (changedEntries.length === 0 && tombstones.length === 0 && !capsulesChanged && (!head || (head.keyEpoch ?? 1) === this.keyEpoch)) {
         // A different namespace may commit nextApplied below. Remote-only
         // content is not hydrated merely because this namespace needs no push.
         if (head && !appendMergedPaths.has(namespace) && namespaceStateEquals(finalState, localState)) {
@@ -703,7 +731,7 @@ export class SyncEngine {
         entries: manifestEntries,
         tombstones: manifestTombstones,
         conflicts: [],
-        sessionCapsules: sessionCapsules.filter((capsule) => capsule.harness.namespace === namespace),
+        sessionCapsules: namespaceCapsules,
         pathClaims,
       });
       const requiredObjectIds = [...new Set([
@@ -802,6 +830,7 @@ export class SyncEngine {
       report.harnessRevisionId,
       report.workspace.capsuleRevisionId,
       ...report.drops.map((drop) => drop.revisionId),
+      ...(report.memories ?? []).map((memory) => memory.revisionId),
     ]);
 
     const warnings = report.dependencies
@@ -815,6 +844,13 @@ export class SyncEngine {
     for (const dropId of dropIds) {
       if (!config.mappings.some((mapping) => mapping.kind === "drop" && mapping.id === dropId)) warnings.push(`mapping:drop:${dropId}`);
     }
+    const memoryIds = new Set((report.memories ?? []).map((memory) => memory.memoryId));
+    const selectedMemories = (config.memories ?? []).filter((memory) => memoryIds.has(memory.id));
+    for (const memoryId of memoryIds) {
+      if (!selectedMemories.some((memory) => memory.id === memoryId)) warnings.push(`mapping:memory:${memoryId}`);
+    }
+    if (selectedMemories.some((memory) => memory.harnessNamespace !== report.harness.namespace ||
+        (memory.kind === "claude-project" && memory.workspaceId !== report.workspace.workspaceId))) throw new MemoryIdentityError();
     warnings.sort((left, right) => left.localeCompare(right, "en"));
     if (mode === "strict" && warnings.length > 0) throw new SessionDependencyError(warnings);
 
@@ -824,6 +860,7 @@ export class SyncEngine {
       .filter((mapping) => mapping.namespace === report.harness.namespace || (mapping.kind === "drop" && dropIds.has(mapping.id)))
       .map((mapping) => ({ ...mapping, mode: "consume" as const }));
     scoped.workspaces = workspace ? [{ ...workspace, sync: "git" }] : [];
+    scoped.memories = selectedMemories.map((memory) => ({ ...memory, mode: "consume" as const }));
     const result = pinnedRevisions.size === 1
       ? await this.pull(scoped, options.dryRun ?? false, [...pinnedRevisions][0]!)
       : await this.#hydratePinnedNamespaces(scoped, report, options.dryRun ?? false);
@@ -848,8 +885,9 @@ export class SyncEngine {
     addPin(report.harness.namespace, report.harnessRevisionId);
     addPin(`workspace:${report.workspace.workspaceId}`, report.workspace.capsuleRevisionId);
     for (const drop of report.drops) addPin(`drop:${drop.dropId}`, drop.revisionId);
+    for (const memory of report.memories ?? []) addPin(`memory:${memory.memoryId}`, memory.revisionId);
 
-    const selected = [...config.mappings.filter((mapping) => mapping.mode !== "publish"), ...workspaceMappings(config)];
+    const selected = [...syncRootMappings(config).filter((mapping) => mapping.mode !== "publish"), ...workspaceMappings(config)];
     const selectedNamespaces = new Set(selected.map((mapping) => mapping.namespace));
     const pointers = new Map<string, Awaited<ReturnType<StatecaseClient["scopedRevision"]>>>();
     const entries: VaultManifestV1["entries"] = [];
@@ -928,7 +966,7 @@ export class SyncEngine {
       ? await this.client.revision(this.vaultId, historicalRevisionId)
       : await this.client.head(this.vaultId);
     if (!head.revisionId || !head.manifestObjectId) return { outcome: "unchanged", revisionId: null, files: 0, objects: 0, bytes: 0 };
-    const selected = [...config.mappings.filter((mapping) => mapping.mode !== "publish"), ...workspaceMappings(config)];
+    const selected = [...syncRootMappings(config).filter((mapping) => mapping.mode !== "publish"), ...workspaceMappings(config)];
     if (!historicalRevisionId && selected.length > 0 && selected.every((mapping) => config.applied[mapping.namespace]?.revisionId === head.revisionId)) {
       return { outcome: "unchanged", revisionId: head.revisionId, files: 0, objects: 0, bytes: 0 };
     }
@@ -950,9 +988,11 @@ export class SyncEngine {
     const workspaceId = workspaceMappingId(mapping);
     const configured = workspaceId
       ? workspaceMappings(config).find((candidate) => candidate.id === mapping.id)
-      : config.mappings.find((candidate) => candidate.id === mapping.id);
+      : syncRootMappings(config).find((candidate) => candidate.id === mapping.id);
     if (!configured || configured.namespace !== mapping.namespace || configured.kind !== mapping.kind || configured.mode !== mapping.mode ||
-        resolve(configured.path) !== resolve(mapping.path)) throw new Error("in-place restore mapping does not match this device");
+        resolve(configured.path) !== resolve(mapping.path) || canonicalJson(configured.memory ?? null) !== canonicalJson(mapping.memory ?? null)) {
+      throw new Error("in-place restore mapping does not match this device");
+    }
     if (mapping.mode !== "two-way") throw new Error("in-place restore requires a two-way mapping");
     const targetRootInfo = await lstat(resolve(mapping.path));
     if (!targetRootInfo.isDirectory() || targetRootInfo.isSymbolicLink()) {
@@ -1064,7 +1104,7 @@ export class SyncEngine {
           const keys = await this.#scopeKeys(mapping.namespace, historicalHead.keyEpoch ?? 1);
           for (const entry of target.entries) {
             const expected = workingConfig.applied[mapping.namespace]?.digests[entry.logicalPath];
-            const projected = settingsField(mapping.kind, entry.logicalPath)
+            const projected = mapping.memory || settingsField(mapping.kind, entry.logicalPath)
               ? validated.find((candidate) => candidate.logicalPath === entry.logicalPath)?.bytes : undefined;
             const actual = projected ? await computeObjectId(keys.dedupKey, projected)
               : await optionalFileDigest(sessionDestination(mapping, entry.logicalPath, workingConfig), keys);
@@ -1125,7 +1165,7 @@ export class SyncEngine {
       if (!workspaceId) {
         for (const entry of restoredEntries) {
           workingConfig.applied[mapping.namespace]!.digests[entry.logicalPath] =
-            settingsField(mapping.kind, entry.logicalPath) ? entry.contentDigest
+            mapping.memory || settingsField(mapping.kind, entry.logicalPath) ? entry.contentDigest
               : (await optionalFileDigest(sessionDestination(mapping, entry.logicalPath, workingConfig), keys))!;
         }
       }
@@ -1192,6 +1232,9 @@ export class SyncEngine {
     const incompleteNamespaces = new Set<string>();
     const incomingSettings: IncomingSetting[] = [];
     const incomingInstructions: IncomingInstruction[] = [];
+    const incomingMemory: IncomingNativeText[] = [];
+    const memoryBounds = new Map<string, { files: number; bytes: number }>();
+    let memoryPlan: NativeTextPlan | undefined;
     const instructionBounds = new Map<string, { files: number; bytes: number }>();
     let instructionPlan: InstructionPlan | undefined;
     let settingsPlan: SettingsPlan | undefined;
@@ -1205,6 +1248,13 @@ export class SyncEngine {
       assertRemotePathAllowed(mapping, entry.logicalPath);
       const field = settingsField(mapping.kind, entry.logicalPath);
       const instruction = instructionPath(mapping.kind, entry.logicalPath);
+      if (mapping.memory) {
+        const bounds = memoryBounds.get(entry.namespace) ?? { files: 0, bytes: 0 };
+        bounds.files++; bounds.bytes += entry.totalSize; memoryBounds.set(entry.namespace, bounds);
+        const limit = entry.logicalPath === MEMORY_DESCRIPTOR_PATH ? 4096 : MAX_MEMORY_FILE_BYTES;
+        if (entry.entryType !== "file" || entry.totalSize > limit || entry.objectIds.length > 256 || entry.chunking?.strategy === "jsonl-records" ||
+            entry.workspacePath !== undefined || entry.workspaceLayer !== undefined || entry.fileMode !== undefined || bounds.files > MAX_MEMORY_FILES + 1 || bounds.bytes > MAX_MEMORY_SET_BYTES + 4096) throw new MemoryFormatError();
+      }
       if (instruction) {
         const bounds = instructionBounds.get(entry.namespace) ?? { files: 0, bytes: 0 };
         bounds.files++; bounds.bytes += entry.totalSize; instructionBounds.set(entry.namespace, bounds);
@@ -1283,6 +1333,7 @@ export class SyncEngine {
         continue;
       }
       if (instruction) { incomingInstructions.push({ mapping, logicalPath: entry.logicalPath, bytes }); continue; }
+      if (mapping.memory) { incomingMemory.push({ mapping, logicalPath: entry.logicalPath, bytes }); continue; }
       if (mapping.id.startsWith("workspace_") && entry.entryType === "workspace-capsule") {
         const payload = workspacePayloads.get(entry.namespace) ?? { mapping, blobs: [] };
         payload.capsule = JSON.parse(new TextDecoder("utf8", { fatal: true, ignoreBOM: false }).decode(bytes)) as CapturedWorkspace["capsule"];
@@ -1323,6 +1374,7 @@ export class SyncEngine {
       const field = settingsField(mapping.kind, tombstone.logicalPath);
       if (field) { incomingSettings.push({ mapping, logicalPath: tombstone.logicalPath, field }); continue; }
       if (instructionPath(mapping.kind, tombstone.logicalPath)) { incomingInstructions.push({ mapping, logicalPath: tombstone.logicalPath }); continue; }
+      if (mapping.memory) { incomingMemory.push({ mapping, logicalPath: tombstone.logicalPath }); continue; }
       if (workspaceMappingId(mapping)) continue;
       const portable = portableSession(tombstone.logicalPath);
       if (portable && mapping.kind !== "drop" && !config.workspaces.some((candidate) => candidate.id === portable.workspaceId)) {
@@ -1366,8 +1418,10 @@ export class SyncEngine {
       async (namespace, epoch, bytes) => computeObjectId((await this.#scopeKeys(namespace, epoch)).dedupKey, bytes));
     instructionPlan = await prepareInstructionPlan(incomingInstructions, config, appliedKeyEpoch,
       async (namespace, epoch, bytes) => computeObjectId((await this.#scopeKeys(namespace, epoch)).dedupKey, bytes));
-    assertDistinctMaterializationPaths([...materialized, ...settingsPlan.targets, ...instructionPlan.targets], deletions);
-    const conflicts: string[] = [...settingsPlan.conflicts, ...instructionPlan.conflicts];
+    memoryPlan = await prepareMemoryPlan(incomingMemory, config, appliedKeyEpoch,
+      async (namespace, epoch, bytes) => computeObjectId((await this.#scopeKeys(namespace, epoch)).dedupKey, bytes), selected.filter((mapping) => mapping.memory));
+    assertDistinctMaterializationPaths([...materialized, ...settingsPlan.targets, ...instructionPlan.targets, ...memoryPlan.targets], deletions);
+    const conflicts: string[] = [...settingsPlan.conflicts, ...instructionPlan.conflicts, ...memoryPlan.conflicts];
     for (const item of materialized) {
       if (item.sourcePath !== undefined) {
         const remoteSourcePath = item.sourcePath;
@@ -1401,11 +1455,12 @@ export class SyncEngine {
     }
     if (conflicts.length > 0 && !options.allowLocalOverwrite) throw new SyncConflict(conflicts);
     const workspaceFiles = readyWorkspaces.reduce((total, item) => total + item.captured.capsule.records.length, 0);
-    const fileCount = materialized.length + deletions.length + workspaceFiles + settingsPlan.writes.length + instructionPlan.writes.length + instructionPlan.deletes.length;
+    const fileCount = materialized.length + deletions.length + workspaceFiles + settingsPlan.writes.length + instructionPlan.writes.length + instructionPlan.deletes.length + memoryPlan.writes.length + memoryPlan.deletes.length;
     if (dryRun) return { outcome: "pulled", revisionId: remoteRevisionId, files: fileCount, objects: objectCount, bytes: byteCount };
 
     await settingsPlan.guard();
     await instructionPlan.guard();
+    await memoryPlan.guard();
 
     if (options.replaceWorkspaces) {
       if (!options.prepareWorkspaceRecovery) throw new Error("workspace replacement requires persistent recovery preparation");
@@ -1421,8 +1476,8 @@ export class SyncEngine {
       await applyWorkspaceTransaction(
         readyWorkspaces.map((workspace) => ({ root: workspace.mapping.path, captured: workspace.captured, gitFetch: workspace.gitFetch, expectedCurrent: workspace.expectedCurrent })),
         {
-          writes: [...materialized.map(materializedWrite), ...settingsPlan.writes, ...instructionPlan.writes],
-          deletes: [...deletions.map((item) => item.path), ...instructionPlan.deletes],
+          writes: [...materialized.map(materializedWrite), ...settingsPlan.writes, ...instructionPlan.writes, ...memoryPlan.writes],
+          deletes: [...deletions.map((item) => item.path), ...instructionPlan.deletes, ...memoryPlan.deletes],
         },
         { materialize: async (transaction) => (options.materialize ?? applyFileTransaction)({
           ...transaction,
@@ -1430,6 +1485,7 @@ export class SyncEngine {
             await transaction.beforeCommit?.(index, path);
             await settingsPlan!.guard(path);
             await instructionPlan!.guard(path);
+            await memoryPlan!.guard(path);
           },
         }) },
       );
@@ -1442,6 +1498,7 @@ export class SyncEngine {
       }
       for (const item of settingsPlan.digests.filter((candidate) => candidate.namespace === mapping.namespace)) digests[item.logicalPath] = item.digest;
       for (const item of instructionPlan.digests.filter((candidate) => candidate.namespace === mapping.namespace)) digests[item.logicalPath] = item.digest;
+      for (const item of memoryPlan.digests.filter((candidate) => candidate.namespace === mapping.namespace)) digests[item.logicalPath] = item.digest;
       config.applied[mapping.namespace] = {
         revisionId: appliedRevision(mapping.namespace),
         digests,
@@ -1453,7 +1510,9 @@ export class SyncEngine {
     } finally {
       settingsPlan?.dispose();
       instructionPlan?.dispose();
+      memoryPlan?.dispose();
       for (const item of incomingInstructions) item.bytes?.fill(0);
+      for (const item of incomingMemory) item.bytes?.fill(0);
       await Promise.all(stagedDisposers.map((dispose) => dispose()));
     }
   }
@@ -1495,7 +1554,7 @@ export class SyncEngine {
       ? await this.client.scopedRevision(this.vaultId, historicalRevisionId)
       : await this.client.namespaceHeads(this.vaultId);
     const allowed = this.scopedAccess ? new Set(Object.keys(this.scopedAccess.namespaceKeys)) : undefined;
-    const configured = [...config.mappings.filter((mapping) => mapping.mode !== "publish"), ...workspaceMappings(config)];
+    const configured = [...syncRootMappings(config).filter((mapping) => mapping.mode !== "publish"), ...workspaceMappings(config)];
     const unauthorized = allowed ? configured.filter((mapping) => !allowed.has(mapping.namespace)) : [];
     if (unauthorized.length > 0) {
       throw new Error(`capability does not authorize configured namespaces: ${unauthorized.map((mapping) => mapping.namespace).sort().join(", ")}`);
@@ -1987,6 +2046,7 @@ async function buildSessionCapsules(input: {
   previous?: VaultManifestV1;
 }): Promise<SessionCapsuleV1[]> {
   const scannedSessions = input.scanned.filter((entry) => entry.session?.workspaceId);
+  const configuredMemories = memoryMappings(input.config);
   const writableHarnessNamespaces = new Set(input.config.mappings
     .filter((mapping) => mapping.kind !== "drop" && mapping.mode !== "consume")
     .map((mapping) => mapping.namespace));
@@ -2004,12 +2064,21 @@ async function buildSessionCapsules(input: {
     const priorCapsuleIndex = capsules.findIndex((capsule) => capsule.sessionKey === sessionKey);
     const priorEntry = input.previous?.entries.find((entry) => entry.namespace === scanned.namespace && entry.logicalPath === scanned.logicalPath);
     const currentEntry = input.entries.find((entry) => entry.namespace === scanned.namespace && entry.logicalPath === scanned.logicalPath);
-    if (priorCapsuleIndex >= 0 && priorEntry?.contentDigest === currentEntry?.contentDigest) continue;
+    const selectedMemories = configuredMemories.filter((mapping) =>
+      mapping.memory!.harnessNamespace === scanned.namespace &&
+      (mapping.memory!.kind === "codex-global" || mapping.memory!.workspaceId === workspaceId));
+    const memoryIds = selectedMemories.map((mapping) => mapping.namespace.slice("memory:".length)).sort();
+    const priorMemoryIds = (capsules[priorCapsuleIndex]?.memories ?? []).map((pin) => pin.memoryId).sort();
+    if (priorCapsuleIndex >= 0 && priorEntry?.contentDigest === currentEntry?.contentDigest &&
+        canonicalJson(memoryIds) === canonicalJson(priorMemoryIds)) continue;
+    for (const mapping of selectedMemories) {
+      if (!input.entries.some((entry) => entry.namespace === mapping.namespace && entry.logicalPath === MEMORY_DESCRIPTOR_PATH)) throw new MemoryIdentityError();
+    }
 
     const workspace = input.config.workspaces.find((candidate) => candidate.id === workspaceId);
     if (!workspace) continue;
     const captured = workspaceCaptureFromScan(input.scanned, workspaceId);
-    const dependencies = await resolveActivityDependencies(session.activity, workspaceId, input.config, input.entries, input.scanned, captured);
+    const dependencies = await resolveActivityDependencies(session.activity, workspaceId, input.config, input.entries, input.scanned, captured, selectedMemories);
     const drops = [...new Set(dependencies
       .filter((dependency) => dependency.source === "drop")
       .map((dependency) => dependency.logicalPath.split("/")[0]!))]
@@ -2026,6 +2095,7 @@ async function buildSessionCapsules(input: {
         ...(captured?.capsule.baseCommit ? { baseCommit: captured.capsule.baseCommit } : {}),
       },
       drops,
+      ...(memoryIds.length ? { memories: memoryIds.map((memoryId) => ({ memoryId, revisionId: input.revisionId })) } : {}),
       dependencies,
       createdAt: input.createdAt,
       createdByDeviceId: input.createdByDeviceId,
@@ -2041,6 +2111,7 @@ function capsuleRetentionRoots(capsules: readonly SessionCapsuleV1[]): string[] 
     capsule.harnessRevisionId,
     capsule.workspace.capsuleRevisionId,
     ...capsule.drops.map((drop) => drop.revisionId),
+    ...(capsule.memories ?? []).map((memory) => memory.revisionId),
   ]))].sort((left, right) => left.localeCompare(right, "en"));
 }
 
@@ -2061,6 +2132,7 @@ async function resolveActivityDependencies(
   entries: VaultManifestV1["entries"],
   scanned: readonly ScannedEntry[],
   captured: CapturedWorkspace | undefined,
+  memories: readonly RootMapping[],
 ): Promise<DependencyReference[]> {
   const output: DependencyReference[] = [];
   const seen = new Set<string>();
@@ -2068,6 +2140,7 @@ async function resolveActivityDependencies(
     ...config.workspaces.filter((workspace) => workspace.id === sessionWorkspaceId)
       .map((workspace) => ({ kind: "workspace" as const, id: workspace.id, root: resolve(workspace.path) })),
     ...config.mappings.filter((mapping) => mapping.kind === "drop").map((mapping) => ({ kind: "drop" as const, id: mapping.id, root: resolve(mapping.path), namespace: mapping.namespace })),
+    ...memories.map((mapping) => ({ kind: "memory" as const, id: mapping.namespace.slice("memory:".length), root: resolve(mapping.path), namespace: mapping.namespace })),
   ].sort((left, right) => right.root.length - left.root.length);
 
   for (const reference of activity) {
@@ -2078,11 +2151,12 @@ async function resolveActivityDependencies(
     } else {
       const logicalPath = relative(owner.root, reference.path).split(sep).join("/");
       if (!logicalPath || logicalPath.startsWith("../")) continue;
-      if (owner.kind === "drop") {
-        const entry = entries.find((candidate) => candidate.namespace === owner.namespace && candidate.logicalPath === logicalPath);
+      if (owner.kind === "drop" || owner.kind === "memory") {
+        const entry = entries.find((candidate) => candidate.namespace === owner.namespace &&
+          candidate.logicalPath === (owner.kind === "memory" ? `portable-memory/v1/${logicalPath}` : logicalPath));
         dependency = {
           logicalPath: `${owner.id}/${logicalPath}`,
-          source: "drop",
+          source: owner.kind,
           ...(entry ? { contentDigest: entry.contentDigest } : {}),
           required: true,
         };
@@ -2148,6 +2222,7 @@ function dependencyResolutionFailure(
   harnessManifest: VaultManifestV1 | undefined,
   workspaceManifest: VaultManifestV1 | undefined,
   dropManifests: ReadonlyMap<string, VaultManifestV1 | undefined>,
+  memoryManifests: ReadonlyMap<string, VaultManifestV1 | undefined>,
 ): string | undefined {
   if (!harnessManifest?.entries.some((entry) =>
     entry.namespace === capsule.harness.namespace && entry.logicalPath === capsule.harness.logicalPath)) {
@@ -2170,6 +2245,12 @@ function dependencyResolutionFailure(
   const separator = dependency.logicalPath.indexOf("/");
   const dropId = separator < 0 ? dependency.logicalPath : dependency.logicalPath.slice(0, separator);
   const logicalPath = separator < 0 ? "" : dependency.logicalPath.slice(separator + 1);
+  if (dependency.source === "memory") {
+    const pinned = memoryManifests.get(dropId);
+    const exists = dependency.contentDigest && pinned?.entries.some((entry) => entry.namespace === `memory:${dropId}` &&
+      entry.entryType === "file" && entry.logicalPath === `portable-memory/v1/${logicalPath}` && entry.contentDigest === dependency.contentDigest);
+    return exists ? undefined : "pinned memory revision is unavailable or does not contain the referenced content";
+  }
   const manifest = dropManifests.get(dropId);
   if (!dependency.contentDigest) return "referenced Drop content was excluded or absent at checkpoint time";
   const exists = manifest?.entries.some((entry) =>
@@ -2285,6 +2366,7 @@ async function scanMapping(
   workspaces: LocalConfig["workspaces"],
   streamSessions = false,
 ): Promise<ScannedEntry[]> {
+  if (mapping.memory) return scanMemory(mapping);
   const root = resolve(mapping.path);
   const info = await stat(root);
   if (!info.isDirectory()) throw new Error(`sync root is not a directory: ${root}`);
@@ -2447,6 +2529,11 @@ function portableSession(logicalPath: string): { workspaceId: string; filename: 
 }
 
 function sessionDestination(mapping: RootMapping, logicalPath: string, config: LocalConfig): string {
+  if (mapping.memory) {
+    const nativePath = memoryNativePath(logicalPath);
+    if (!nativePath) throw new MemoryFormatError();
+    return safeDestination(mapping.path, nativePath);
+  }
   const instruction = instructionPath(mapping.kind, logicalPath);
   if (instruction) return safeDestination(mapping.path, instruction);
   const portable = portableSession(logicalPath);
@@ -2531,6 +2618,10 @@ function harnessClassification(kind: RootMapping["kind"], path: string): "file" 
 }
 
 function assertRemotePathAllowed(mapping: RootMapping, logicalPath: string): void {
+  if (mapping.memory) {
+    if (logicalPath !== MEMORY_DESCRIPTOR_PATH && !memoryNativePath(logicalPath)) throw new MemoryFormatError();
+    return;
+  }
   if (mapping.id.startsWith("workspace_") && mapping.namespace.startsWith("workspace:")) return;
   if (excludedBuiltIn(logicalPath)) throw new Error("remote path is excluded by adapter policy");
   if (mapping.kind !== "drop" && portableSession(logicalPath)) return;
@@ -2629,6 +2720,8 @@ function compareEntries(left: VaultManifestV1["entries"][number], right: VaultMa
 function isInstructionAuthorityPath(namespace: string, logicalPath: string): boolean {
   return namespace.startsWith("harness:") && logicalPath.startsWith("portable-instructions/");
 }
+
+function syncRootMappings(config: LocalConfig): RootMapping[] { return [...config.mappings, ...memoryMappings(config)]; }
 
 function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
   return left.byteLength === right.byteLength && left.every((byte, index) => byte === right[index]);

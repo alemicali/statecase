@@ -1297,8 +1297,28 @@ OS errors as internal failures.
 Memory selection is opt-in and separate from Drops and harness setup. A local
 binding names a stable `memory:<id>` namespace, native category, owning harness,
 optional logical workspace and explicit device-local directory. Validate IDs
-and ownership before filesystem access. Current binding/Markdown validators are
-foundation modules, not yet wired into synchronization or CLI enrollment.
-The encrypted descriptor, capsule pins, namespace grants, native-location
-qualification and complete TDD/UAT obligations are normative in
+and ownership before filesystem access. The sync engine now transports bounded
+Markdown through a dedicated native policy and authenticates the canonical
+`portable-memory/v1/collection.json` descriptor. The descriptor is encrypted
+metadata, never a native file. Each collection uses its own scope key; optional
+Session Capsule `memories` pins contain unique collection IDs and immutable vault
+revision IDs. Structured references into selected collections use the `memory`
+dependency source. A dependency report also checks each pinned descriptor even
+when the transcript has no explicit memory Read event.
+
+Hydration selects only pinned collections and validates local harness/workspace
+ownership before combining their historical state with the session/workspace
+transaction. Missing collections remain unresolved, missing payloads fail before
+application, and unselected local memory stays untouched. Pins contribute opaque
+revision roots to existing GC reachability metadata. Memory-only updates do not
+rewrite an unchanged session's checkpoint; explicitly changing the selected
+collection set creates a new capsule, including when transcript bytes are equal.
+Read-only selected memory must already exist remotely before it can be pinned.
+
+The engine integration does not yet provide CLI enrollment/rebind/removal or
+native-memory compatibility. Full native effective-location precedence, custom/
+subagent formats, path localization of memory references in restored tool history,
+daemon watches, mixed-version fencing and packaged independent-host UAT remain
+required. No automatic harness setup enables or scans memory. The complete
+TDD/UAT obligations remain normative in
 [ADR-0025](adr/0025-memory-identity-and-local-bindings.md).
