@@ -137,14 +137,25 @@ describe("derived reference participant authority and stable observations (RT-00
     if (kind === "unborn-to-unborn") expect(prepared.retentionWrites).toEqual([]);
     prepared.dispose();
   });
-  it.each(["files", "reftable", "absent-log", "invalid-log", "valueless-log"])("uses native configuration for %s", async kind => {
+  it.each(["default-files", "reftable", "absent-log", "invalid-log", "valueless-log"])("uses native configuration for %s", async kind => {
     const f = await fixture();
-    if (kind === "files" || kind === "reftable") await f.git("config", "extensions.refStorage", kind);
+    if (kind === "reftable") await f.git("config", "extensions.refStorage", kind);
     if (kind === "absent-log" || kind === "valueless-log") await f.git("config", "--unset", "core.logAllRefUpdates");
     if (kind === "valueless-log") await fs.appendFile(join(f.metadata, "config"), "\n[core]\nlogAllRefUpdates\n");
     if (kind === "invalid-log") await f.git("config", "core.logAllRefUpdates", "invalid");
     if (kind === "reftable" || kind === "invalid-log") await expect(prepareGitReferences(f.indexes, [f.plan])).rejects.toMatchObject({ code: "PROFILE_RECOVERY_REQUIRED" });
     else { const prepared = await prepareGitReferences(f.indexes, [f.plan]); expect(prepared.files.writes.length).toBeGreaterThan(0); prepared.dispose(); }
+  });
+  it.each(["future-version", "unknown-extension"])("does not confuse rejected repository discovery with an absent backend: %s", async kind => {
+    const f = await fixture();
+    await f.git("config", "core.repositoryFormatVersion", kind === "future-version" ? "999" : "1");
+    if (kind === "unknown-extension") await fs.appendFile(join(f.metadata, "config"), "\n[extensions]\nstatecaseUnsupportedFixture = true\n");
+    // Generic config can exit 1 after gentle discovery rejected this repository.
+    // That must not become permission to allocate files-backend native locks.
+    const parents = vi.spyOn(fs, "mkdir");
+    await expect(prepareGitReferences(f.indexes, [f.plan])).rejects.toMatchObject({ code: "PROFILE_RECOVERY_REQUIRED" });
+    expect(parents).not.toHaveBeenCalled();
+    await expect(fs.lstat(join(f.metadata, "refs", "statecase"))).rejects.toMatchObject({ code: "ENOENT" });
   });
   it("deduplicates common-directory pins and locks across distinct linked worktrees", async () => {
     const f = await fixture(), linked = join(f.root, "linked"); await f.git("worktree", "add", "-qb", "linked", linked);
