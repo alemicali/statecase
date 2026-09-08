@@ -99,6 +99,14 @@ to begin TDD implementation.
 
 ## Implementation checkpoint — 2026-09-06
 
+Latest qualification exception (2026-09-08): CI `34195140316` is not green.
+Native Claude's expanded effective-preference check passes, but Codex reports
+`NATIVE_CONFIG_CHANGED` after its first fresh-session preference probe. Two
+other jobs reproduce lost mutex exclusion at a suspended publication boundary.
+Forced native GC now reproduces the latter locally at both checkpoints;
+ADR-0022 explicitly roots mutex ownership until release/process exit. Updated
+exact-candidate CI and Codex diagnosis are required before closing these gates.
+
 The first usable vertical slice is complete: manual first-device and
 second-device enrollment, encrypted recovery kit, account-scoped vaults,
 client-side encrypted/chunked object transfer, atomic optimistic commits,

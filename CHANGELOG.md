@@ -4,6 +4,11 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Fixed premature native mutex finalization during suspended lock acquisition.
+  Retain acquired mutexes until explicit release or process exit; deterministic
+  forced-GC process regressions cover both recovery/publication boundaries,
+  normal release and SIGKILL restart contention (RT-016, AU-013).
+
 - Extended native Codex/Claude qualification to check effective synchronized
   model/effort in provider requests, fresh target sessions and CLI-override
   precedence. Removed fixture config rewrites/model arguments that could mask

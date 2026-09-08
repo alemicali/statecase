@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assertNativePreferences } from "../scripts/uat/native-preferences.mjs";
+import { assertNativePreferences, summarizeNativeConfigChange } from "../scripts/uat/native-preferences.mjs";
 
 describe("native effective-preference qualification assertions (AD-CFG-012)", () => {
   it.each(["codex", "claude"])("accepts only the expected actual model and effort for %s", (kind) => {
@@ -14,5 +14,14 @@ describe("native effective-preference qualification assertions (AD-CFG-012)", ()
   });
   it("rejects unsupported harness identities", () => {
     expect(() => assertNativePreferences("unknown", { model: "fixture", output_config: { effort: "low" } }, { model: "fixture", effort: "low" })).toThrow();
+  });
+  it("reports only fixed config-change categories, never native keys or values", () => {
+    expect(summarizeNativeConfigChange('model="fixture"\n', 'model = "fixture"\n')).toEqual({ kind: "formatting", fields: [], other: false });
+    expect(summarizeNativeConfigChange('model="fixture"\n', 'model="secret-canary"\n[projects."private-path"]\ntrust_level="trusted"\n')).toEqual({ kind: "values", fields: ["model", "projects"], other: false });
+    expect(summarizeNativeConfigChange('private_canary="secret"\n', 'private_canary="other-secret"\n')).toEqual({ kind: "values", fields: [], other: true });
+    expect(summarizeNativeConfigChange('model="fixture"\n', 'model="fixture"\n')).toEqual({ kind: "unchanged", fields: [], other: false });
+    for (const invalid of ["bad = [", "x".repeat(1024 * 1024 + 1), null]) {
+      expect(summarizeNativeConfigChange("", invalid)).toEqual({ kind: "invalid", fields: [], other: false });
+    }
   });
 });

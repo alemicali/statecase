@@ -429,6 +429,10 @@ deployed Worker test environment.
   steal the lock. After SIGKILL, eight independent contenders must yield
   exactly one owner. Kill at pre-reclaim and pre-publication boundaries and
   retry; never publish partial owner JSON or lose kernel exclusion. Cover
+  forced garbage collection while an acquisition is suspended at each boundary:
+  native ownership must remain rooted until explicit release or process death,
+  not depend on reachability of an async continuation. Run GC after normal
+  acquisition/release too and preserve exactly-one-winner restart checks. Cover
   v2 PID reuse, live legacy owner refusal, unsafe/oversized metadata, foreign
   replacement, native file creation faults, persistent inode identity and
   case-insensitive exclusion of all mutex/sidecar names from sync/materialization.

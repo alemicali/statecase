@@ -58,6 +58,15 @@ mutex but never deliberately removes a foreign owner record. Crash-created
 unpublished metadata temporaries may remain; they contain only PID/token/time,
 not credentials, and are not authority for liveness.
 
+The process explicitly retains each acquired `LocalFileMutex` in a strong
+registry until successful `release()`. Native binding garbage collection must
+not define ownership lifetime: an unresolved async continuation can become
+unreachable while the process is alive, causing `better-sqlite3`'s database
+destructor to close its SQLite handle. An abandoned mutex therefore fails
+closed and remains held until process termination; callers must release in
+`finally`. Acquisition failures close their connection without registering it.
+This is an in-process lifetime root, not an alternative to kernel exclusion.
+
 Owner metadata is now version two. Its PID is diagnostic, not proof of exclusion;
 kernel acquisition permits recovery even if that PID has been reused. Legacy
 version-one records are read, and a live legacy PID is respected before any
@@ -95,6 +104,14 @@ after private metadata preparation but before publication is recoverable.
 Each test terminates only its own child handles and cleans synthetic roots.
 Unit faults also cover ownership changes, failed publication, permission/type
 rejection, competing inode publication and safe diagnostics.
+
+CI `34195140316` exposed loss of exclusion at the publication checkpoint in
+both Node 24 compatibility and quality. Forcing GC in the exact paused child
+reproduced it locally at **both** recovery/publication checkpoints before the
+registry fix. Those regressions now require live-owner denial after GC, then
+successful acquisition after SIGKILL; ordinary acquisition/release also runs
+GC, and the eight-contender test still requires exactly one winner. Earlier
+green runs without explicit GC did not establish this lifetime boundary.
 
 The clean-package/native credential test and local authenticated background
 drill passed this candidate; see the [qualification report](../uat/2026-09-08-profile-mutex.md).

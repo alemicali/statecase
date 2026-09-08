@@ -22,7 +22,7 @@ try {
   process.stdout.write(result.stdout);
 } catch (error) {
   // Do not expose native diagnostics, command arguments, or fixture transcripts.
-  let phase, preferenceFailure, preferenceProbe, nativeError, nativeFailure, requests;
+  let phase, preferenceFailure, preferenceProbe, nativeError, nativeFailure, configChange, requests;
   for (const line of String(error.stderr ?? "").split("\n")) {
     try {
       const record = JSON.parse(line);
@@ -31,10 +31,14 @@ try {
       if (["synced", "override"].includes(record.preferenceProbe)) preferenceProbe = record.preferenceProbe;
       if (["Error", "AssertionError"].includes(record.error)) nativeError = record.error;
       if (["NATIVE_SESSION_ID_INVALID", "NATIVE_SESSION_REUSED", "NATIVE_CONFIG_CHANGED", "NATIVE_TURN_INCOMPLETE"].includes(record.nativeFailure)) nativeFailure = record.nativeFailure;
+      if (["unchanged", "formatting", "values", "invalid"].includes(record.configChange?.kind)) {
+        const allowed = ["model", "model_reasoning_effort", "model_provider", "approval_policy", "sandbox_mode", "web_search", "model_providers", "notice", "projects", "permissions", "default_permissions", "features", "tui"];
+        configChange = { kind: record.configChange.kind, fields: allowed.filter((field) => Array.isArray(record.configChange.fields) && record.configChange.fields.includes(field)), other: record.configChange.other === true };
+      }
       if (Number.isInteger(record.requests) && record.requests >= 0 && record.requests <= 4) requests = record.requests;
     } catch { /* Only explicitly allowlisted phase metadata may leave the child. */ }
   }
-  process.stderr.write(`${JSON.stringify({ result: "fail", phase, preferenceFailure, preferenceProbe, nativeError, nativeFailure, requests, error: error.name, code: error.code })}\n`);
+  process.stderr.write(`${JSON.stringify({ result: "fail", phase, preferenceFailure, preferenceProbe, nativeError, nativeFailure, configChange, requests, error: error.name, code: error.code })}\n`);
   process.exitCode = 1;
 } finally {
   await rm(directory, { recursive: true, force: true });

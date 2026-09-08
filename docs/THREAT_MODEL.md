@@ -85,7 +85,10 @@ Controls:
   operation lifetime and atomic, bounded owner metadata. This prevents two new
   stale reclaimers from stealing each other's lock and releases exclusion on
   process death. Persistent guard inodes are never automatically deleted and
-  are excluded from sync. Mixed old/new local writers, malicious same-principal
+  are excluded from sync. Acquired mutexes are strongly retained until explicit
+  release: garbage collection of a suspended continuation must not close its
+  native database and silently admit a competing writer. Abandoned ownership
+  fails closed until process exit. Mixed old/new local writers, malicious same-principal
   inode replacement and broken network-filesystem locks are outside that
   guarantee; stop old writers before upgrading the local lock format.
 

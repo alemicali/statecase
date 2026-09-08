@@ -9,7 +9,7 @@ import { gunzipSync } from "node:zlib";
 import { SyncEngine } from "../../apps/cli/src/sync.ts";
 import { StatecaseClient } from "../../apps/cli/src/client.ts";
 import { randomKey } from "../../packages/crypto/src/index.ts";
-import { assertNativePreferences } from "./native-preferences.mjs";
+import { assertNativePreferences, summarizeNativeConfigChange } from "./native-preferences.mjs";
 import { nativeResponseEvents } from "./native-responses-events.mjs";
 
 // AD-CX-007, WS-022, UAT-02 subset. Real harness + actual encryption/engine,
@@ -37,6 +37,7 @@ let sessionId;
 let key;
 let expectedEffort = "low";
 let preferenceProbe;
+let configChange;
 const inputBytes = "synthetic input continuity\n";
 const environment = (machine) => ({
   PATH: process.env.PATH, HOME: machine.home,
@@ -173,7 +174,9 @@ try {
       "exec", "--skip-git-repo-check", "--json", "-C", target.project, "Reply with fixture completion text."]);
     requireNative(typeof fresh === "string" && /^[a-f0-9-]{36}$/u.test(fresh), "NATIVE_SESSION_ID_INVALID");
     requireNative(fresh !== sessionId, "NATIVE_SESSION_REUSED");
-    requireNative(await readFile(join(target.home, "codex", "config.toml"), "utf8") === beforeProbeSettings, "NATIVE_CONFIG_CHANGED");
+    const afterProbeSettings = await readFile(join(target.home, "codex", "config.toml"), "utf8");
+    configChange = summarizeNativeConfigChange(beforeProbeSettings, afterProbeSettings);
+    requireNative(afterProbeSettings === beforeProbeSettings, "NATIVE_CONFIG_CHANGED");
   }
   console.log(JSON.stringify({ result: "pass", harness: version, node: process.version,
     backend: "in-memory-reference", topology: "two-homes-one-host", inference: "deterministic-loopback",
@@ -186,7 +189,7 @@ try {
   const conflictKinds = Array.isArray(error.paths) ? [...new Set(error.paths.map((path) =>
     path.startsWith("harness:codex:default:") ? "codex" : path.startsWith("workspace:ws_native:") ? "workspace" : "other"))] : undefined;
   console.error(JSON.stringify({ result: "fail", phase, error: error.name, fixtureError: fixtureError?.name,
-    preferenceFailure: fixtureError?.code, nativeFailure: error.code, preferenceProbe, requests, conflictKinds }));
+    preferenceFailure: fixtureError?.code, nativeFailure: error.code, preferenceProbe, configChange, requests, conflictKinds }));
   process.exitCode = 1;
 } finally {
   key?.fill(0);

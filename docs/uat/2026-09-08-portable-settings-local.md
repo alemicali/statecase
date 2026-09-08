@@ -101,3 +101,11 @@ mismatch. The next simulator revision emits text content/delta/done events
 according to the [Responses streaming reference](https://developers.openai.com/api/reference/resources/responses/streaming-events),
 uses distinct probe response identities and distinguishes fixed assertion
 categories. Its outcome must be verified; this is not recorded as a Codex pass.
+
+Commit `92068be` / CI `34195140316` again passed native Claude, but Codex now
+identified `NATIVE_CONFIG_CHANGED` after the synced fresh-session request.
+The text stream, fresh session identity and actual model/effort checks passed
+before that failure. The next driver adds bounded, allowlisted TOML change
+categories without logging config values/paths or weakening byte equality.
+The same run failed two jobs on one forced-suspension profile-lock test;
+ADR-0022 records the separately reproduced native-GC lifetime correction.

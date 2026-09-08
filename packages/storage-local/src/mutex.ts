@@ -7,6 +7,12 @@ export class LocalMutexBusy extends Error {
   constructor() { super("local mutex is already held"); this.name = "LocalMutexBusy"; }
 }
 
+// Native database finalizers close their handles. A suspended/abandoned async
+// continuation need not remain reachable, even while its process is alive.
+// Ownership must therefore be explicitly released, never garbage-collected.
+// An abandoned mutex intentionally remains held until process termination.
+const activeMutexes = new Set<LocalFileMutex>();
+
 /** A persistent inode and a kernel-backed SQLite transaction, never a PID lease.
  * Do not unlink, replace, copy, or open/close this file outside SQLite while
  * any owner is live: POSIX close semantics can release same-process locks.
@@ -40,7 +46,9 @@ export class LocalFileMutex {
       database.pragma("user_version", { simple: true });
       const after = lstatSync(target);
       if (before.dev !== after.dev || before.ino !== after.ino || !after.isFile() || after.nlink !== 1) throw new Error("mutex inode changed");
-      return new LocalFileMutex(target, database);
+      const mutex = new LocalFileMutex(target, database);
+      activeMutexes.add(mutex);
+      return mutex;
     } catch (error) {
       database?.close();
       if ((error as { code?: unknown }).code === "SQLITE_BUSY") throw new LocalMutexBusy();
@@ -52,5 +60,6 @@ export class LocalFileMutex {
     if (this.#closed) return;
     // close() rolls back the open transaction and releases the native lock.
     this.database.close(); this.#closed = true;
+    activeMutexes.delete(this);
   }
 }

@@ -19,7 +19,7 @@ async function fixture() {
     platform: "node", format: "cjs", target: "node22", logLevel: "silent",
     plugins: [{ name: "native-sqlite", setup(builder) { builder.onResolve({ filter: /^better-sqlite3$/ }, () => ({ path: sqlite, external: true })); } }] });
   const spawn = async () => {
-    const child = fork(executable, [], { cwd: root, env: { PATH: process.env.PATH, HOME: root } as unknown as NodeJS.ProcessEnv, stdio: ["ignore", "ignore", "ignore", "ipc"] });
+    const child = fork(executable, [], { cwd: root, execArgv: ["--expose-gc"], env: { PATH: process.env.PATH, HOME: root } as unknown as NodeJS.ProcessEnv, stdio: ["ignore", "ignore", "ignore", "ipc"] });
     children.push(child); expect((await response(child)).result).toBe("ready"); return child;
   };
   return { root, path: join(root, "daemon.lock"), spawn };
@@ -33,7 +33,7 @@ function response(child: ChildProcess): Promise<{ result: string; point?: string
     child.once("exit", ended); child.once("message", receive);
   });
 }
-function command(child: ChildProcess, action: "acquire" | "release", path: string, checkpoint?: string) {
+function command(child: ChildProcess, action: "acquire" | "release" | "collect", path: string, checkpoint?: string) {
   const pending = response(child); child.send({ action, path, checkpoint }); return pending;
 }
 async function kill(child: ChildProcess) {
@@ -46,6 +46,7 @@ describe("real process mutex crash boundaries (RT-016, AU-013)", () => {
   it("admits only one of eight simultaneous restart contenders after SIGKILL", async () => {
     const f = await fixture(); const owner = await f.spawn();
     expect((await command(owner, "acquire", f.path)).result).toBe("acquired");
+    expect((await command(owner, "collect", f.path)).result).toBe("collected");
     const guard = await stat(`${f.path}.statecase-lock.sqlite`);
     await kill(owner);
     const peers = await Promise.all(Array.from({ length: 8 }, () => f.spawn()));
@@ -56,6 +57,7 @@ describe("real process mutex crash boundaries (RT-016, AU-013)", () => {
     const winner = peers[results.findIndex((result) => result.result === "acquired")];
     expect(JSON.parse(await readFile(f.path, "utf8")).pid).toBe(winner.pid);
     expect((await command(winner, "release", f.path)).result).toBe("released");
+    expect((await command(winner, "collect", f.path)).result).toBe("collected");
     await expect(stat(f.path)).rejects.toMatchObject({ code: "ENOENT" });
     const loser = peers.find((peer) => peer !== winner)!;
     expect((await command(loser, "acquire", f.path)).result).toBe("acquired");
@@ -66,6 +68,7 @@ describe("real process mutex crash boundaries (RT-016, AU-013)", () => {
     expect((await command(initial, "acquire", f.path)).result).toBe("acquired"); await kill(initial);
     const paused = await f.spawn();
     expect(await command(paused, "acquire", f.path, checkpoint)).toEqual({ result: "checkpoint", point: checkpoint });
+    expect((await command(paused, "collect", f.path)).result).toBe("collected");
     const contender = await f.spawn();
     expect((await command(contender, "acquire", f.path)).result).toBe("denied");
     await kill(paused);
