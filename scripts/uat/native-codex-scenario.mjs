@@ -150,6 +150,7 @@ try {
   const hydratedSettings = await readFile(join(target.home, "codex", "config.toml"), "utf8");
   assert.ok(hydratedSettings.endsWith(targetLocalSettings), "native local-only config changed");
   assert.ok(!hydratedSettings.includes("statecase_fixture_source"), "source provider configuration crossed devices");
+  assert.ok(!hydratedSettings.includes(source.project), "source project trust crossed devices");
 
   phase = "native-resume";
   stage = "target";
@@ -204,7 +205,7 @@ try {
 async function configure(machine) {
   const providerId = machine === source ? "statecase_fixture_source" : "statecase_fixture_target";
   await writeFile(join(machine.home, "codex", "config.toml"),
-    `${machine === source ? 'model = "gpt-5.6-terra"\nmodel_reasoning_effort = "low"\n' : ""}# device-local provider\nmodel_provider = "${providerId}"\napproval_policy = "never"\nsandbox_mode = "${externalIsolation ? "danger-full-access" : "workspace-write"}"\nweb_search = "disabled"\n[model_providers.${providerId}]\nname = "Statecase deterministic fixture"\nbase_url = "http://127.0.0.1:${provider.address().port}/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nrequest_max_retries = 0\nstream_max_retries = 0\n`, { mode: 0o600 });
+    `${machine === source ? 'model = "gpt-5.6-terra"\nmodel_reasoning_effort = "low"\n' : ""}# device-local provider\nmodel_provider = "${providerId}"\napproval_policy = "never"\nsandbox_mode = "${externalIsolation ? "danger-full-access" : "workspace-write"}"\nweb_search = "disabled"\n[model_providers.${providerId}]\nname = "Statecase deterministic fixture"\nbase_url = "http://127.0.0.1:${provider.address().port}/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nrequest_max_retries = 0\nstream_max_retries = 0\n# Each disposable device approves only its own synthetic project.\n[projects.${JSON.stringify(machine.project)}]\ntrust_level = "trusted"\n`, { mode: 0o600 });
 }
 
 async function harness(machine, args) {

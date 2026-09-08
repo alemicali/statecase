@@ -123,3 +123,14 @@ Explicit process cwd is retained for fixture isolation but did not resolve
 the assertion. Additional diagnostics report only source/target/other scope,
 addition/removal/modification and allowlisted trust enums, never native paths
 or arbitrary keys/values. The assertion is still unchanged.
+
+CI `34196530761` / `ee7fb92` identified exactly one change: Codex added the
+target project's previously absent `trust_level = "trusted"` entry. No other
+project properties or top-level values changed. The fixture now explicitly
+approves each synthetic device's own project during initial setup, before
+transfer (never after hydration). This keeps native first-use initialization
+separate from the preservation assertion and adds a check that the source's
+project path/trust never crosses into target config. Native execution remains
+restricted to disposable runner VMs, with no operator harness state accessed.
+Byte equality, fresh identity, actual request model/effort and override checks
+remain mandatory; the updated native result is still pending.
