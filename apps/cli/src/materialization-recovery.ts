@@ -23,9 +23,13 @@ export interface MaterializationRecoveryOptions {
   roots: readonly string[];
   /** Exact device-local metadata grants, never an implicit parent-directory grant. */
   files?: readonly string[];
+  /** Directory grants never include these control subtrees; exact files still do. */
+  excludedRoots?: readonly string[];
   dryRun?: boolean;
   /** An outer coordinator must durably record its decision before journal removal. */
   beforeForget?: (result: MaterializationRecoveryResult) => Promise<void>;
+  /** Observational outer-participant barrier; also required for caught rollback. */
+  beforeMutation?: () => Promise<void>;
   /** Isolated fault-injection boundary, never exposed as a CLI flag. */
   afterBoundary?: (phase: "prepared" | "intent" | "backup" | "install" | "commit" | "rollback" | "cleanup", index: number) => void | Promise<void>;
 }
@@ -66,6 +70,8 @@ class JournalLifecycle implements MaterializationLifecycle {
   #intents: Intent[] = [];
   constructor(private readonly options: MaterializationRecoveryOptions) {}
 
+  async beforeRollback(): Promise<void> { await this.options.beforeMutation?.(); }
+
   async prepare(id: string, targets: readonly PreparedTarget[]): Promise<void> {
     this.#entries = await Promise.all(targets.map(async (target) => {
       const root = selectedRoot(target.path, this.options);
@@ -104,6 +110,7 @@ class JournalLifecycle implements MaterializationLifecycle {
   }
 
   async guard(index: number, target: PreparedTarget): Promise<void> {
+    await this.options.beforeMutation?.();
     await assertParents(this.#entries[index]);
     await inspectArtifact({ ...this.#entries[index], artifact: target.artifact });
     if (target.artifact && await targetFingerprint(join(target.artifact.path, "backup")) !== "absent") throw new MaterializationRecoveryError();
@@ -113,9 +120,11 @@ class JournalLifecycle implements MaterializationLifecycle {
   async mutation(phase: "backup" | "install", index: number, target: PreparedTarget): Promise<void> {
     await syncTargets([target]);
     await this.options.afterBoundary?.(phase, index);
+    await this.options.beforeMutation?.();
   }
 
   async settle(outcome: "commit" | "rollback", targets: readonly PreparedTarget[]): Promise<void> {
+    await this.options.beforeMutation?.();
     await syncTargets(targets);
     if (outcome === "commit") {
       await this.append({ kind: "commit" });
@@ -158,6 +167,7 @@ async function replayJournal(options: MaterializationRecoveryOptions): Promise<M
   const result: MaterializationRecoveryResult = { pending: true, outcome: journal.committed ? "cleanup" : "rollback", targets: entries.length };
   if (options.dryRun) return result;
   for (let index = entries.length - 1; index >= 0; index -= 1) {
+    await options.beforeMutation?.();
     const entry = entries[index];
     const action = await inspectEntry(entry, journal.intents[index], journal.committed);
     if (action === "restore") await rename(join(entry.artifact!.path, "backup"), entry.path);
@@ -166,6 +176,7 @@ async function replayJournal(options: MaterializationRecoveryOptions): Promise<M
       await syncEntry(entry);
       await options.afterBoundary?.("rollback", index);
     }
+    await options.beforeMutation?.();
     await cleanEntry(entry, journal.intents[index], journal.committed);
     await options.afterBoundary?.("cleanup", index);
   }
@@ -248,12 +259,14 @@ async function readJournal(options: MaterializationRecoveryOptions): Promise<{ j
 
 function validateOptions(options: MaterializationRecoveryOptions): void {
   if (!canonicalPath(options.directory) || (options.roots.length === 0 && !options.files?.length) ||
+      (options.excludedRoots?.length ?? 0) > 1024 || options.excludedRoots?.some(path => !canonicalPath(path)) ||
       (options.files?.length ?? 0) > 128 || options.files?.some((path) => !canonicalPath(path) || contains(path, options.directory) || contains(options.directory, path)) ||
       options.roots.some((root) => !canonicalPath(root) || contains(root, options.directory) || contains(options.directory, root))) throw new MaterializationRecoveryError();
 }
 function selectedRoot(path: string, options: MaterializationRecoveryOptions): string {
   if (!canonicalPath(path)) throw new MaterializationRecoveryError();
   if (options.files?.includes(path)) return dirname(path);
+  if (options.excludedRoots?.some(root => contains(root, path))) throw new MaterializationRecoveryError();
   const root = [...options.roots].sort((a, b) => b.length - a.length).find((root) => root !== path && contains(root, path));
   if (!root) throw new MaterializationRecoveryError();
   return root;

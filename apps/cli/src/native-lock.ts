@@ -6,9 +6,9 @@ import { z } from "zod";
 const pathSchema = z.string().min(1).max(4096);
 const identity = z.string().min(1).max(1024);
 const parentSchema = z.object({ path: pathSchema, identity }).strict();
-const schema = z.object({ version: z.literal(1), id: z.uuid(), root: pathSchema, path: pathSchema,
+export const nativeLockSchema = z.object({ version: z.literal(1), id: z.uuid(), root: pathSchema, path: pathSchema,
   parents: z.array(parentSchema).min(1).max(64), artifact: parentSchema, anchorIdentity: identity }).strict();
-export type NativeLockPlan = z.infer<typeof schema>;
+export type NativeLockPlan = z.infer<typeof nativeLockSchema>;
 export interface NativeLockOptions {
   /** Independently derived exact Git lock grants, never authority from the plan. */
   grants: ReadonlyArray<{ root: string; path: string }>;
@@ -94,8 +94,13 @@ export async function releaseNativeLock(value: NativeLockPlan, options: NativeLo
   } catch { throw fail(); }
 }
 
+/** Observational mutation/replay barrier: never recreate a disappeared lock. */
+export async function assertNativeLockHeld(value: NativeLockPlan, options: NativeLockOptions): Promise<void> {
+  try { if (!(await inspect(value, options)).held) throw fail(); } catch { throw fail(); }
+}
+
 async function inspect(value: NativeLockPlan, options: NativeLockOptions) {
-  const plan = schema.parse(value);
+  const plan = nativeLockSchema.parse(value);
   if (grantedRoot(plan.path, options) !== plan.root || plan.artifact.path !== `${plan.path}.statecase-transaction-${plan.id}.staged`) throw fail();
   const parents = await observeParents(plan.root, plan.path);
   if (JSON.stringify(parents) !== JSON.stringify(plan.parents)) throw fail();

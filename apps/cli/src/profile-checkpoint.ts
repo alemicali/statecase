@@ -7,11 +7,14 @@ import type { LocalConfig } from "./config.js";
 import { decodeProfile, MAX_PROFILE_BYTES, ProfileFormatError } from "./profile-format.js";
 import { applyRecoverableFileTransaction, recoverFileTransactions, type MaterializationRecoveryOptions, type MaterializationRecoveryResult } from "./materialization-recovery.js";
 import type { FileTransaction } from "./materialize.js";
+import { acquireNativeLock, assertNativeLockHeld, releaseNativeLock, type NativeLockOptions } from "./native-lock.js";
+import { gitIndexFiles, gitIndexGrants, gitIndexSchema, gitMetadataExclusions, prepareGitIndexes, validateGitIndexes, type GitIndexParticipant } from "./git-index-participant.js";
 
-const MAX_CHECKPOINT_BYTES = MAX_PROFILE_BYTES * 2 + 16 * 1024;
+const MAX_CHECKPOINT_BYTES = MAX_PROFILE_BYTES * 2 + 2 * 1024 * 1024;
 const hash = z.string().regex(/^[0-9a-f]{64}$/u);
-const schema = z.object({ version: z.literal(1), id: z.uuid(), phase: z.enum(["prepared", "applying", "settled"]),
+const schema = z.object({ version: z.union([z.literal(1), z.literal(2)]), id: z.uuid(), phase: z.enum(["prepared", "applying", "settled"]),
   original: z.string().max(MAX_PROFILE_BYTES), beforeHash: hash, afterHash: hash,
+  gitIndexes: z.array(gitIndexSchema).max(32).optional(),
   settled: z.object({ outcome: z.enum(["rollback", "cleanup"]), profileHash: hash }).strict().optional() }).strict();
 type Checkpoint = z.infer<typeof schema>;
 export interface ProfileCheckpointIO {
@@ -20,7 +23,10 @@ export interface ProfileCheckpointIO {
 }
 export interface ProfileCheckpointOptions {
   dryRun?: boolean;
+  /** Internal prepared participants, restricted to original configured Git roots. */
+  workspaceRoots?: readonly string[];
   afterBoundary?: (phase: Parameters<NonNullable<MaterializationRecoveryOptions["afterBoundary"]>>[0] |
+    `native-${Parameters<NonNullable<NativeLockOptions["afterBoundary"]>>[0]}` |
     "checkpoint-published" | "file-plan-published" | "checkpoint-applying" | "checkpoint-settled" | "files-finished", index: number) => void | Promise<void>;
 }
 type Roots = (config: LocalConfig) => string[];
@@ -49,18 +55,26 @@ export async function applyProfileCheckpoint(home: string, before: string, after
   await assertNoProfileCheckpoint(home);
   const original = decodeProfile(before), desired = decodeProfile(after);
   if (original.format !== 2 || desired.format !== 2 || invariantProfile(original.config) !== invariantProfile(desired.config)) throw fail();
-  let checkpoint: Checkpoint = { version: 1, id: crypto.randomUUID(), phase: "prepared", original: before, beforeHash: digest(before), afterHash: digest(after) };
+  const gitIndexes = await prepareGitIndexes(original.config, options.workspaceRoots ?? []);
+  let checkpoint: Checkpoint = { version: gitIndexes.length ? 2 : 1, id: crypto.randomUUID(), phase: "prepared", original: before, beforeHash: digest(before), afterHash: digest(after), ...(gitIndexes.length ? { gitIndexes } : {}) };
   let saved = await publish(home, checkpoint, null, io);
   const bytes = new TextEncoder().encode(after);
   try {
     await options.afterBoundary?.("checkpoint-published", -1);
+    await assertIndexes(original.config, gitIndexes, false);
+    for (const [index, participant] of gitIndexes.entries()) await acquireNativeLock(participant.lock, lockOptions(gitIndexes, options, index));
+    await assertIndexes(original.config, gitIndexes, true);
+    const indexes = new Set(gitIndexFiles(gitIndexes));
+    if (transaction.deletes.some(path => indexes.has(path)) || transaction.symlinks?.some(link => indexes.has(link.path))) throw fail();
     await applyRecoverableFileTransaction({ ...transaction, finalWrites: [{ path: profilePath(home), bytes, mode: 0o600 }],
       beforeCommit: async (index, path) => {
+        await assertIndexes(original.config, gitIndexes, true);
         if (path === profilePath(home)) { if (await io.read(path) !== before) throw fail(); }
         else await transaction.beforeCommit?.(index, path);
       },
     }, {
-      directory: join(home, "materialization"), roots: roots(original.config), files: [profilePath(home)],
+      ...fileAuthority(home, original.config, roots, gitIndexes),
+      beforeMutation: () => assertIndexes(original.config, gitIndexes, true),
       afterBoundary: async (phase, index) => {
         if (phase === "prepared") {
           await options.afterBoundary?.("file-plan-published", -1);
@@ -71,19 +85,20 @@ export async function applyProfileCheckpoint(home: string, before: string, after
         await options.afterBoundary?.(phase, index);
       },
       beforeForget: async (result) => {
+        await assertIndexes(original.config, gitIndexes, true);
         checkpoint = await decision(home, checkpoint, result, io);
         saved = await publish(home, checkpoint, saved, io);
         await options.afterBoundary?.("checkpoint-settled", -1);
       },
     });
     await options.afterBoundary?.("files-finished", -1);
-    await retire(home, checkpoint, saved, io);
+    await retire(home, checkpoint, saved, io, options);
   } catch (error) {
     // A normal caught rollback may already have a durable receipt. Never infer
     // completion from a missing journal once native mutation was admitted.
     if (!await exists(activePath(home))) {
       const current = await readCheckpoint(home, io);
-      if (current) await retire(home, current.value, current.text, io);
+      if (current) await retire(home, current.value, current.text, io, options);
     }
     throw error;
   } finally { bytes.fill(0); }
@@ -95,14 +110,16 @@ export async function recoverProfileCheckpoint(home: string, roots: Roots, io: P
     const loaded = await readCheckpoint(home, io);
     if (!loaded) { await assertNoProfileCheckpoint(home); return { pending: false, outcome: "none", targets: 0 }; }
     let checkpoint = loaded.value, saved = loaded.text;
+    const original = decodeProfile(checkpoint.original).config, gitIndexes = checkpoint.gitIndexes ?? [];
     const journalExists = await exists(activePath(home));
+    await assertIndexes(original, gitIndexes, journalExists);
     if (!journalExists) {
       await canRetire(home, checkpoint, io);
       const result: MaterializationRecoveryResult = { pending: true, outcome: checkpoint.settled?.outcome ?? "rollback", targets: 0 };
-      if (!options.dryRun) await retire(home, checkpoint, saved, io);
+      if (!options.dryRun) await retire(home, checkpoint, saved, io, options);
       return result;
     }
-    const configured = { directory: join(home, "materialization"), roots: roots(decodeProfile(checkpoint.original).config), files: [profilePath(home)] };
+    const configured = fileAuthority(home, original, roots, gitIndexes);
     const preview = await recoverFileTransactions({ ...configured, dryRun: true });
     if (checkpoint.phase === "settled") {
       if (checkpoint.settled!.outcome !== preview.outcome) throw fail();
@@ -114,15 +131,17 @@ export async function recoverProfileCheckpoint(home: string, roots: Roots, io: P
       saved = await publish(home, checkpoint, saved, io);
     }
     const result = await recoverFileTransactions({ ...configured,
+      beforeMutation: () => assertIndexes(original, gitIndexes, true),
       afterBoundary: options.afterBoundary,
       beforeForget: async (result) => {
+        await assertIndexes(original, gitIndexes, true);
         checkpoint = await decision(home, checkpoint, result, io);
         saved = await publish(home, checkpoint, saved, io);
         await options.afterBoundary?.("checkpoint-settled", -1);
       },
     });
     await options.afterBoundary?.("files-finished", -1);
-    await retire(home, checkpoint, saved, io);
+    await retire(home, checkpoint, saved, io, options);
     return result;
   } catch { throw fail(); }
 }
@@ -140,12 +159,30 @@ async function canRetire(home: string, checkpoint: Checkpoint, io: ProfileCheckp
   const current = await io.read(profilePath(home));
   if (current === null || digest(current) !== expected) throw fail();
 }
-async function retire(home: string, checkpoint: Checkpoint, saved: string, io: ProfileCheckpointIO): Promise<void> {
+async function retire(home: string, checkpoint: Checkpoint, saved: string, io: ProfileCheckpointIO, options: ProfileCheckpointOptions): Promise<void> {
   if (await exists(activePath(home))) throw fail();
   await canRetire(home, checkpoint, io);
   if (await io.read(checkpointPath(home), { maximumBytes: MAX_CHECKPOINT_BYTES, private: true }) !== saved) throw fail();
+  const gitIndexes = checkpoint.gitIndexes ?? [];
+  await assertIndexes(decodeProfile(checkpoint.original).config, gitIndexes, false);
+  for (let index = gitIndexes.length - 1; index >= 0; index--) await releaseNativeLock(gitIndexes[index].lock, lockOptions(gitIndexes, options, index));
   await rm(checkpointPath(home));
   const directory = await open(home, "r"); try { await directory.sync(); } finally { await directory.close(); }
+}
+function lockOptions(participants: readonly GitIndexParticipant[], options: ProfileCheckpointOptions, index: number): NativeLockOptions {
+  return { grants: gitIndexGrants(participants), afterBoundary: phase => options.afterBoundary?.(`native-${phase}`, index) };
+}
+async function assertIndexes(config: LocalConfig, participants: readonly GitIndexParticipant[], held: boolean): Promise<void> {
+  await validateGitIndexes(config, participants);
+  const grants = gitIndexGrants(participants);
+  // Validate the complete set before replaying any file or releasing any lock.
+  for (const participant of participants) {
+    if (held) await assertNativeLockHeld(participant.lock, { grants });
+    else await releaseNativeLock(participant.lock, { grants, dryRun: true });
+  }
+}
+function fileAuthority(home: string, config: LocalConfig, roots: Roots, participants: readonly GitIndexParticipant[]) {
+  return { directory: join(home, "materialization"), roots: roots(config), files: [profilePath(home), ...gitIndexFiles(participants)], excludedRoots: gitMetadataExclusions(config, participants) };
 }
 async function readCheckpoint(home: string, io: ProfileCheckpointIO): Promise<{ value: Checkpoint; text: string } | null> {
   const text = await io.read(checkpointPath(home), { maximumBytes: MAX_CHECKPOINT_BYTES, private: true });
@@ -153,6 +190,7 @@ async function readCheckpoint(home: string, io: ProfileCheckpointIO): Promise<{ 
   try {
     const value = schema.parse(JSON.parse(text));
     if (Buffer.byteLength(value.original) > MAX_PROFILE_BYTES || digest(value.original) !== value.beforeHash || decodeProfile(value.original).format !== 2 ||
+        (value.version === 2 ? !value.gitIndexes?.length : value.gitIndexes !== undefined) ||
         (value.phase === "settled") !== Boolean(value.settled) || (value.settled && value.settled.profileHash !== (value.settled.outcome === "cleanup" ? value.afterHash : value.beforeHash))) throw fail();
     return { value, text };
   } catch { throw fail(); }

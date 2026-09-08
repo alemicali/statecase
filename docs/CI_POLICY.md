@@ -28,6 +28,8 @@ Branch protection should require these logical checks on pull requests:
    Also run the ADR-0033 native Git lock suite on that runner: persisted inode
    ownership before native publication, real Git writer exclusion, actual
    SIGKILL/recovery and refusal to remove foreign or changed lock evidence.
+   Include ADR-0034 repository-derived grants and the real ConfigStore Git-index
+   checkpoint suites, including linked worktrees and interrupted release/replay.
 6. `background-sync` — two authenticated daemon processes with local
    workerd/D1/R2, interrupted object upload, durable journal replay, offline
    restart, disjoint updates, deletion, and idle no-op verification. All account
@@ -53,6 +55,12 @@ Branch protection should require these logical checks on pull requests:
 Jobs use `npm ci`, minimum permissions, dependency caching, concurrency
 cancellation, timeouts, and no production credentials. CI forks receive no
 secrets.
+
+The portable Vitest suite caps concurrent workers at half the available CPU
+parallelism, at least one and at most four. Recovery suites also spawn real Git,
+esbuild and independent Node processes; worker scheduling must leave capacity for
+those children. This does not increase per-test timeouts, skip correctness tests
+or retry failures. Preserve failing-run evidence when adjusting orchestration.
 
 ## Runtime matrix
 

@@ -39,6 +39,8 @@ export interface PreparedTarget {
 }
 
 export interface MaterializationLifecycle {
+  /** Outer participants must remain owned even for a caught rollback. */
+  beforeRollback?(): Promise<void>;
   prepare(id: string, targets: readonly PreparedTarget[]): Promise<void>;
   intent(index: number, target: PreparedTarget): Promise<void>;
   guard(index: number, target: PreparedTarget): Promise<void>;
@@ -128,8 +130,12 @@ export async function applyFileTransaction(transaction: FileTransaction): Promis
       await transaction.lifecycle?.mutation("install", index, target);
     }
   } catch (cause) {
+    // Losing an outer native lock cannot authorize unprotected rollback or
+    // removal of recovery evidence. Leave the durable journal for inspection.
+    await transaction.lifecycle?.beforeRollback?.();
     const rollbackErrors: unknown[] = [];
     for (const target of [...targets].reverse()) {
+      await transaction.lifecycle?.beforeRollback?.();
       try {
         await assertArtifact(target);
         if ((target.installed || target.backup) &&

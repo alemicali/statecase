@@ -1,5 +1,5 @@
 import { execFile, spawn } from "node:child_process";
-import { lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,7 +26,7 @@ beforeAll(async () => {
 afterAll(async () => { await rm(bundleRoot, { recursive: true, force: true }); });
 afterEach(async () => { await Promise.all(temporary.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 async function fixture(linked = false) {
-  const root = await mkdtemp(join(tmpdir(), "statecase-git-profile-")); temporary.push(root);
+  const root = await realpath(await mkdtemp(join(tmpdir(), "statecase-git-profile-"))); temporary.push(root);
   const main = join(root, "main"), home = join(root, "profile"); await mkdir(main);
   await git(main, "init", "-q", "-b", "main"); await writeFile(join(main, "note"), "original");
   await git(main, "add", "note"); await git(main, "commit", "-qm", "baseline");

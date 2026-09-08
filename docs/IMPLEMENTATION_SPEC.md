@@ -782,9 +782,18 @@ same-filesystem anchor, persist its identity in the outer journal, then hard-lin
 it exclusively to the native lock name. Recovery removes only proven matching
 inodes and replays directory durability even when an earlier unlink is visible.
 Exact grants, complete parent/artifact observations, bounded private marker reads
-and unknown-child/foreign-lock refusal are required. The production checkpoint
-does not yet persist these descriptors; ordinary Git locking remains unchanged
-until native lock and reference/index decisions join that transaction.
+and unknown-child/foreign-lock refusal are required.
+
+ADR-0034 now persists repository-derived index ownership in the real internal
+ConfigStore checkpoint. Derive exact index/lock grants from original configured
+Git roots, validate directory/gitfile/commondir identities, and exclude other Git
+metadata from directory grants. Record every descriptor before native lock
+publication; hold verified ownership through forward writes, caught rollback,
+restart replay and the shared index/file/profile decision. Retain the outer receipt
+until every native release is directory-durable. Version-two checkpoints require
+their Git participants and preview never mutates. Ordinary Git locking/runtime
+remain unchanged until HEAD/ref/object-retention and activity participants also
+join the prepared-workspace transaction; this is not full Git crash qualification.
 
 Baseline blobs that conform to the Git LFS pointer format MUST NOT be treated as
 the referenced content. Capture and hydration report

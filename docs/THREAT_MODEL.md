@@ -357,6 +357,19 @@ does not authenticate a journal or decide transaction outcome. Production
 repository authority/outer-checkpoint integration, pre-publication orphan cleanup,
 all power-loss boundaries and arbitrary same-user filesystem races remain open.
 
+ADR-0034 integrates native index ownership into the real profile checkpoint.
+Original selected Git roots plus stable re-derived directory/gitfile/commondir
+observations supply exact index/lock authority; journal paths cannot grant
+themselves access. Native metadata discovery uses no ambient Git routing or
+global/system configuration and suppresses raw command diagnostics. Excluded
+Git subtrees prevent a broad worktree/Drop root from authorizing sibling metadata.
+All lock descriptors precede native publication and survive until durable release.
+Held-lock guards also cover caught rollback and restart replay: ownership loss
+preserves partial state/evidence rather than attempting unprotected rollback.
+This is local observational authority, not journal authentication, atomic CAS,
+object/shared-index retention, HEAD/ref recovery or ordinary runtime enablement.
+Those requirements and the broader release gates above remain open.
+
 ### Workspace dependency incompleteness
 
 Threats: transcript restores without modified code; missed watcher event;

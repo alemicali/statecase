@@ -4,6 +4,36 @@ Status: foreground sync implemented and deployed; release qualification in progr
 production launch
 Last updated: 2026-09-08
 
+## Git index joins the real profile checkpoint — 2026-09-08
+
+Native-lock candidate `9c8130c` completed all nine jobs successfully in
+[CI 34238860108](https://github.com/alemicali/statecase/actions/runs/34238860108).
+ADR-0034 now joins repository-derived exact index grants and owned native locks
+to the actual internal ConfigStore checkpoint. Persist every descriptor before
+native publication, hold exclusion through index/file/profile decisions and
+retain the outer receipt until directory-durable native release. Linked-worktree
+indices outside the checkout, actual SIGKILL/fresh-process replay, interrupted
+release and lost-ownership refusal are tested. Git directory grants exclude
+unrelated native metadata; the new path uses no real operator profile or bucket.
+
+The final complete local check passed 1,228 tests in 70 files, lint/types/build
+and clean-installed package smoke. New Git index participant branches are 93.75%
+with 100% lines/functions; profile checkpoint branches are 92.85%, native locks
+94.73%, file replay 92.30% and materializer 95.72%. Global branches are 92.81%
+(5193/5595). The first full check passed 1,225 tests; a subsequent run with three
+extra cases exposed a pre-existing WS-034 five-second timeout. A focused diagnostic
+passed, then bounding concurrent Vitest workers left capacity for real child
+processes. The final full check above passed without raising any timeout, reducing
+coverage or skipping tests. This is not a waiver of future timing failures.
+
+The exact-candidate hosted checks, including the newly extended macOS suite,
+remain pending. Full HEAD/ref/object/shared-index retention and replay, prepared-
+workspace and normal runtime integration, native activity barriers, all low-level
+faults/power loss/orphans, mixed clients and latest packaged independent-host
+live-cloud UAT remain required. The index participant is not a same-HEAD-only
+replacement scope for the requested product. The live Worker and real profiles
+are unchanged; release readiness and every broader gate below remain open.
+
 ## Recoverable native Git lock ownership — 2026-09-08
 
 Workspace-preparation candidate `54836ec` passed all nine jobs in

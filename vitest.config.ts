@@ -1,7 +1,11 @@
 import { defineConfig } from "vitest/config";
+import { availableParallelism } from "node:os";
 
 export default defineConfig({
   test: {
+    // These suites also run Git/esbuild/child Node VMs. Leave capacity for
+    // those children without raising timeouts or skipping correctness tests.
+    maxWorkers: Math.max(1, Math.min(4, Math.floor(availableParallelism() / 2))),
     exclude: ["apps/cloud/worker-test/**", "**/node_modules/**"],
     coverage: {
       provider: "v8",

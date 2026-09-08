@@ -4,6 +4,14 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Integrate repository-derived Git index ownership into the internal durable
+  profile checkpoint, including linked-worktree indices outside their checkout.
+  Persist all native lock descriptors before publication, hold exclusion through
+  index/file/profile rollback or commit, and retain receipts until durable release.
+  Refuse sibling Git metadata and stop caught/restart rollback on ownership loss.
+  Qualify actual SIGKILL/restart paths on synthetic repositories; full HEAD/ref,
+  prepared-workspace/runtime integration and release qualification remain open.
+
 - Add an internal recoverable native Git lock ownership primitive: persist an
   exclusively prepared anchor identity before native hard-link publication,
   refuse foreign/recreated locks and replay guarded release after actual SIGKILL.

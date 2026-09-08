@@ -517,6 +517,13 @@ unit assertion for historical executable evidence.
   foreign/recreated lock refusal, exact grants, descriptor/parent/anchor integrity
   and non-mutating preview. This suite is also required on the disposable macOS
   runner; production outer-journal integration remains open.
+  ADR-0034 joins exact repository-derived index grants and durable native lock
+  descriptors to the real ConfigStore checkpoint. Actual SIGKILL/restart tests
+  cover linked-worktree index/profile/file rollback, committed cleanup and each
+  release boundary. Exercise all-participant validation, lost ownership during
+  forward/caught/restart paths, layout/grant/descriptor tampering, non-mutating
+  preview, ambient Git redirection and sibling/index-kind refusal. Full HEAD/ref,
+  prepared-workspace/runtime and cross-host qualification still remain required.
 - `RT-007`: two daemons for one profile cannot run concurrently.
 - `RT-008`: sleep/wake and network change trigger reconcile without a storm.
 - `RT-009`: rapid file events debounce but the maximum publish deadline holds.

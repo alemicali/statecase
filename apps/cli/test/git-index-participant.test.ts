@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -11,7 +11,7 @@ import { releaseNativeLock } from "../src/native-lock.js";
 const execute = promisify(execFile), temporary: string[] = [];
 afterEach(async () => { vi.unstubAllEnvs(); await Promise.all(temporary.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 async function fixture() {
-  const root = await mkdtemp(join(tmpdir(), "statecase-git-authority-")); temporary.push(root);
+  const root = await realpath(await mkdtemp(join(tmpdir(), "statecase-git-authority-"))); temporary.push(root);
   const workspace = join(root, "workspace"); await mkdir(workspace);
   const env = { PATH: process.env.PATH, HOME: root, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: join(root, "empty-config") } as unknown as NodeJS.ProcessEnv;
   await execute("git", ["-C", workspace, "init", "-q", "-b", "main"], { env });
