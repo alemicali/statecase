@@ -1,5 +1,5 @@
 import { execFile, spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -137,5 +137,64 @@ describe("prepared workspace and profile share one durable decision (RT-006, WS-
     expect(await readFile(join(f.home, "config.json"), "utf8")).toBe(f.original);
     expect(await readFile(join(f.target, ".git", "HEAD"))).toEqual(f.beforeHead);
     expect(await f.store.recoverMaterialization()).toMatchObject({ pending: false });
+  });
+  it.each([
+    ["reference-link-created", "rollback"], ["reference-link-durable", "rollback"], ["install", "rollback"],
+    ["checkpoint-settled", "cleanup"], ["retention-removed", "cleanup"], ["reference-native-unlinked", "cleanup"],
+    ["reference-anchor-unlinked", "cleanup"], ["reference-artifact-removed", "cleanup"], ["reference-released-durable", "cleanup"],
+  ] as const)("replays after SIGKILL at %s without mixing Git and profile decisions", async (phase, outcome) => {
+    const f = await fixture(), originalLog = await readFile(join(f.target, ".git", "logs", "HEAD"));
+    expect(await child(f, applyScript(f, phase))).toEqual({ code: null, signal: "SIGKILL" });
+    const pending = await readFile(join(f.home, "profile-materialization.json"));
+    expect(await f.store.recoverMaterialization({ dryRun: true })).toMatchObject({ outcome });
+    expect(await readFile(join(f.home, "profile-materialization.json"))).toEqual(pending);
+    expect(await child(f, `await new ConfigStore(${JSON.stringify(f.home)}).recoverMaterialization();`)).toEqual({ code: 0, signal: null });
+    expect((await captureWorkspace(f.target)).capsule).toEqual((outcome === "rollback" ? f.expectedCurrent : f.captured).capsule);
+    if (outcome === "rollback") {
+      expect(await readFile(join(f.home, "config.json"), "utf8")).toBe(f.original);
+      expect(await readFile(join(f.target, ".git", "logs", "HEAD"))).toEqual(originalLog);
+    } else expect((await f.store.loadConfig()).applied.project.revisionId).toBe("incoming");
+    expect(await git(f.target, "for-each-ref", "refs/statecase/transactions/")).toBe("");
+    for (const path of ["index.lock", "HEAD.lock", "packed-refs.lock", "gc.pid.lock", "refs/heads/incoming.lock"]) {
+      await expect(lstat(join(f.target, ".git", path))).rejects.toMatchObject({ code: "ENOENT" });
+    }
+    expect(await f.store.recoverMaterialization()).toMatchObject({ pending: false });
+  });
+  it.each(["refs/heads/incoming", "logs/HEAD", "logs/refs/heads/incoming"])("restores native %s exactly after its installation is interrupted", async path => {
+    const f = await fixture("packed"), originalLog = await readFile(join(f.target, ".git", "logs", "HEAD"));
+    expect(await child(f, applyScript(f, "install", join(f.target, ".git", path)))).toEqual({ code: null, signal: "SIGKILL" });
+    await f.store.recoverMaterialization();
+    expect(await git(f.target, "rev-parse", "refs/heads/incoming")).toBe(f.beforeCommit);
+    expect(await readFile(join(f.target, ".git", "logs", "HEAD"))).toEqual(originalLog);
+    expect((await captureWorkspace(f.target)).capsule).toEqual(f.expectedCurrent.capsule);
+    expect(await readFile(join(f.home, "config.json"), "utf8")).toBe(f.original);
+  });
+  it("retains all evidence when a committed pin is replaced by a foreign file", async () => {
+    const f = await fixture(); expect(await child(f, applyScript(f, "files-finished"))).toEqual({ code: null, signal: "SIGKILL" });
+    const path = join(f.home, "profile-materialization.json"), checkpoint = JSON.parse(await readFile(path, "utf8"));
+    const [first, second] = checkpoint.gitReferences.pins;
+    const original = await readFile(first.path); await rm(second.path); await writeFile(second.path, "foreign\n");
+    for (const dryRun of [true, false]) await expect(f.store.recoverMaterialization({ dryRun })).rejects.toMatchObject({ code: "PROFILE_RECOVERY_REQUIRED" });
+    expect(await readFile(first.path)).toEqual(original); expect(await readFile(second.path, "utf8")).toBe("foreign\n");
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual(checkpoint);
+    expect(await lstat(join(f.target, ".git", "HEAD.lock"))).toBeDefined();
+  });
+  it.each([false, true])("can become unborn while removing an existing target branch (packed=%s)", async packed => {
+    const f = await fixture("unborn"); await git(f.target, "branch", "empty");
+    if (packed) await git(f.target, "pack-refs", "--all", "--prune");
+    const config = await f.store.loadConfig(); config.applied.project = { revisionId: "incoming", digests: {} };
+    await f.store.materializeWorkspaceConfig(config, [{ root: f.target, captured: f.captured, expectedCurrent: f.expectedCurrent, gitFetch: "auto" }], { writes: [], deletes: [] });
+    expect((await captureWorkspace(f.target)).capsule).toEqual(f.captured.capsule);
+    await expect(git(f.target, "rev-parse", "--verify", "refs/heads/empty")).rejects.toThrow();
+    await expect(lstat(join(f.target, ".git", "logs", "refs", "heads", "empty"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await git(f.target, "rev-parse", "refs/heads/main")).toBe(f.beforeCommit);
+  });
+  it("coordinates linked-worktree HEAD and logs outside its checkout without moving the main worktree", async () => {
+    const f = await fixture(), linked = join(f.root, "linked"); await git(f.target, "worktree", "add", "-qb", "linked", linked);
+    const config = await f.store.loadConfig(); config.workspaces = [{ id: "project", path: linked, sync: "git" }]; await f.store.saveConfig(config);
+    await f.store.materializeWorkspaceConfig(config, [{ root: linked, captured: f.captured, gitFetch: "auto" }], { writes: [], deletes: [] });
+    expect((await captureWorkspace(linked)).capsule).toEqual(f.captured.capsule);
+    expect((await captureWorkspace(f.target)).capsule).toEqual(f.expectedCurrent.capsule);
+    await git(linked, "add", "untracked"); await git(f.target, "add", "note");
   });
 });
