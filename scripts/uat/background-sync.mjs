@@ -1,58 +1,79 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import Database from "better-sqlite3";
 
-// Fully local workerd/D1/R2 + real CLI daemon processes. No Cloudflare account
-// or existing harness/profile is consulted. All credentials are disposable.
+// Local by default. Live mode requires explicit scope/cleanup configuration;
+// it never grants signup access or deletes remote objects on its own.
 const execute = promisify(execFile);
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const root = await mkdtemp(join(tmpdir(), "stc-background-"));
-const cli = join(repository, "apps/cli/dist/bin.js");
+const remoteApi = process.env.STATECASE_UAT_API_URL;
+const nativeLinux = process.env.STATECASE_UAT_NATIVE_LINUX === "1";
+const parent = process.env.STATECASE_UAT_PARENT ?? tmpdir();
+const targetsPath = process.env.STATECASE_UAT_TARGETS;
+if (remoteApi) {
+  assert.equal(remoteApi, "https://statecase-api.hi-0e6.workers.dev");
+  assert.equal(process.env.STATECASE_UAT_CONFIRM, "create-and-modify-remote-state");
+  assert.match(process.env.STATECASE_UAT_EMAIL ?? "", /^statecase-background-[a-f0-9]+@example\.com$/u);
+  assert.ok(targetsPath && isAbsolute(targetsPath), "explicit external cleanup-target path required");
+}
+if (nativeLinux) {
+  assert.equal(process.platform, "linux");
+  assert.ok(isAbsolute(parent) && !resolve(parent).startsWith("/tmp"), "native PrivateTmp requires a persistent fixture parent");
+}
+const root = await mkdtemp(join(parent, "stc-background-"));
+const cli = resolve(process.env.STATECASE_UAT_CLI ?? join(repository, "apps/cli/dist/bin.js"));
 const wrangler = join(repository, "node_modules/wrangler/bin/wrangler.js");
 const children = [];
 const proxies = [];
 const env = { PATH: process.env.PATH, HOME: join(root, "user-home"), TMPDIR: join(root, "tmp"), WRANGLER_SEND_METRICS: "false",
+  XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS,
   CODEX_HOME: join(root, "codex"), CODEX_SQLITE_HOME: join(root, "codex-sqlite"), CLAUDE_CONFIG_DIR: join(root, "claude") };
-const email = "background@example.invalid";
+const email = remoteApi ? process.env.STATECASE_UAT_EMAIL : "background@example.invalid";
 const passphrase = randomBytes(32).toString("base64url");
 const password = randomBytes(32).toString("base64url");
 let apiUrl;
 let vault;
+let nativeDefinition;
+let nativeLinked = false;
 const machines = {};
 try {
+  if (nativeLinux) assert.equal((await manager("show", "statecase.service", "--property=LoadState", "--value")).trim(), "not-found", "refusing to interfere with existing native service");
   await mkdir(env.HOME, { recursive: true, mode: 0o700 });
   await mkdir(env.TMPDIR, { mode: 0o700 });
-  const reservation = createServer();
-  await listen(reservation);
-  const port = reservation.address().port;
-  await close(reservation);
-  apiUrl = `http://127.0.0.1:${port}`;
-  const configPath = join(root, "wrangler.json");
-  const base = JSON.parse(await readFile(join(repository, "apps/cloud/wrangler.jsonc"), "utf8"));
-  await writeFile(configPath, JSON.stringify({
-    name: "statecase-background-uat", main: join(repository, "apps/cloud/src/index.ts"),
-    compatibility_date: base.compatibility_date, compatibility_flags: base.compatibility_flags,
-    vars: { STATECASE_ENV: "test", STATECASE_ALLOWED_EMAILS: email, BETTER_AUTH_URL: apiUrl,
-      BETTER_AUTH_SECRET: randomBytes(32).toString("base64url") },
-    d1_databases: [{ binding: "DB", database_name: "statecase-background-uat",
-      database_id: "00000000-0000-0000-0000-000000000001", migrations_dir: join(repository, "apps/cloud/migrations") }],
-    r2_buckets: [{ binding: "BLOBS", bucket_name: "statecase-background-uat" }],
-    durable_objects: base.durable_objects, migrations: base.migrations,
-  }), { mode: 0o600, flag: "wx" });
-  await tool(wrangler, ["d1", "migrations", "apply", "statecase-background-uat", "--local", "--config", configPath, "--persist-to", join(root, "cloud")], env);
-  const backend = child(wrangler, ["dev", "--local", "--config", configPath, "--persist-to", join(root, "cloud"),
-    "--ip", "127.0.0.1", "--port", String(port), "--inspector-port", "0", "--log-level", "error"], env);
-  await eventually(async () => {
-    assertLive(backend);
-    return (await fetch(`${apiUrl}/health`, { signal: AbortSignal.timeout(1000) })).ok;
-  }, "local backend readiness", 30_000);
+  if (remoteApi) apiUrl = remoteApi;
+  else {
+    const reservation = createServer();
+    await listen(reservation);
+    const port = reservation.address().port;
+    await close(reservation);
+    apiUrl = `http://127.0.0.1:${port}`;
+    const configPath = join(root, "wrangler.json");
+    const base = JSON.parse(await readFile(join(repository, "apps/cloud/wrangler.jsonc"), "utf8"));
+    await writeFile(configPath, JSON.stringify({
+      name: "statecase-background-uat", main: join(repository, "apps/cloud/src/index.ts"),
+      compatibility_date: base.compatibility_date, compatibility_flags: base.compatibility_flags,
+      vars: { STATECASE_ENV: "test", STATECASE_ALLOWED_EMAILS: email, BETTER_AUTH_URL: apiUrl,
+        BETTER_AUTH_SECRET: randomBytes(32).toString("base64url") },
+      d1_databases: [{ binding: "DB", database_name: "statecase-background-uat",
+        database_id: "00000000-0000-0000-0000-000000000001", migrations_dir: join(repository, "apps/cloud/migrations") }],
+      r2_buckets: [{ binding: "BLOBS", bucket_name: "statecase-background-uat" }],
+      durable_objects: base.durable_objects, migrations: base.migrations,
+    }), { mode: 0o600, flag: "wx" });
+    await tool(wrangler, ["d1", "migrations", "apply", "statecase-background-uat", "--local", "--config", configPath, "--persist-to", join(root, "cloud")], env);
+    const backend = child(wrangler, ["dev", "--local", "--config", configPath, "--persist-to", join(root, "cloud"),
+      "--ip", "127.0.0.1", "--port", String(port), "--inspector-port", "0", "--log-level", "error"], env);
+    await eventually(async () => {
+      assertLive(backend);
+      return (await fetch(`${apiUrl}/health`, { signal: AbortSignal.timeout(1000) })).ok;
+    }, "local backend readiness", 30_000);
+  }
   const signup = await request("/api/auth/sign-up/email", { method: "POST", body: { email, name: "Background UAT", password } });
   assert.equal(signup.status, 200, "synthetic signup failed");
   const cookie = signup.headers.get("set-cookie");
@@ -70,6 +91,7 @@ try {
   }
   const kit = join(root, "recovery.json");
   vault = await command("a", ["vault", "create", "Background UAT", "--recovery-file", kit]);
+  if (remoteApi) await writeFile(targetsPath, JSON.stringify({ email, vaultId: vault.id }), { mode: 0o600, flag: "wx" });
   await command("b", ["vault", "join", vault.id, "--recovery-file", kit]);
   await writeFile(join(machines.a.drop, "context.txt"), "initial\n");
   const drop = await command("a", ["drop", "add", machines.a.drop, "--name", "Background context"]);
@@ -77,7 +99,14 @@ try {
   await command("b", ["drop", "map", drop.id, machines.b.drop]);
   await command("b", ["pull"]);
   for (const name of ["a", "b"]) {
-    machines[name].daemon = child(cli, ["daemon", "foreground"], machines[name].env);
+    if (nativeLinux && name === "a") {
+      nativeDefinition = (await command(name, ["daemon", "install", "--no-start"])).path;
+      await manager("link", "--runtime", nativeDefinition);
+      nativeLinked = true;
+      await assertNativeOwned();
+      machines[name].native = true;
+      await command(name, ["daemon", "start"]);
+    } else machines[name].daemon = child(cli, ["daemon", "foreground"], machines[name].env);
     await eventually(async () => (await status(name)).queued === false, `${name} authenticated daemon startup`);
   }
   phase("authenticated-startup");
@@ -96,17 +125,15 @@ try {
   assert.ok(interrupted.length > 0, "upload began without a durable running operation");
   assert.equal(await head(), beforeUpload, "held upload advanced the remote head");
   machines.a.proxy.offline = true;
-  await stop(machines.a.daemon, "SIGKILL");
+  await crashAndRestart("a");
   machines.a.proxy.holdUpload = false;
   await writeFile(join(machines.a.drop, "offline.txt"), "offline a\n");
-  machines.a.daemon = child(cli, ["daemon", "foreground"], machines.a.env);
   await eventually(async () => (await status("a")).queued === true, "visible offline journal");
   for (const operation of interrupted) assert.ok(journal("a").some((row) => row.id === operation.id), "restart discarded the interrupted operation");
   phase("interrupted-upload-journal-retained");
   await writeFile(join(machines.b.drop, "online.txt"), "online b\n");
   await eventually(async () => await head() !== beforeUpload, "online peer publishes while a remains offline");
-  await stop(machines.a.daemon, "SIGKILL");
-  machines.a.daemon = child(cli, ["daemon", "foreground"], machines.a.env);
+  await crashAndRestart("a");
   await eventually(async () => (await status("a")).queued === true, "offline process restart retains queued work");
   machines.a.proxy.offline = false;
   await content("b", "interrupted.txt", "upload interrupted before remote acceptance\n");
@@ -126,16 +153,30 @@ try {
   await new Promise((resolveWait) => setTimeout(resolveWait, 45_000));
   assert.equal(await head(), before, "idle daemons produced spurious revisions");
   phase("deletion-and-idle-noop");
-  for (const name of ["a", "b"]) assertLive(machines[name].daemon);
+  for (const name of ["a", "b"]) assert.equal((await status(name)).running, true);
 } finally {
-  await Promise.all(children.map((entry) => stop(entry)));
-  await Promise.all(proxies.map((proxy) => close(proxy.server)));
-  await rm(root, { recursive: true, force: true });
+  try {
+    if (nativeLinked) {
+      await assertNativeOwned();
+      await command("a", ["daemon", "stop"]);
+      await manager("disable", "--runtime", "statecase.service");
+      await manager("daemon-reload");
+      await command("a", ["daemon", "uninstall", "--no-stop", "--yes"]);
+      assert.equal((await manager("show", "statecase.service", "--property=LoadState", "--value")).trim(), "not-found");
+      nativeLinked = false;
+    }
+  } finally {
+    await Promise.all(children.map((entry) => stop(entry)));
+    await Promise.all(proxies.map((proxy) => close(proxy.server)));
+    // Keep the exact fixture available for recovery if ownership/cleanup failed.
+    if (!nativeLinked) await rm(root, { recursive: true, force: true });
+  }
 }
-console.log(JSON.stringify({ result: "pass", runtime: "two-authenticated-cli-daemons", backend: "local-workerd-d1-r2",
+console.log(JSON.stringify({ result: "pass", runtime: nativeLinux ? "systemd-user-plus-cli-peer" : "two-authenticated-cli-daemons", backend: remoteApi ? "live-cloudflare" : "local-workerd-d1-r2",
   automaticBidirectionalTransfer: true, interruptedUploadJournalReplay: true, offlineCrashRecovery: true, disjointConvergence: true,
   deletionPropagation: true, idleNoop: true, cleanupVerified: true,
-  boundary: "no native service manager, real harness, or live Cloudflare deployment qualified by this driver" }));
+  remoteCleanupRequired: Boolean(remoteApi),
+  boundary: "two isolated installations on one host; no real harness, separate physical peer, or machine reboot qualified" }));
 
 function phase(name) { console.log(JSON.stringify({ phase: name, result: "pass" })); }
 function child(entrypoint, args, childEnv) {
@@ -166,7 +207,26 @@ async function tool(entrypoint, args, commandEnv) {
 async function command(name, args, extraEnv = {}) {
   return JSON.parse((await tool(cli, ["--json", ...args], { ...machines[name].env, ...extraEnv })).trim().split("\n").at(-1));
 }
-async function status(name) { assertLive(machines[name].daemon); return command(name, ["daemon", "status"]); }
+async function status(name) { if (!machines[name].native) assertLive(machines[name].daemon); return command(name, ["daemon", "status"]); }
+async function manager(...args) {
+  try { return (await execute("systemctl", ["--user", ...args], { encoding: "utf8", timeout: 20_000 })).stdout; }
+  catch { throw new Error("fixture native service operation failed; diagnostics withheld"); }
+}
+async function assertNativeOwned() {
+  const fragment = (await manager("show", "statecase.service", "--property=FragmentPath", "--value")).trim();
+  assert.equal(await realpath(fragment), await realpath(nativeDefinition), "native fixture ownership changed");
+}
+async function crashAndRestart(name) {
+  if (machines[name].native) {
+    const previousPid = (await status(name)).pid;
+    await assertNativeOwned();
+    await manager("kill", "--signal=SIGKILL", "--kill-whom=main", "statecase.service");
+    await eventually(async () => (await status(name)).pid !== previousPid, "native automatic restart", 30_000);
+  } else {
+    await stop(machines[name].daemon, "SIGKILL");
+    machines[name].daemon = child(cli, ["daemon", "foreground"], machines[name].env);
+  }
+}
 async function content(name, file, expected) {
   await eventually(async () => (await readFile(join(machines[name].drop, file), "utf8")) === expected, `${name} receives ${file}`);
 }

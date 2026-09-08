@@ -321,6 +321,8 @@ deployed Worker test environment.
   object upload and SIGKILL, restart offline, reconcile disjoint peer writes,
   propagate deletion, and avoid idle revisions. Local workerd evidence is
   separate from live Cloudflare/native-manager qualification.
+  The combined Linux/live-service result is recorded in
+  `uat/2026-09-08-native-cloud-background.md`; its two installations share a host.
 - `RT-001`: setup resolves the real harness binary and refuses recursion.
 - `RT-002`: stdin/stdout/stderr, TTY dimensions, colors, and interactive input
   pass through unchanged.

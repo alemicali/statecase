@@ -3,8 +3,8 @@
 Status: deployed service
 Last deployment verified: 2026-09-08
 
-Last verified Worker version: `9d4c611d-ad57-485c-a627-bb6c26892710`
-(see the [live rotation report](uat/2026-09-08-key-rotation-daytona.md)).
+Last verified Worker version: `dd6894cf-d042-425b-9e3e-7906b75ede04`
+(see the [native/live background report](uat/2026-09-08-native-cloud-background.md)).
 Remote D1 migrations through `0005_vault_key_epochs.sql` are applied. The live
 health endpoint advertises scoped protocol `1.1` and legacy migration protocol
 `1.0`.
@@ -94,8 +94,10 @@ available. `statecase daemon status` uses owner-only local IPC.
 
 The [Linux lifecycle drill](uat/2026-09-08-native-systemd.md) passed with isolated
 fixtures. The [macOS lifecycle drill](uat/2026-09-08-native-launchd.md) passed
-on macOS 26.6.2 arm64 / Node 24.20.0. Authenticated background convergence and sleep/boot behavior
-remain release gates. Use `statecase daemon start|stop|status` after installation.
+on macOS 26.6.2 arm64 / Node 24.20.0. The combined native Linux/live Cloudflare
+background drill also passed with two isolated installations on one host.
+Separate-host/native-harness convergence and sleep/boot behavior remain gates.
+Use `statecase daemon start|stop|status` after installation.
 Start/stop are idempotent and verify the installed profile and loaded definition.
 Linux stop preserves autostart; macOS stop unloads the job so KeepAlive cannot
 respawn it. A different STATECASE_HOME cannot control the single native service

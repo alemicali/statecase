@@ -75,3 +75,13 @@ sleep/reboot, and indefinite unattended operation are not exercised here.
 Local `npm run check` passed 446 tests, 90.29% overall branch coverage, lint,
 typecheck, build, and clean-package installation. The new `background-sync` CI
 job repeats this standalone scenario on Node 24 without external credentials.
+
+## Native/live follow-up
+
+The driver now also accepts explicitly guarded native Linux and live-service
+modes. The default command remains local. The combined path passed with a
+cleanly installed package, a systemd-owned installation, and a separate local
+peer profile against Cloudflare; see the
+[native/live report](2026-09-08-native-cloud-background.md) for evidence, cleanup,
+and the same-host limitation. This follow-up does not broaden the claims of the
+original local run.

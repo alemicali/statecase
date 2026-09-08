@@ -139,15 +139,17 @@ duplicate-writer denial, and SIGKILL restart with an isolated unauthenticated
 profile. The [macOS launchd drill](uat/2026-09-08-native-launchd.md) also passed
 on macOS 26.6.2 arm64 with Node 24.20.0, including idempotent CLI start/stop and
 profile isolation. Definitions pin the installing Node interpreter.
-Sleep/reboot/network-change integration and authenticated multi-device
-background convergence are still required before background steady state is claimed.
+Sleep/reboot integration and separate-host/native-harness background convergence
+are still required before full background steady state is claimed.
 
 The [local authenticated background drill](uat/2026-09-08-background-sync.md)
 now exercises two real daemon processes against workerd/D1/R2: bidirectional
 transfer without manual sync, an interrupted encrypted upload, durable journal
 replay across SIGKILL/offline restart, disjoint writes, deletion, and idle no-op
-behavior. It does not combine a native manager with live Cloudflare or certify
-real harness resume; those remaining gates are not waived by local evidence.
+behavior. The subsequent [packaged native/live drill](uat/2026-09-08-native-cloud-background.md)
+passed the same interrupted-upload/replay/convergence sequence with real
+systemd automatic restarts against live Cloudflare. Its two device installations
+were on one host; separate-host and real harness resume evidence is not implied.
 
 Exact workspace capsules now reproduce staged and unstaged bytes separately,
 deletions, additions, modes, safe symlinks, detached and unborn repositories,
@@ -266,7 +268,7 @@ pre-restore Git state. The drill exposed and fixed detached-HEAD convergence in
 ordinary baseline acquisition. See the
 [workspace restore UAT](uat/2026-09-07-workspace-in-place-restore-daytona.md).
 
-Automated background steady state is not yet claimed. Authenticated background
+Full automated background steady state is not yet claimed. Separate-host/native-harness
 convergence, sleep/reboot qualification,
 real-version harness restore UAT, and real harness-version compatibility remain
 blocking work for a public or unattended release.

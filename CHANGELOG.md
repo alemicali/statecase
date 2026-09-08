@@ -4,6 +4,11 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Qualified the packaged native Linux/live Cloudflare background path: real
+  systemd automatic restarts, interrupted-upload journal replay, offline and
+  disjoint convergence, deletion, and idle no-op behavior. The opt-in UAT driver
+  preserves its fully local default and requires explicit live scope/cleanup
+  parameters. Temporary signup access and fixture D1/R2 data were removed.
 - Added authenticated multi-process background UAT against isolated local
   workerd/D1/R2: automatic bidirectional Drop sync, interrupted object upload,
   durable journal replay after SIGKILL, offline restart, disjoint convergence,

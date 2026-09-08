@@ -48,7 +48,7 @@ and retains a safety reserve before copying plaintext. A real Daytona run has
 qualified 2-GiB transfer and concurrent append merge. Daily reachability GC now
 applies 24 hourly, 30 daily, and 12 monthly UTC checkpoints plus protected
 snapshots, Session Capsule pins, and a 30-day grace period. Remaining release
-gates include authenticated background convergence,
+gates include separate-host/native-harness background convergence,
 sleep/reboot qualification, initialized-submodule hydration, live
 real-version harness restore UAT, process-reset rotation fault injection,
 and real-version Codex/Claude fixture certification. Local and workerd coverage
@@ -66,7 +66,9 @@ The [native macOS lifecycle drill](docs/uat/2026-09-08-native-launchd.md) also
 passed on macOS 26.6.2 arm64, including CLI start/stop and profile isolation.
 The [authenticated background drill](docs/uat/2026-09-08-background-sync.md)
 tests automatic two-device convergence and interrupted-upload journal replay
-against local workerd/D1/R2; native-manager/live-service convergence is separate.
+against local workerd/D1/R2. The [packaged native/live drill](docs/uat/2026-09-08-native-cloud-background.md)
+also passed with systemd automatic restarts and live Cloudflare, using two
+isolated installations on one Linux host.
 
 The approved direction lives in:
 

@@ -69,8 +69,10 @@ The launchd diagnostic path parser is deliberately strict and requires native
 CI evidence for supported OS versions. CLI JSON acknowledges the request;
 `daemon status` establishes process readiness, not successful remote sync.
 Linux start/stop, filesystem notification, private IPC, duplicate-writer denial,
-and SIGKILL restart passed native UAT on Linux and macOS 26.6.2 arm64. Authenticated
-background convergence and sleep/reboot integration remain release gates.
+and SIGKILL restart passed native UAT on Linux and macOS 26.6.2 arm64. Packaged
+systemd/live Cloudflare convergence also passed with two isolated installations
+on one host. Separate-host/native-harness convergence and sleep/reboot integration
+remain release gates.
 The current journal records reconciliation intent; future capsule work will pin the
 exact immutable checkpoint associated with each queued publish.
 
