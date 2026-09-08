@@ -23,6 +23,22 @@ async function fixture() {
 }
 
 describe("OS-backed local credential protection (AU-012, AU-013, CR-011)", () => {
+  it("persists the macOS backend, refuses cross-platform fallback, and authenticates backend identity", async () => {
+    const f = await fixture(); const mac = { ...f.protector, backend: "macos-keychain" as const };
+    const store = new CredentialFile(f.root, { protector: mac }); await store.write(secrets()); await store.protect();
+    expect(await store.status()).toMatchObject({ backend: "macos-keychain", protected: true });
+    expect(await store.read()).toEqual(secrets());
+    await store.write({ ...secrets(), token: "mac-updated" });
+    const encoded = await readFile(f.path, "utf8"); const doc = JSON.parse(encoded);
+    expect(doc.backend).toBe("macos-keychain");
+    const calls = f.calls(); const linux = new CredentialFile(f.root, { protector: f.protector });
+    await expect(linux.read()).rejects.toMatchObject({ code: "CREDENTIAL_BACKEND_UNSUPPORTED" });
+    await expect(linux.protect({ dryRun: true })).rejects.toMatchObject({ code: "CREDENTIAL_BACKEND_UNSUPPORTED" });
+    expect(f.calls()).toBe(calls); expect(await readFile(f.path, "utf8")).toBe(encoded);
+    await writeFile(f.path, JSON.stringify({ ...doc, backend: "secret-service" }));
+    await expect(linux.read()).rejects.toMatchObject({ code: "CREDENTIAL_INTEGRITY_FAILED" });
+  });
+
   it("rejects FIFO credentials without blocking on a writer", async () => {
     const f = await fixture(); await promisify(execFile)("mkfifo", ["-m", "600", f.path]);
     const store = new CredentialFile(f.root, { protector: f.protector });
