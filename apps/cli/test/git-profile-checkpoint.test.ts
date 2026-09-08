@@ -13,7 +13,7 @@ const execute = promisify(execFile), temporary: string[] = [];
 let bundleRoot: string, bundle: string;
 function environment(root: string) {
   return { PATH: process.env.PATH, HOME: root, TMPDIR: root, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: join(root, "empty-config"),
-    GIT_AUTHOR_NAME: "Fixture", GIT_AUTHOR_EMAIL: "fixture@statecase.invalid", GIT_COMMITTER_NAME: "Fixture", GIT_COMMITTER_EMAIL: "fixture@statecase.invalid" };
+    GIT_AUTHOR_NAME: "Fixture", GIT_AUTHOR_EMAIL: "fixture@statecase.invalid", GIT_COMMITTER_NAME: "Fixture", GIT_COMMITTER_EMAIL: "fixture@statecase.invalid" } as unknown as NodeJS.ProcessEnv;
 }
 async function git(root: string, ...args: string[]) {
   return (await execute("git", ["-C", root, ...args], { env: environment(root) })).stdout.trim();
@@ -127,5 +127,61 @@ describe("durable Git index ownership joins the real profile checkpoint (RT-006,
     else expect(await readFile(f.indexPath)).toEqual(f.incomingIndex);
     expect(await readFile(`${f.indexPath}.lock`, "utf8")).toBe("foreign writer");
     await expect(f.store.recoverMaterialization()).rejects.toMatchObject({ code: "PROFILE_RECOVERY_REQUIRED" });
+  });
+  it("records every descriptor before publishing any native lock and cancels safely before acquisition", async () => {
+    const f = await fixture(true);
+    expect(await child(f, applyScript(f, "checkpoint-published"))).toEqual({ code: null, signal: "SIGKILL" });
+    const checkpoint = JSON.parse(await readFile(join(f.home, "profile-materialization.json"), "utf8"));
+    expect(checkpoint.version).toBe(2); expect(checkpoint.gitIndexes).toHaveLength(1);
+    await expect(lstat(`${f.indexPath}.lock`)).rejects.toMatchObject({ code: "ENOENT" });
+    await f.store.recoverMaterialization({ dryRun: true });
+    await f.store.recoverMaterialization();
+    expect(await readFile(f.indexPath)).toEqual(f.beforeIndex);
+    await expect(lstat(checkpoint.gitIndexes[0].lock.artifact.path)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+  it.each(["deleted", "empty", "version", "path"])("refuses %s Git participant metadata without removing a held lock", async kind => {
+    const f = await fixture(); await child(f, applyScript(f, "install", 2));
+    const path = join(f.home, "profile-materialization.json"), checkpoint = JSON.parse(await readFile(path, "utf8"));
+    if (kind === "deleted") delete checkpoint.gitIndexes;
+    if (kind === "empty") checkpoint.gitIndexes = [];
+    if (kind === "version") checkpoint.version = 1;
+    if (kind === "path") checkpoint.gitIndexes[0].lock.path = join(f.home, "foreign.lock");
+    await writeFile(path, JSON.stringify(checkpoint), { mode: 0o600 });
+    await expect(f.store.recoverMaterialization({ dryRun: true })).rejects.toMatchObject({ code: "PROFILE_RECOVERY_REQUIRED" });
+    await expect(f.store.recoverMaterialization()).rejects.toMatchObject({ code: "PROFILE_RECOVERY_REQUIRED" });
+    expect(await readFile(f.indexPath)).toEqual(f.incomingIndex);
+    expect(await lstat(`${f.indexPath}.lock`)).toBeDefined();
+  });
+  it("rechecks native ownership during restart rollback before touching the next target", async () => {
+    const f = await fixture(); await child(f, applyScript(f, "install", 2));
+    await expect(f.store.recoverMaterialization({ afterBoundary: async (phase, index) => {
+      if (phase === "rollback" && index === 2) { await rm(`${f.indexPath}.lock`); await writeFile(`${f.indexPath}.lock`, "foreign writer"); }
+    } })).rejects.toMatchObject({ code: "PROFILE_RECOVERY_REQUIRED" });
+    expect(await readFile(join(f.home, "config.json"), "utf8")).toBe(f.original);
+    expect(await readFile(f.indexPath)).toEqual(f.incomingIndex);
+    expect(await readFile(join(f.workspace, "note"), "utf8")).toBe("incoming worktree");
+    await expect(f.store.loadConfig()).rejects.toMatchObject({ code: "PROFILE_RECOVERY_REQUIRED" });
+  });
+  it("validates all repository locks before rolling back either participant", async () => {
+    const f = await fixture(true), config = await f.store.loadConfig(), otherIndex = join(f.main, ".git", "index");
+    config.workspaces.push({ id: "main", path: f.main, sync: "git" }); await f.store.saveConfig(config);
+    let boundary = false;
+    await expect(f.store.materializeConfig(config, { writes: [{ path: f.indexPath, bytes: f.incomingIndex }, { path: otherIndex, bytes: f.incomingIndex }], deletes: [] }, {
+      workspaceRoots: [f.workspace, f.main], afterBoundary: async (phase, index) => {
+        if (phase !== "install" || index !== 0) return;
+        boundary = true; await rm(`${otherIndex}.lock`); await writeFile(`${otherIndex}.lock`, "foreign writer"); throw new Error("interrupted");
+      },
+    })).rejects.toMatchObject({ code: "PROFILE_RECOVERY_REQUIRED" });
+    expect(boundary).toBe(true);
+    const firstLock = await readFile(`${f.indexPath}.lock`);
+    await expect(f.store.recoverMaterialization()).rejects.toMatchObject({ code: "PROFILE_RECOVERY_REQUIRED" });
+    expect(await readFile(f.indexPath)).toEqual(f.incomingIndex);
+    expect(await readFile(`${f.indexPath}.lock`)).toEqual(firstLock);
+  });
+  it.each(["symlink", "delete"])("does not grant an index %s operation", async kind => {
+    const f = await fixture(), config = await f.store.loadConfig();
+    await expect(f.store.materializeConfig(config, { writes: [], deletes: kind === "delete" ? [f.indexPath] : [],
+      symlinks: kind === "symlink" ? [{ path: f.indexPath, target: join(f.root, "foreign") }] : [] }, { workspaceRoots: [f.workspace] })).rejects.toThrow();
+    expect(await readFile(f.indexPath)).toEqual(f.beforeIndex);
   });
 });
