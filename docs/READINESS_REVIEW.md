@@ -32,6 +32,17 @@ The final local check with redirect refusal passes 921 tests in 62 files,
 lint/types/build and clean-package smoke; coverage totals above are unchanged.
 Exact-candidate hosted CI is still required for this follow-up.
 
+Candidate `4b7d93eb2925b32b4c805ff0f402417a92bf0646` subsequently passed all
+nine jobs of [CI 34221032462](https://github.com/alemicali/statecase/actions/runs/34221032462).
+Native Codex job `102043932379` retains the original UUID, selected-memory patch
+history, both concurrent native contributions and both no-op peers (78 encrypted
+objects). Claude job `102043932226` passes ordinary continuity and the seven-fresh-
+session memory drill, including same-UUID relative-history resume/return. Both
+use pinned harnesses, deterministic loopback inference and reference storage on
+one disposable host. Background job `102043932116` passes all transfer/replay/
+offline/convergence/deletion/no-op phases on local workerd with cleanup verified.
+These exact-candidate passes include redirect refusal; no live service changed.
+
 ADR-0027 explicitly requires a coordinated matched-pair CLI/Worker cutover.
 The live Worker is unchanged and lacks this contract: the new CLI refuses it.
 This is not local offline old-binary fencing, full historical/profile migration,

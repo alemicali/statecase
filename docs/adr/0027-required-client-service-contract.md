@@ -1,6 +1,6 @@
 # ADR 0027: Required client/service contract
 
-Status: accepted; implemented locally, deployment qualification pending
+Status: accepted; implementation/CI passed, deployment qualification pending
 Date: 2026-09-08
 Test IDs: PR-014, AU-004, SK-001
 
@@ -120,3 +120,10 @@ old-client attempt, then redeems it exactly once with the current contract.
 Authentication without contract headers and unauthenticated 401 ordering remain
 covered. Existing native and background drills must pass with the matched pair;
 they do not replace actual historical-binary or deployed cutover evidence.
+
+Candidate `4b7d93e` passed all nine jobs in
+[CI 34221032462](https://github.com/alemicali/statecase/actions/runs/34221032462),
+including native Codex/Claude, both Node versions, quality/workerd/audit,
+background sync and native macOS/credential jobs. Local `npm run check` passed
+921 tests, with 100% branch coverage in this contract module and HTTP client.
+This records the matched local/reference pair, not an actual live deployment.
