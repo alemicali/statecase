@@ -506,7 +506,7 @@ Statecase stores its own state under `STATECASE_HOME`, defaulting to
 
 ```text
 config.json                non-secret profiles and mappings
-credentials.json           owner-only bearer session and vault keys (initial release)
+credentials.json           owner-only legacy secrets or native-key-wrapped document
 state.db                    WAL-enabled local operation journal
 cache/objects/              bounded encrypted/plaintext-safe cache by policy
 locks/                      instance locks
@@ -522,6 +522,36 @@ Credential resolution order:
 3. scoped environment token for automation;
 4. OS keychain/credential store;
 5. interactive login.
+
+Local persistence supports two explicit modes (ADR-0021). Existing/headless
+profiles retain owner-only version-one JSON files; no profile is silently
+migrated. `credentials status` reports file/native protection metadata without
+accessing the native store. `credentials protect --dry-run` is non-mutating;
+`credentials protect --yes` stores a random 32-byte wrapping key in the native
+store, verifies read-back, then atomically replaces the credential document
+with a version-two XChaCha20-Poly1305 envelope. Both confirmation flags together
+are rejected. Linux uses `/usr/bin/secret-tool` and persistent Secret Service;
+macOS native support remains an implementation gate. Missing native services
+do not prevent legacy/headless file-mode use.
+
+All credential reads require an owned regular file without group/other
+permissions or extra hard links. Symlinks, directories and FIFOs are rejected;
+FIFO inspection is nonblocking. The complete file is bounded to 8 MiB, including
+encrypted metadata/base64 expansion. Writes use `0600`, temporary siblings,
+file/directory fsync and atomic rename. A credential mutation lock serializes
+cooperating writers, and read/save compare-and-swap refuses a stale snapshot.
+This is not a guarantee against malicious same-principal parent-directory
+replacement or complete local-file rollback.
+
+Protected profiles fail closed on unavailable/locked/missing/wrong native keys
+or corrupt ciphertext; neither logout nor another write downgrades protection.
+Helper keys use stdin/stdout, not argv, with a restricted environment, 4 KiB
+output bound and 10-second timeout. Migration failures before replacement retain
+the legacy file. A created native key is retained after any ambiguous failure;
+post-rename fsync/lock-release failure may report failure after replacement.
+Do not delete a key or retry from stale in-memory secrets blindly. Reload and
+inspect the authoritative document. Orphan cleanup, explicit downgrade and
+native recovery procedures remain release gates, not automatic behavior.
 
 The local database records operations, observed file fingerprints, object
 upload status, applied remote revisions, pending tombstones, path mappings,

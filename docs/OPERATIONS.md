@@ -84,6 +84,47 @@ old keys, or ciphertext it already copied.
 
 ## Local verification
 
+### Local credential protection
+
+Existing profiles keep their owner-only file mode unless explicitly migrated:
+
+```bash
+statecase --json credentials status
+statecase --json credentials protect --dry-run
+statecase --json credentials protect --yes
+```
+
+Linux native protection requires `/usr/bin/secret-tool`, a persistent Secret
+Service and an accessible/unlocked login collection. Status and preview do not
+probe that service and are not proof that it is available. File-mode profiles
+remain usable on headless/ephemeral installations without a keyring. Native
+macOS support is not implemented yet.
+
+Once protected, all credential reads/writes use the native wrapping key;
+`logout` removes the service token but keeps vault keys and the file encrypted.
+Keep the local `credentials.json` and native wrapping key together: copying
+that file to another machine is not device enrollment or a recovery kit.
+Use normal login/join/bootstrap to enroll a new machine. Never put the local
+profile/keyring in a Drop. Status reports protection format, not authenticity
+or availability of the key.
+
+Unsafe file permissions/types exit `6`; inspect ownership and permissions
+before repairing anything. Concurrent mutation exits `5`; let the current
+writer finish and reload before retrying. Native unavailability or ambiguous
+commit failure exits `7`; restore native access and inspect/reload the file.
+Never delete the native key or replace a protected file with plaintext to
+silence an error. Failures before replacement preserve original credential
+bytes; a failure after rename can leave a valid new encrypted file. The native
+key is retained in either case. Recovery/downgrade and orphan-key cleanup are
+not yet supported operator workflows.
+
+The opt-in `STATECASE_PACKAGE_NATIVE_CREDENTIALS=1 npm run test:package` drill
+uses a freshly installed tarball, its own D-Bus instance with service activation
+disabled, temporary HOME/XDG/profile roots and a disposable GNOME login keyring.
+It never accesses the operator's keychain or harness data. Linux dependencies
+are `dbus`, `libsecret-tools` and `gnome-keyring`; CI runs this in a dedicated job.
+It is not an OS reboot, cloud sync, macOS or interactive-unlock qualification.
+
 ### Native service runtime
 
 `statecase daemon install` pins the current Node executable. Reinstall the

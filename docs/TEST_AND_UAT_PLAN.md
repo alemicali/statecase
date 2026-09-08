@@ -166,6 +166,14 @@ regression ID.
   qualification case; injecting a durable floor proves fencing and retry, not
   the whole infrastructure failure sequence.
 
+`CR-011` (local credential protection): encrypt the complete legacy payload,
+including historical/scoped keys and opaque future fields; bind it to the local
+key reference; reject wrong key/context, corrupt envelopes, unknown protected
+metadata, unsafe file types/modes, invalid UTF-8/JSON, and oversized documents.
+Keys and raw native/filesystem errors never appear in CLI output. Authenticate
+the old document and encrypt its replacement with one retrieved key. Preserve
+independent writes and fail closed instead of downgrading to plaintext.
+
 ### 4.4 Ignore and filesystem policy
 
 - `WS-001`: `.git`, sockets, FIFOs, devices, outside-root symlinks, and unsafe
@@ -353,6 +361,17 @@ deployed Worker test environment.
 - `AU-010`: clock skew does not extend server-enforced expiry.
 - `AU-011`: environment, process arguments, crash output, doctor bundle, and
   shell completion never expose tokens.
+- `AU-012`: credential status/preview do not call the native backend or create
+  an absent profile. Confirmed migration verifies native key read-back and
+  leaves only an encrypted owner-only payload on disk. Native helper input uses
+  pipes, an environment allowlist and bounded runtime/output. Real isolated
+  Secret Service tests must qualify fresh native storage and process restart;
+  native macOS and OS reboot/unlock remain separate gates.
+- `AU-013`: unavailable/locked/missing/wrong native keys preserve the previous
+  file and fail closed. Test stale read/save, active foreign locks, replaced
+  locks, precommit failure, retained native keys, redacted errors and encrypted
+  logout. CLI requires exactly one of preview/confirmation and uses stable
+  usage `2`, conflict `5`, integrity `6`, and availability/commit `7` exit codes.
 
 ## 9. Daemon and shim tests
 

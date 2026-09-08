@@ -775,7 +775,7 @@ describe("CLI first-use and second-device UAT (AU-001, CR-009, DR-001)", () => {
       version: 1,
       token: "test-device-token",
       vaultKeys: { vlt_test: Buffer.alloc(32, 7).toString("base64url") },
-    }, null, 2)}\n`);
+    }, null, 2)}\n`, { mode: 0o600 });
     process.env.STATECASE_HOME = home;
     process.env.HARNESS_SESSION_PATH = session;
     process.env.HARNESS_WORKSPACE_PATH = workspace;

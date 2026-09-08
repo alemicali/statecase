@@ -4,6 +4,16 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Added explicit Linux native credential protection: non-mutating status and
+  preview, confirmed migration to a Secret Service-wrapped encrypted file,
+  verified key read-back, atomic updates, stale-save refusal and encrypted
+  logout. Existing/headless owner-only file profiles are not silently migrated.
+  Added failure regressions for unsafe files/FIFOs, wrong keys, concurrent
+  mutations, malformed documents, diagnostic redaction and migration failure.
+  An isolated native/package drill and CI job exercise persistent keyring
+  restart and unavailable-store preservation. macOS, OS reboot, recovery and
+  independent review remain qualification gates.
+
 - Qualified the recorded CLI package's Claude foreground shim/live-cloud round
   trip across two independent Daytona peers: distinct device enrollment, strict
   preview/hydration, original UUID/history, native Read/Edit/Write, shim final

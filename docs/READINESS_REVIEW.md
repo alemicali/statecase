@@ -369,18 +369,21 @@ The drill also exposed a real installer mismatch: `CLAUDE_CONFIG_DIR` affected
 the adapter but not default skill placement. A separate correction now resolves
 install/verify/uninstall through the same adapter. Failing-first root tests,
 isolated-HOME lifecycle, and clean-prefix package setup/verify/uninstall pass;
-the complete check reports 503 tests and 90.39% global branches. That later fix
-was not in the live tarball above and requires its own CI/fresh qualification.
+the complete check reports 503 tests and 90.39% global branches. CI run
+`34185025156` passed commit `e908cd0`. That later fix was not in the live tarball
+above and still requires fresh combined live qualification.
 
 ### Implementation gaps confirmed by source audit
 
 Release work includes missing implementation, not only additional testing:
 
-- ADR-0004 requires OS credential-store persistence, but `ConfigStore` currently
-  serializes tokens and vault keys in an owner-only `credentials.json`. That
-  file-backed implementation is not evidence of the required credential-store
-  integration. A supported secure-store strategy, migration/recovery behavior,
-  and native qualification remain necessary before claiming this requirement.
+- ADR-0021 reconciles ADR-0004 native persistence with the later specification's
+  permitted owner-only file mode. An explicit Linux Secret Service migration
+  is now implemented in `ConfigStore` and the CLI, preserving file-mode/headless
+  profiles. Local tests and an isolated native/package drill cover encrypted
+  update/logout, unavailable keys and keyring process restart. This is not
+  complete platform qualification: macOS, OS reboot/interactive unlock,
+  recovery/downgrade, orphan handling and independent review remain gates.
 - The current sync admission path accepts native sessions and skills; adapter
   `config-filtered` entries are still excluded. The agreed portable harness
   settings/memory/configuration scope therefore needs its actual filtering and

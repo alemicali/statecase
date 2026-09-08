@@ -82,6 +82,16 @@ replayed device code; stolen bootstrap capability; one client signs for another.
 Controls:
 
 - keychain or protected-file credentials for persistent clients;
+- explicit native protection (ADR-0021) encrypts the complete local credential
+  file with a key held in persistent Secret Service; it never silently changes
+  existing file-mode profiles or falls back to plaintext after migration.
+  Native helper secrets travel in pipes with bounded runtime/output and an
+  environment allowlist. Safe-file checks, cooperative locks and stale-snapshot
+  refusal protect migration/update boundaries. Native-key loss requires
+  recovery, not deleting the encrypted file. This does not defeat an attacker
+  running as the same unlocked OS principal or restoring an older local file.
+  macOS support, recovery/downgrade procedures, OS reboot and independent review
+  remain release gates;
 - single-use, short-lived, workspace/category/method-scoped bootstrap tokens;
 - refresh rotation, server-side expiry/revocation, audience binding;
 - separate device signing and encryption keys;

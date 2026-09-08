@@ -23,6 +23,12 @@ unable to grant the secrets category. Persistent refresh/session material is
 stored in the OS credential store; environment bootstrap tokens are consumed
 without being printed.
 
+Persistence clarification: the later local-state specification and threat model
+also permit owner-only files for headless/initial-release use. ADR-0021 defines
+explicit native protection alongside that mode; it does not silently migrate
+existing profiles. Native platform qualification remains required before
+claiming OS credential-store support for that platform.
+
 An installation generates a stable random `deviceId` locally. D1 binds every
 Better Auth session used by that installation to this ID; authorization never
 trusts a caller-provided device header. Revoking a device atomically marks its

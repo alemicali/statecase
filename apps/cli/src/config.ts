@@ -2,6 +2,8 @@ import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
+import { CredentialFile, type CredentialFileOptions } from "./credentials.js";
+
 export type MappingKind = "drop" | "codex" | "claude";
 export type MappingMode = "two-way" | "publish" | "consume" | "append";
 
@@ -54,9 +56,11 @@ export interface LocalSecrets {
 
 export class ConfigStore {
   readonly home: string;
+  readonly #credentials: CredentialFile;
 
-  constructor(home = process.env.STATECASE_HOME ?? join(homedir(), ".statecase")) {
+  constructor(home = process.env.STATECASE_HOME ?? join(homedir(), ".statecase"), options: CredentialFileOptions = {}) {
     this.home = resolve(home);
+    this.#credentials = new CredentialFile(this.home, options);
   }
 
   async loadConfig(): Promise<LocalConfig> {
@@ -75,12 +79,15 @@ export class ConfigStore {
   }
 
   async loadSecrets(): Promise<LocalSecrets> {
-    return readJson(join(this.home, "credentials.json"), { version: 1, vaultKeys: {} });
+    return this.#credentials.read();
   }
 
   async saveSecrets(secrets: LocalSecrets): Promise<void> {
-    await atomicJson(join(this.home, "credentials.json"), secrets);
+    await this.#credentials.write(secrets);
   }
+
+  credentialStatus(): ReturnType<CredentialFile["status"]> { return this.#credentials.status(); }
+  protectCredentials(options: { dryRun?: boolean } = {}): ReturnType<CredentialFile["protect"]> { return this.#credentials.protect(options); }
 }
 
 export function sessionBindingKey(namespace: string, logicalPath: string): string {

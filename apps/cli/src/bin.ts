@@ -20,6 +20,7 @@ import { RemoteError, StatecaseClient } from "./client.js";
 import { assertNoHarnessProcess, HarnessActivityRegistry, type ActivityHandle } from "./activity.js";
 import { createBootstrapCapability, openBootstrapCapability, type ScopedVaultKeys } from "./capability.js";
 import { ConfigStore, type LocalConfig, type LocalSecrets, type RootMapping } from "./config.js";
+import type { CredentialKeyProtector } from "./credentials.js";
 import { PersistentRuntime, readRuntimeStatus, type DaemonTrigger } from "./daemon.js";
 import { readRecoveryKeyringKit, writeRecoveryKeyringKit } from "./recovery.js";
 import { DurableReconciler } from "./reconciler.js";
@@ -37,6 +38,7 @@ export interface CliIO {
   stderr(value: string): void;
   fetch: typeof fetch;
   serviceRunner?: ServiceCommandRunner;
+  credentialProtector?: CredentialKeyProtector;
 }
 
 const defaultIo: CliIO = {
@@ -46,13 +48,26 @@ const defaultIo: CliIO = {
 };
 
 export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promise<number> {
-  const store = new ConfigStore();
+  const store = new ConfigStore(undefined, { protector: io.credentialProtector });
   const program = new Command();
   let requestedExitCode = 0;
   program.name("statecase").description("Take your agents anywhere.").option("--json", "emit stable JSON output");
   program.enablePositionalOptions();
   program.exitOverride();
   program.configureOutput({ writeOut: (value) => io.stdout(value.trimEnd()), writeErr: (value) => io.stderr(value.trimEnd()) });
+
+  const credentials = program.command("credentials").description("inspect and protect this installation's local credentials");
+  credentials.command("status").action(async () => {
+    const status = await store.credentialStatus();
+    emit(io, program, status, `Credential storage: ${status.backend}; ${status.protected ? "encrypted at rest" : "owner-only file"}. Native availability is not probed.`);
+  });
+  credentials.command("protect").option("--dry-run").option("--yes", "confirm native credential migration")
+    .action(async (options: { dryRun?: boolean; yes?: boolean }) => {
+      if (Boolean(options.dryRun) === Boolean(options.yes)) throw new StatecaseUsageError("choose --dry-run or confirm credential protection with --yes", 2);
+      const result = await store.protectCredentials({ dryRun: options.dryRun });
+      emit(io, program, result, result.dryRun ? `Would protect local credentials with ${result.backend}; no native store accessed.`
+        : `Local credentials protected with ${result.backend}.`);
+    });
 
   program.command("login")
     .option("--device-name <name>")

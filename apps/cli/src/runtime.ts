@@ -1,5 +1,6 @@
 import type { LocalConfig, LocalSecrets, ConfigStore } from "./config.js";
 import { RemoteError, StatecaseClient } from "./client.js";
+import { CredentialStorageError } from "./credentials.js";
 
 export class StatecaseUsageError extends Error {
   constructor(message: string, readonly exitCode = 2) {
@@ -32,6 +33,12 @@ export function selectedVault(config: LocalConfig, secrets: LocalSecrets): strin
 
 export function exitCodeFor(error: unknown): number {
   if (error instanceof StatecaseUsageError) return error.exitCode;
+  if (error instanceof CredentialStorageError) {
+    if (error.code === "CREDENTIAL_STATE_CHANGED" || error.code === "CREDENTIAL_STORE_LOCKED") return 5;
+    if (error.code === "CREDENTIAL_STORE_UNAVAILABLE" || error.code === "CREDENTIAL_COMMIT_FAILED") return 7;
+    if (error.code === "CREDENTIAL_BACKEND_UNSUPPORTED") return 2;
+    return 6;
+  }
   if (error instanceof RemoteError) {
     if (error.status === 401) return 3;
     if (error.status === 403 || error.status === 404) return 4;

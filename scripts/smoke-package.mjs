@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { access, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -43,6 +44,18 @@ try {
   assert.equal(verified.valid, true);
   await run(executable, ["--json", "skills", "uninstall", "--yes"], { env: environment });
   await assert.rejects(access(nativeSkill), { code: "ENOENT" });
+
+  if (process.env.STATECASE_PACKAGE_NATIVE_CREDENTIALS === "1") {
+    const native = await run(process.execPath, [join(repository, "scripts", "uat", "native-credentials.mjs")], {
+      cwd: repository, encoding: "utf8", timeout: 120_000,
+      env: { PATH: process.env.PATH, STATECASE_UAT_CLI: executable, STATECASE_UAT_CONFIRM: "isolated-native-credentials" },
+    });
+    const evidence = JSON.parse(native.stdout.trim());
+    assert.equal(evidence.result, "pass"); assert.equal(evidence.fixtureCleanup, true);
+    process.stdout.write(`${JSON.stringify({ ...evidence, cleanPackageInstallation: true,
+      tarballSha256: createHash("sha256").update(await readFile(archive)).digest("hex"),
+      driverSha256: createHash("sha256").update(await readFile(join(repository, "scripts", "uat", "native-credentials.mjs"))).digest("hex") })}\n`);
+  }
 } finally {
   await rm(installation, { recursive: true, force: true });
   if (archive) await rm(archive, { force: true });
