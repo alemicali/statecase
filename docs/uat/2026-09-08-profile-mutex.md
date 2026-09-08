@@ -109,3 +109,9 @@ explicit file URL. The regression executes that bundle from an unrelated
 temporary CWD and acquires/releases a real mutex. Product packaging and native
 scenarios themselves are unchanged; full native Codex/Claude reruns must still
 verify the driver correction on its exact commit.
+
+Follow-up CI [34188511917](https://github.com/alemicali/statecase/actions/runs/34188511917)
+on `a942d6ed06dbad700a59a676ff69f4b663a12216` passed all eight jobs, including
+native Codex and Claude. The added driver regression brings the local total to
+557 tests. This closes that startup regression's exact-commit CI gap, not the
+broader release gaps above. The macOS job here tests launchd, not native credentials.

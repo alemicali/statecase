@@ -416,5 +416,16 @@ native credential packaging and the native macOS lifecycle. It failed the
 Codex/Claude native jobs during temporary-driver startup. A new failing-first
 load test reproduced the missing external SQLite module; the test-only builder
 now resolves that installed dependency explicitly outside the repository.
-This correction still needs exact-commit native CI evidence and does not
-retroactively turn the failed run green.
+Follow-up CI `34188511917` on `a942d6e` passed all eight jobs, including both
+native harnesses. This verifies the correction without retroactively turning
+the earlier failed run green. The macOS job here qualifies launchd, not Keychain.
+
+### macOS credential implementation — 2026-09-08
+
+The local credential adapter now supports macOS Keychain, preserves Linux
+protected-file compatibility, rejects foreign backends before native access,
+and authenticates backend identity. Failing-first tests cover native command
+construction, bounded stdin/output, explicit-path isolation, update and failure
+semantics. A clean-package UAT and dedicated macOS credential CI job now exist;
+native results are still pending. This does not close harness configuration,
+workspace crash recovery or the wider release gates above.

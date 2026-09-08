@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { constants } from "node:fs";
 import { mkdir, open, rename, rm } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { join, posix, resolve } from "node:path";
 
 import { decryptEnvelope, encryptEnvelope, randomKey } from "@statecase/crypto";
 import { ProfileLock } from "@statecase/runtime";
@@ -10,7 +10,7 @@ import type { LocalSecrets } from "./config.js";
 
 const MAX_BYTES = 8 * 1024 * 1024;
 const SERVICE = "statecase-local-credentials-v1";
-type Backend = "secret-service";
+type Backend = "secret-service" | "macos-keychain";
 type ErrorCode = "CREDENTIAL_DOCUMENT_INVALID" | "CREDENTIAL_DOCUMENT_UNSAFE" | "CREDENTIAL_STORE_UNAVAILABLE" |
   "CREDENTIAL_BACKEND_UNSUPPORTED" | "CREDENTIAL_KEY_MISMATCH" | "CREDENTIAL_INTEGRITY_FAILED" |
   "CREDENTIAL_STATE_CHANGED" | "CREDENTIAL_STORE_LOCKED" | "CREDENTIAL_COMMIT_FAILED";
@@ -20,7 +20,7 @@ export class CredentialStorageError extends Error {
     super({ CREDENTIAL_DOCUMENT_INVALID: "local credential document is invalid or exceeds its size limit",
       CREDENTIAL_DOCUMENT_UNSAFE: "local credentials must be an owner-only regular file, not a link",
       CREDENTIAL_STORE_UNAVAILABLE: "native credential store is unavailable, locked, or missing the required key; no plaintext fallback",
-      CREDENTIAL_BACKEND_UNSUPPORTED: "native credential protection is not supported on this platform yet",
+      CREDENTIAL_BACKEND_UNSUPPORTED: "native credential backend is not supported by this platform or selected protector",
       CREDENTIAL_KEY_MISMATCH: "native credential key read-back did not match; existing credentials retained",
       CREDENTIAL_INTEGRITY_FAILED: "protected local credentials failed authentication",
       CREDENTIAL_STATE_CHANGED: "local credentials changed independently; reload before retrying",
@@ -76,10 +76,10 @@ export class CredentialFile {
         if (snapshot.document?.version === 2) {
           // Authenticate the previous document before overwriting it, even for
           // callers that did not first load secrets through this instance.
-          const key = await this.#key(snapshot.document.keyId);
+          const key = await this.#key(snapshot.document.keyId, snapshot.document.backend);
           try {
             await unseal(snapshot.document, key);
-            document = await seal(plaintext, key, snapshot.document.keyId);
+            document = await seal(plaintext, key, snapshot.document.keyId, snapshot.document.backend);
           }
           finally { key.fill(0); }
         }
@@ -90,7 +90,8 @@ export class CredentialFile {
 
   async protect(options: { dryRun?: boolean } = {}): Promise<{ backend: Backend; changed: boolean; dryRun: boolean }> {
     const snapshot = await this.#snapshot();
-    const backend = this.#protector().backend;
+    const protector = this.#protector(snapshot.document?.version === 2 ? snapshot.document.backend : undefined);
+    const backend = protector.backend;
     if (options.dryRun) return { backend, changed: false, dryRun: true };
     return this.#locked(async () => {
       const current = await this.#snapshot();
@@ -100,13 +101,13 @@ export class CredentialFile {
       const plaintext = encodeSecrets(value); const key = await randomKey();
       const id = `loc_${randomUUID().replaceAll("-", "")}`;
       try {
-        try { await this.#protector().put(id, key); }
+        try { await protector.put(id, key); }
         catch { throw new CredentialStorageError("CREDENTIAL_STORE_UNAVAILABLE"); }
-        const verified = await this.#key(id);
+        const verified = await this.#key(id, backend, protector);
         try { if (!timingSafeEqual(key, verified)) throw new CredentialStorageError("CREDENTIAL_KEY_MISMATCH"); }
         finally { verified.fill(0); }
-        const document = await seal(plaintext, key, id);
-        const decrypted = await decryptEnvelope({ envelope: Buffer.from(document.envelope, "base64url"), key, dedupKey: key, expected: context(id) });
+        const document = await seal(plaintext, key, id, backend);
+        const decrypted = await decryptEnvelope({ envelope: Buffer.from(document.envelope, "base64url"), key, dedupKey: key, expected: context(id, backend) });
         try { if (!timingSafeEqual(plaintext, decrypted)) throw new CredentialStorageError("CREDENTIAL_INTEGRITY_FAILED"); }
         finally { decrypted.fill(0); }
         await this.#commit(current, document);
@@ -115,10 +116,14 @@ export class CredentialFile {
     });
   }
 
-  #protector(): CredentialKeyProtector { return this.#options.protector ?? nativeCredentialProtector(); }
-  async #key(id: string): Promise<Uint8Array> {
+  #protector(expected?: Backend): CredentialKeyProtector {
+    const protector = this.#options.protector ?? nativeCredentialProtector();
+    if (expected !== undefined && protector.backend !== expected) throw new CredentialStorageError("CREDENTIAL_BACKEND_UNSUPPORTED");
+    return protector;
+  }
+  async #key(id: string, backend: Backend, protector = this.#protector(backend)): Promise<Uint8Array> {
     let key: Uint8Array;
-    try { key = await this.#protector().get(id); }
+    try { key = await protector.get(id); }
     catch { throw new CredentialStorageError("CREDENTIAL_STORE_UNAVAILABLE"); }
     if (!(key instanceof Uint8Array) || key.length !== 32) { if (key instanceof Uint8Array) key.fill(0); throw new CredentialStorageError("CREDENTIAL_KEY_MISMATCH"); }
     return key;
@@ -127,7 +132,7 @@ export class CredentialFile {
   async #decode(document: Snapshot["document"]): Promise<LocalSecrets> {
     if (!document) return { version: 1, vaultKeys: {} };
     if (document.version === 1) return document;
-    const key = await this.#key(document.keyId);
+    const key = await this.#key(document.keyId, document.backend);
     try { return await unseal(document, key); }
     finally { key.fill(0); }
   }
@@ -159,7 +164,7 @@ export class CredentialFile {
         let document: Snapshot["document"];
         if (isRecord(value) && value.version === 2) {
           if (Object.keys(value).some((field) => !["version", "backend", "keyId", "envelope"].includes(field)) ||
-              value.backend !== "secret-service" || typeof value.keyId !== "string" || !/^loc_[a-f0-9]{32}$/u.test(value.keyId) ||
+              (value.backend !== "secret-service" && value.backend !== "macos-keychain") || typeof value.keyId !== "string" || !/^loc_[a-f0-9]{32}$/u.test(value.keyId) ||
               typeof value.envelope !== "string" || !/^[A-Za-z0-9_-]+$/u.test(value.envelope)) throw new CredentialStorageError("CREDENTIAL_DOCUMENT_INVALID");
           document = value as unknown as ProtectedDocument;
         } else document = requireSecrets(value);
@@ -233,23 +238,28 @@ function encodeSecrets(value: LocalSecrets): Buffer {
   } catch { throw new CredentialStorageError("CREDENTIAL_DOCUMENT_INVALID"); }
 }
 function digest(bytes: Uint8Array): string { return createHash("sha256").update(bytes).digest("hex"); }
-function context(id: string) { return { vaultId: "local-credentials", scopeId: id, compression: "none" as const }; }
-async function seal(plaintext: Uint8Array, key: Uint8Array, id: string): Promise<ProtectedDocument> {
-  const envelope = await encryptEnvelope({ plaintext, key, dedupKey: key, context: context(id) });
-  return { version: 2, backend: "secret-service", keyId: id, envelope: Buffer.from(envelope).toString("base64url") };
+function context(id: string, backend: Backend) {
+  // Preserve the original Linux wire context; new backends use distinct AAD.
+  return { vaultId: backend === "secret-service" ? "local-credentials" : "local-credentials:macos-keychain", scopeId: id, compression: "none" as const };
+}
+async function seal(plaintext: Uint8Array, key: Uint8Array, id: string, backend: Backend): Promise<ProtectedDocument> {
+  const envelope = await encryptEnvelope({ plaintext, key, dedupKey: key, context: context(id, backend) });
+  return { version: 2, backend, keyId: id, envelope: Buffer.from(envelope).toString("base64url") };
 }
 async function unseal(document: ProtectedDocument, key: Uint8Array): Promise<LocalSecrets> {
   let plaintext: Uint8Array | undefined;
   try {
-    plaintext = await decryptEnvelope({ envelope: Buffer.from(document.envelope, "base64url"), key, dedupKey: key, expected: context(document.keyId) });
+    plaintext = await decryptEnvelope({ envelope: Buffer.from(document.envelope, "base64url"), key, dedupKey: key, expected: context(document.keyId, document.backend) });
     return parseSecrets(plaintext);
   } catch { throw new CredentialStorageError("CREDENTIAL_INTEGRITY_FAILED"); }
   finally { plaintext?.fill(0); }
 }
 
 export type SecretToolRunner = (args: string[], input?: Buffer) => Promise<Buffer>;
-export function nativeCredentialProtector(platform: NodeJS.Platform = process.platform, runner: SecretToolRunner = runSecretTool): CredentialKeyProtector {
+export function nativeCredentialProtector(platform: NodeJS.Platform = process.platform, runner?: SecretToolRunner): CredentialKeyProtector {
+  if (platform === "darwin") return macosCredentialProtector(runner ?? ((args, input) => runNativeTool("/usr/bin/security", args, input)));
   if (platform !== "linux") throw new CredentialStorageError("CREDENTIAL_BACKEND_UNSUPPORTED");
+  const run = runner ?? ((args, input) => runNativeTool("/usr/bin/secret-tool", args, input));
   const attributes = (id: string) => {
     if (!/^loc_[a-f0-9]{32}$/u.test(id)) throw new CredentialStorageError("CREDENTIAL_DOCUMENT_INVALID");
     return ["service", SERVICE, "profile", id];
@@ -258,12 +268,8 @@ export function nativeCredentialProtector(platform: NodeJS.Platform = process.pl
     async get(id) {
       let output: Buffer | undefined;
       try {
-        output = await runner(["lookup", ...attributes(id)]);
-        const encoded = output.toString("utf8");
-        if (!/^[A-Za-z0-9_-]{43}$/u.test(encoded)) throw new Error("invalid native key");
-        const key = Buffer.from(encoded, "base64url");
-        if (key.length !== 32 || key.toString("base64url") !== encoded) { key.fill(0); throw new Error("invalid native key"); }
-        return key;
+        output = await run(["lookup", ...attributes(id)]);
+        return decodeNativeKey(output.toString("utf8"));
       } catch { throw new CredentialStorageError("CREDENTIAL_STORE_UNAVAILABLE"); }
       finally { output?.fill(0); }
     },
@@ -271,18 +277,66 @@ export function nativeCredentialProtector(platform: NodeJS.Platform = process.pl
       if (key.length !== 32) throw new CredentialStorageError("CREDENTIAL_KEY_MISMATCH");
       const input = Buffer.from(Buffer.from(key).toString("base64url"));
       let output: Buffer | undefined;
-      try { output = await runner(["store", "--label=Statecase local credentials", ...attributes(id)], input); }
+      try { output = await run(["store", "--label=Statecase local credentials", ...attributes(id)], input); }
       catch { throw new CredentialStorageError("CREDENTIAL_STORE_UNAVAILABLE"); }
       finally { input.fill(0); output?.fill(0); }
     } };
 }
 
-async function runSecretTool(args: string[], input?: Buffer): Promise<Buffer> {
+function decodeNativeKey(encoded: string): Buffer {
+  if (!/^[A-Za-z0-9_-]{43}$/u.test(encoded)) throw new CredentialStorageError("CREDENTIAL_STORE_UNAVAILABLE");
+  const key = Buffer.from(encoded, "base64url");
+  if (key.toString("base64url") !== encoded) { key.fill(0); throw new CredentialStorageError("CREDENTIAL_STORE_UNAVAILABLE"); }
+  return key;
+}
+
+function macosCredentialProtector(run: SecretToolRunner): CredentialKeyProtector {
+  const path = process.env.STATECASE_KEYCHAIN_PATH;
+  // Reject line/control injection into security's bounded interactive parser.
+  // oxlint-disable-next-line no-control-regex
+  if (path !== undefined && (!posix.isAbsolute(path) || /[\u0000-\u001f\u007f]/u.test(path) || Buffer.byteLength(path) > 2048)) {
+    throw new CredentialStorageError("CREDENTIAL_DOCUMENT_INVALID");
+  }
+  const keychain = path === undefined ? [] : [path];
+  const attributes = (id: string) => {
+    if (!/^loc_[a-f0-9]{32}$/u.test(id)) throw new CredentialStorageError("CREDENTIAL_DOCUMENT_INVALID");
+    return ["-a", id, "-s", SERVICE];
+  };
+  return { backend: "macos-keychain",
+    async get(id) {
+      let output: Buffer | undefined;
+      try {
+        // Apple returns NULL for a failed single-keychain open, which means
+        // the default search list. Two identical paths force an explicit CFArray
+        // (possibly empty), never a fallback outside the selected keychain.
+        output = await run(["find-generic-password", ...attributes(id), "-w", ...keychain, ...keychain]);
+        const encoded = output.toString("utf8");
+        return decodeNativeKey(encoded.endsWith("\n") ? encoded.slice(0, -1) : encoded);
+      } catch { throw new CredentialStorageError("CREDENTIAL_STORE_UNAVAILABLE"); }
+      finally { output?.fill(0); }
+    },
+    async put(id, key) {
+      if (key.length !== 32) throw new CredentialStorageError("CREDENTIAL_KEY_MISMATCH");
+      let input: Buffer | undefined; let output: Buffer | undefined;
+      try {
+        // security's interactive parser is not a shell. Send exactly one
+        // quoted command then EOF: an extra command could mask its exit code.
+        const tokens = ["add-generic-password", ...attributes(id), "-w", Buffer.from(key).toString("base64url"), ...keychain];
+        input = Buffer.from(tokens.map((token) => `"${token.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`).join(" ") + "\n");
+        if (input.length > 4095) throw new CredentialStorageError("CREDENTIAL_DOCUMENT_INVALID");
+        output = await run(["-q", "-i"], input);
+      } catch { throw new CredentialStorageError("CREDENTIAL_STORE_UNAVAILABLE"); }
+      finally { input?.fill(0); output?.fill(0); }
+    } };
+}
+
+async function runNativeTool(file: "/usr/bin/security" | "/usr/bin/secret-tool", args: string[], input?: Buffer): Promise<Buffer> {
   return new Promise((accept, reject) => {
-    const child = execFile("/usr/bin/secret-tool", args, { encoding: "buffer", timeout: 10_000, killSignal: "SIGKILL", maxBuffer: 4096,
-      env: { PATH: "/usr/bin:/bin", HOME: process.env.HOME, DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS,
+    const linuxEnv = file === "/usr/bin/secret-tool" ? { DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS,
         XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, XDG_DATA_HOME: process.env.XDG_DATA_HOME,
-        LANG: "C.UTF-8" } as unknown as NodeJS.ProcessEnv }, (error, stdout, stderr) => {
+      } : {};
+    const child = execFile(file, args, { encoding: "buffer", timeout: 10_000, killSignal: "SIGKILL", maxBuffer: 4096,
+      env: { PATH: "/usr/bin:/bin", HOME: process.env.HOME, ...linuxEnv, LANG: "C.UTF-8" } as unknown as NodeJS.ProcessEnv }, (error, stdout, stderr) => {
       stderr.fill(0);
       if (error) { stdout.fill(0); reject(new CredentialStorageError("CREDENTIAL_STORE_UNAVAILABLE")); }
       else accept(stdout);

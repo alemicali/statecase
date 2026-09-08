@@ -4,6 +4,12 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Added explicit macOS Keychain credential protection with bounded stdin-only
+  key storage, selected-keychain lookup isolation, authenticated backend identity
+  and foreign-backend refusal. Existing Linux encrypted files remain compatible.
+  Added boundary tests and a clean-package disposable macOS keychain CI drill;
+  native qualification is pending, not implied by the launchd job.
+
 - Fixed native UAT driver startup outside the repository: Codex and Claude
   scenarios now resolve the installed SQLite dependency explicitly through a
   shared test-only builder. Added a failing-first external-directory load test

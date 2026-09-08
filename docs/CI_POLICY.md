@@ -28,6 +28,12 @@ Branch protection should require these logical checks on pull requests:
    Each runs on a disposable hosted VM with a deterministic loopback model
    provider and in-memory reference storage. These jobs do not replace the
    packaged/live-cloud cross-host UAT or qualify interactive session pickers.
+8. `native-credentials` and `native-macos-credentials` — clean installed CLI
+   tarballs migrate synthetic credential files, refuse locked/unavailable native
+   stores, reopen in independent CLI processes and retain encryption on logout.
+   Linux uses a private non-activating D-Bus and disposable persistent Secret
+   Service. macOS uses one explicitly addressed temporary Keychain, never the
+   default store. Owned native resources and fixture files must be cleaned up.
 
 Jobs use `npm ci`, minimum permissions, dependency caching, concurrency
 cancellation, timeouts, and no production credentials. CI forks receive no
@@ -61,7 +67,7 @@ and owner approval; it must not be used to merge untested new code.
 ### Pull request
 
 Run quality, runtime compatibility, native macOS lifecycle, authenticated
-background sync, and native Codex/Claude session continuity. Add dependency review and CodeQL to the
+background sync, Linux/macOS native credential protection, and native Codex/Claude session continuity. Add dependency review and CodeQL to the
 required set as soon as GitHub exposes them for the repository. Core integration
 tests use local Cloudflare emulation and fake identity; no network account or
 personal harness directory.

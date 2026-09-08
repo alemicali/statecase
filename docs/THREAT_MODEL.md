@@ -98,8 +98,10 @@ Controls:
   refusal protect migration/update boundaries. Native-key loss requires
   recovery, not deleting the encrypted file. This does not defeat an attacker
   running as the same unlocked OS principal or restoring an older local file.
-  macOS support, recovery/downgrade procedures, OS reboot and independent review
-  remain release gates;
+  macOS now uses a bounded stdin-command Security helper with explicit-keychain
+  lookup isolation, no unrestricted-access/overwrite flags and authenticated
+  backend identity. Native macOS qualification, recovery/downgrade procedures,
+  OS reboot and independent review remain release gates;
 - single-use, short-lived, workspace/category/method-scoped bootstrap tokens;
 - refresh rotation, server-side expiry/revocation, audience binding;
 - separate device signing and encryption keys;

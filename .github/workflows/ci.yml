@@ -80,6 +80,19 @@ jobs:
       - name: Qualify packaged credentials in a private Secret Service
         run: STATECASE_PACKAGE_NATIVE_CREDENTIALS=1 npm run test:package
 
+  native-macos-credentials:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Qualify packaged credentials in an explicit disposable Keychain
+        run: STATECASE_PACKAGE_NATIVE_CREDENTIALS=1 npm run test:package
+
   native-macos:
     runs-on: macos-latest
     timeout-minutes: 10

@@ -531,8 +531,13 @@ accessing the native store. `credentials protect --dry-run` is non-mutating;
 store, verifies read-back, then atomically replaces the credential document
 with a version-two XChaCha20-Poly1305 envelope. Both confirmation flags together
 are rejected. Linux uses `/usr/bin/secret-tool` and persistent Secret Service;
-macOS native support remains an implementation gate. Missing native services
-do not prevent legacy/headless file-mode use.
+macOS uses `/usr/bin/security` with an optional local `STATECASE_KEYCHAIN_PATH`.
+It sends one bounded quoted add command through stdin, uses explicitly scoped
+array searches for a selected keychain, and never enables overwrite or
+unrestricted item access. Backend mismatch is rejected before native access;
+distinct authenticated contexts bind backend identity while preserving the
+original Linux envelope format. Native macOS qualification is a separate gate.
+Missing native services do not prevent legacy/headless file-mode use.
 
 All credential reads require an owned regular file without group/other
 permissions or extra hard links. Symlinks, directories and FIFOs are rejected;

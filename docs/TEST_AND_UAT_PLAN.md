@@ -366,7 +366,13 @@ deployed Worker test environment.
   leaves only an encrypted owner-only payload on disk. Native helper input uses
   pipes, an environment allowlist and bounded runtime/output. Real isolated
   Secret Service tests must qualify fresh native storage and process restart;
-  native macOS and OS reboot/unlock remain separate gates.
+  native macOS uses an explicitly addressed disposable password-protected
+  keychain and verifies quoted stdin commands, missing/locked-store refusal,
+  cross-process reopen, explicit unlock, encrypted logout and exact cleanup.
+  Selected-path lookup must not fall back to the default search list. Mocked
+  tests cover control injection, escaped byte limits, environment filtering,
+  canonical output and foreign-backend refusal before native calls. OS reboot
+  and interactive unlock remain separate gates.
 - `AU-013`: unavailable/locked/missing/wrong native keys preserve the previous
   file and fail closed. Test stale read/save, active foreign locks, replaced
   locks, precommit failure, retained native keys, redacted errors and encrypted

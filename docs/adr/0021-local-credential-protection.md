@@ -44,8 +44,34 @@ The file reader rejects extra protected-document metadata and opens with
 `O_NOFOLLOW | O_NONBLOCK`, so a FIFO cannot block before file-type validation.
 Updates authenticate the old document and encrypt the new payload using one
 retrieved key, not two independent backend reads that could disagree.
-Unsupported platforms fail closed until their native adapter is qualified.
-macOS Keychain remains required scope, not waived by the Linux implementation.
+Unsupported platforms fail closed. macOS now has an adapter; its native
+qualification is tracked independently from the Linux implementation.
+
+macOS uses `/usr/bin/security`. An add sends exactly one quoted interactive
+command through stdin followed by EOF, not secret-bearing process arguments.
+It never enables verbose logging, overwrite (`-U`), or unrestricted access
+(`-A`). The default OS keychain/search list applies unless the local
+`STATECASE_KEYCHAIN_PATH` explicitly selects an absolute path. This selection
+is not synchronized or persisted inside the protected document; keep it stable
+for every process using that profile. Invalid/control-containing paths and
+commands exceeding the native line buffer fail before spawning a helper.
+
+The [Apple command parser](https://raw.githubusercontent.com/apple-oss-distributions/Security/main/SecurityTool/macOS/security.c)
+supports quoted tokens and preserves the final command's exit status at EOF.
+The [password reader](https://raw.githubusercontent.com/apple-oss-distributions/Security/main/SecurityTool/macOS/keychain_find.c)
+adds one newline to printable output; only macOS strips that one delimiter.
+Critically, Apple's
+[keychain list builder](https://raw.githubusercontent.com/apple-oss-distributions/Security/main/SecurityTool/macOS/keychain_utilities.c)
+can return a null reference after a failed single-path open. A null search
+scope means the default list. Statecase repeats an explicitly selected path in
+read arguments to force an array, even when empty, preventing that fallback.
+Adds do not use update mode and already reject a failed explicit keychain open.
+
+Protected metadata accepts only `secret-service` and `macos-keychain`. A
+different selected protector is rejected before native access, including
+preview. Backend identity is authenticated through distinct envelope contexts;
+the original Linux context remains unchanged for existing v2 files. Copying a
+local credential file across operating systems is not an enrollment mechanism.
 
 The [GNOME secret-tool implementation](https://raw.githubusercontent.com/GNOME/libsecret/master/tool/secret-tool.c)
 supports pipe input for store and pipe output for lookup. Lookup failure does

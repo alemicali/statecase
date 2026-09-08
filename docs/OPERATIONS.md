@@ -97,8 +97,15 @@ statecase --json credentials protect --yes
 Linux native protection requires `/usr/bin/secret-tool`, a persistent Secret
 Service and an accessible/unlocked login collection. Status and preview do not
 probe that service and are not proof that it is available. File-mode profiles
-remain usable on headless/ephemeral installations without a keyring. Native
-macOS support is not implemented yet.
+remain usable on headless/ephemeral installations without a keyring.
+
+macOS uses `/usr/bin/security` and the OS default keychain/search list. Set
+`STATECASE_KEYCHAIN_PATH` to an existing absolute keychain path to select it
+explicitly; use the same selection for every CLI/daemon process on that
+profile. Changing it does not migrate a key. Statecase does not create or
+unlock your keychain, change the default search list, or grant all applications
+access to its item. Locked/unavailable storage fails closed. The new backend
+still requires its recorded native CI qualification before a support claim.
 
 Once protected, all credential reads/writes use the native wrapping key;
 `logout` removes the service token but keeps vault keys and the file encrypted.
@@ -123,7 +130,14 @@ uses a freshly installed tarball, its own D-Bus instance with service activation
 disabled, temporary HOME/XDG/profile roots and a disposable GNOME login keyring.
 It never accesses the operator's keychain or harness data. Linux dependencies
 are `dbus`, `libsecret-tools` and `gnome-keyring`; CI runs this in a dedicated job.
-It is not an OS reboot, cloud sync, macOS or interactive-unlock qualification.
+On a disposable macOS runner the same opt-in flag selects
+`scripts/uat/native-macos-credentials.mjs`: it creates a password-protected
+temporary keychain, explicitly addresses it on every native operation, tests
+locked/missing-store refusal and encrypted updates, and deletes that exact
+keychain and fixture. It never lists or selects the operator's default store.
+Creation temporarily adds the owned keychain to the OS search list; exact
+deletion removes its entry. Run this only on a disposable macOS runner.
+Neither drill qualifies OS reboot, cloud sync or interactive unlock UI.
 
 ### Native service runtime
 
