@@ -201,13 +201,13 @@ describe("prepare complete Git participants before native mutation (RT-006, WS-0
     await assertOriginal(f);
   });
 
-  it("retains an explicit uninitialized gitlink record without treating it as ordinary file content", async () => {
+  it("refuses a capsule claiming initialized submodule worktree content before handoff", async () => {
     const f = await fixture();
-    f.captured.capsule.records.push({ path: "module", index: { state: "submodule", mode: 0o160000, oid: f.oldCommit }, worktree: { state: "submodule" } });
-    await withPreparedWorkspaceTransaction([{ root: f.target, captured: f.captured, gitFetch: "auto" }], { writes: [], deletes: [] }, async plan => {
-      expect([...plan.files.writes.map(write => write.path), ...plan.files.deletes]).not.toContain(join(f.target, "module")); await plan.guard();
-    });
-    await assertOriginal(f);
+    f.captured.capsule.records.push({ path: "module", index: { state: "submodule", mode: 0o160000, oid: f.oldCommit }, worktree: { state: "submodule", mode: 0o160000, oid: f.oldCommit } });
+    f.captured.capsule.records.sort((left, right) => left.path.localeCompare(right.path, "en"));
+    let called = false;
+    await expect(withPreparedWorkspaceTransaction([{ root: f.target, captured: f.captured, gitFetch: "auto" }], { writes: [], deletes: [] }, async () => { called = true; })).rejects.toThrow("initialized submodule");
+    expect(called).toBe(false); await assertOriginal(f);
   });
 
   it("rejects duplicate native targets before the consumer can publish a Git intent", async () => {
@@ -221,6 +221,17 @@ describe("prepare complete Git participants before native mutation (RT-006, WS-0
     const f = await fixture(); const lock = join(f.target, ".git", "index.lock"); await writeFile(lock, "other writer"); let called = false;
     await expect(withPreparedWorkspaceTransaction([{ root: f.target, captured: f.captured, gitFetch: "auto" }], { writes: [], deletes: [] }, async () => { called = true; })).rejects.toThrow("writer");
     expect(called).toBe(false); expect(await readFile(lock, "utf8")).toBe("other writer"); await assertOriginal(f);
+  });
+
+  it("permits source revalidation after the consumer has acquired its own native index lock", async () => {
+    const f = await fixture(), lock = join(f.target, ".git", "index.lock");
+    await withPreparedWorkspaceTransaction([{ root: f.target, captured: f.captured, gitFetch: "auto" }], { writes: [], deletes: [] }, async plan => {
+      // A real coordinator must journal lock ownership first; this scoped
+      // fixture only checks that taking exclusion does not invalidate sources.
+      await writeFile(lock, "fixture coordinator lock", { flag: "wx", mode: 0o600 });
+      try { await plan.guard(); } finally { await rm(lock); }
+    });
+    await assertOriginal(f);
   });
 
   it.each(["ask", "never"] as const)("retains the baseline acquisition policy %s without calling the consumer", async gitFetch => {
