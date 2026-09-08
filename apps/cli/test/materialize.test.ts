@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { build } from "esbuild";
 
-import { applyFileTransaction } from "../src/materialize.js";
+import { applyFileTransaction, targetFingerprint } from "../src/materialize.js";
 
 const temporary: string[] = [];
 
@@ -29,6 +29,21 @@ afterEach(async () => {
 });
 
 describe("transactional native materialization (BK-008, BK-009, WS-025)", () => {
+  it.each(["modified", "replaced", "symlink"])("rejects a %s descriptor observation with fixed diagnostics",async kind=>{
+    const root=await mkdtemp(join(tmpdir(),"statecase-materializer-observation-"));temporary.push(root);
+    const path=join(root,"file");await writeFile(path,"original");
+    await expect(targetFingerprint(path,{afterRead:async()=>{
+      if(kind!=="modified")await rm(path);
+      if(kind==="symlink")await symlink("other",path);else await writeFile(path,"modified");
+    }})).rejects.toThrow(/^unsafe materialization observation$/u);
+  });
+
+  it("bounds observed file size and validates the observation budget",async()=>{
+    const root=await mkdtemp(join(tmpdir(),"statecase-materializer-bounds-"));temporary.push(root);
+    const path=join(root,"file");await writeFile(path,"original");
+    for(const maximumBytes of [0,-1,NaN,1.5,4])await expect(targetFingerprint(path,{maximumBytes})).rejects.toThrow("unsafe materialization observation");
+    expect(await targetFingerprint(path,{maximumBytes:8})).toContain("[");
+  });
   it.each(["file", "directory", "symlink"])("preserves a pre-existing %s at the staging reservation (RT-006)", async (kind) => {
     const root = await mkdtemp(join(tmpdir(), "statecase-reservation-"));
     temporary.push(root);
