@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import { promisify } from "node:util";
 import { gunzipSync } from "node:zlib";
 import { SyncEngine } from "../../apps/cli/src/sync.ts";
@@ -78,11 +78,12 @@ const provider = createServer(async (request, response) => {
       if (requestCount === 2) check(JSON.stringify(result.content).includes(topicMarkers[active.generation]), "native-topic-not-read");
     }
     let tool;
-    if ((active.write || active.resume) && requestCount === 1) tool = { name: "Read", input: { file_path: join(active.machine.memory, "project_context.md") } };
+    const memoryPath = (filename) => active.resume ? join(active.machine.memory, filename) : relative(active.machine.project, join(active.machine.memory, filename));
+    if ((active.write || active.resume) && requestCount === 1) tool = { name: "Read", input: { file_path: memoryPath("project_context.md") } };
     else if (active.write && requestCount === 2) tool = { name: "Edit", input: {
-      file_path: join(active.machine.memory, "project_context.md"), old_string: topicMarkers[active.generation], new_string: topicMarkers[active.generation + 1],
+      file_path: memoryPath("project_context.md"), old_string: topicMarkers[active.generation], new_string: topicMarkers[active.generation + 1],
     } };
-    else if (active.write && requestCount === 3) tool = { name: "Write", input: { file_path: join(active.machine.memory, "MEMORY.md"), content: index(indexMarkers[active.generation + 1]) } };
+    else if (active.write && requestCount === 3) tool = { name: "Write", input: { file_path: memoryPath("MEMORY.md"), content: index(indexMarkers[active.generation + 1]) } };
     if (tool) check(body.tools.some((candidate) => candidate.name === tool.name), "native-tool-not-offered");
     const content = tool ? { type: "tool_use", id: `${active.toolPrefix}_${requestCount}`, ...tool } : { type: "text", text: "Synthetic fixture complete." };
     const message = { id: `msg_memory_${requestCount}`, type: "message", role: "assistant", model: body.model,
@@ -130,6 +131,12 @@ try {
   const ids = new Set();
   phase = "memory-source";
   const sourceSession = await harness(source, 0, { write: true }); ids.add(sourceSession);
+  const sourceHistory = (await readFile(join(claudeProjectDirectory(join(source.home, "claude"), source.project), `${sourceSession}.jsonl`), "utf8"))
+    .trim().split("\n").map((line) => JSON.parse(line));
+  const sourceCalls = sourceHistory.flatMap((record) => record.message?.role === "assistant" && Array.isArray(record.message.content) ? record.message.content : [])
+    .filter((block) => block.type === "tool_use");
+  check(sourceCalls.length === 3 && sourceCalls.every((call) => typeof call.input.file_path === "string" && !isAbsolute(call.input.file_path) &&
+    call.input.file_path === relative(source.project, join(source.memory, call.name === "Write" ? "MEMORY.md" : "project_context.md"))), "memory-source-relative-history-missing");
   const written = await memoryBytes(source);
   assert.ok(written.topic.includes(topicMarkers[1]));
   assert.ok(!written.topic.includes(topicMarkers[0]));
@@ -205,6 +212,7 @@ try {
     worktreeSharedRecall: true, subdirectorySharedRecall: true, unrelatedProjectIsolatedRecall: true,
     sameSessionMemoryResume: true, memoryHistoryPathsLocalized: true, originalMemoryReadHistoryPreserved: true,
     resumedNativeRead: true, localizedSessionNoOpRoundTrip: true,
+    sourceRelativeMemoryHistory: true, nativeRelativeMemoryTools: true,
     exactMemoryTransfer: true, memoryDependencyResolved: true, hydrationPreviewNonMutating: true,
     localMemorySettingsPreserved: true, returnTransferAndFreshRecall: true, encryptedObjects: remote.objectCount() }));
 } catch (error) {

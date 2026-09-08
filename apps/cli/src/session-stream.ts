@@ -170,11 +170,19 @@ export async function stagePortableSession(
   let size = acceptedSize;
   if (workspace || (options.memories?.length ?? 0) > 0) {
     const memoryReferences = createMemoryReferenceRewriter(options.memories ?? [], "portable", workspace?.id);
+    const nativeMemoryReferences = createMemoryReferenceRewriter(options.memories ?? [], "native", workspace?.id);
     const portable = await open(portablePath, "wx", 0o600);
     size = 0;
     try {
       await forEachCompleteRecord(acceptedPath, maxRecordBytes, async (record) => {
-        const transformed = memoryReferences(workspace ? transformStrings(record, (value) => portablePathValue(value, workspace)) : record);
+        const memoryRecord = memoryReferences(record);
+        // Source-relative memory reads may contain leading '..' and are not
+        // accepted by the general relative-activity extractor. Normalize only
+        // reviewed memory fields before adding their resolved activity.
+        for (const reference of extractActivityReferences([nativeMemoryReferences(memoryRecord)])) {
+          activity.set(`${reference.access}\0${reference.path}`, reference);
+        }
+        const transformed = workspace ? transformStrings(memoryRecord, (value) => portablePathValue(value, workspace)) : memoryRecord;
         const bytes = encoder.encode(`${JSON.stringify(transformed)}\n`);
         await portable.writeFile(bytes);
         size += bytes.byteLength;

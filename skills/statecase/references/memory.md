@@ -47,8 +47,23 @@ the required harness/workspace namespaces. Mapping does not create that grant.
 Read/append permits updates to the granted memory; it is a behavioral trust
 decision. Missing scope is not a reason to inspect keys or widen access.
 
-`nativeLocationVerified: false` is intentional: current transport and checkpoint
-tests do not establish effective native recall/generation, custom/subagent
-formats or native-version compatibility. Do not claim those capabilities from
-a successful map or sync. Strict session hydration checks pinned collections,
-but complete native path localization/compatibility still requires qualification.
+`nativeLocationVerified: false` is intentional: mapping does not automatically
+verify that this installation loads the selected root. Evidence for selected
+pinned native cases does not establish arbitrary settings precedence, subagent
+formats or native-version compatibility. Do not infer those from a successful
+map or sync. Strict hydration checks pinned collections; broader compatibility
+and migration qualification remain separate.
+
+Reviewed absolute and canonical relative memory file-tool arguments are mapped
+by collection identity, not by editing transcript text. Relative references need
+the native session's explicit cwd metadata; Statecase must not guess from its own
+working directory. Prose, tool results and written content remain unchanged.
+
+For `MEMORY_REFERENCE_UNRESOLVED` (exit 6), stop the attempted sync/resume. Check
+the required collection IDs, owning harness/workspace and this device's mappings
+through `memory list`, `status` and `workspace dependencies`. Correct a missing
+binding only to an operator-approved root, using the normal map preview. If the
+cause is absent/invalid native cwd metadata, an unsafe path, an unsupported tool
+format or an unqualified old-history migration, report that boundary. Do not
+hand-edit the transcript, drop the memory binding, widen grants, or change to
+best-effort merely to bypass the refusal.

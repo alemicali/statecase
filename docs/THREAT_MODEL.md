@@ -420,3 +420,10 @@ path fields are converted; prose, tool results and authored content are historic
 data, not filesystem mapping instructions. Bounded record traversal and staging
 cleanup constrain malformed inputs. Relative/opaque reference closure, historical
 migration, physical aliases and old-client fencing remain open release obligations.
+
+Canonical relative memory references use only explicit native record cwd, not
+prompt text or Statecase's current directory. Reject missing/invalid metadata,
+wrong collection ownership and noncanonical spellings that could conceal alias
+semantics. Convert before workspace URI rewriting and retain source-local
+activity evidence for dependency checks. This lexical policy does not prove
+physical path identity or close the remaining opaque/migration/version gates.

@@ -2466,7 +2466,7 @@ async function walk(
           session: {
             nativeSessionId: basename(logicalPath).replace(/\.jsonl$/u, ""),
             workspaceId: portable.workspaceId,
-            activity: extractActivityReferences(sessionScan.records),
+            activity: portable.activity,
           },
         });
         continue;
@@ -2492,11 +2492,11 @@ function portabilizeSession(
   workspaces: LocalConfig["workspaces"],
   primaryWorkspaceId?: string,
   memories: readonly SessionMemoryRoot[] = [],
-): { bytes: Uint8Array; workspaceId?: string } {
+): { bytes: Uint8Array; workspaceId?: string; activity: ActivityReference[] } {
   const decoder = new TextDecoder("utf8", { fatal: true, ignoreBOM: false });
   const records = decoder.decode(bytes).trimEnd().split("\n").map((line) => JSON.parse(line) as unknown);
   const matched = new Set<string>();
-  const transformed = records.map((record) => transformStrings(record, (value) => {
+  const portableValue = (value: string) => {
     const candidates = primaryWorkspaceId ? workspaces.filter((item) => item.id === primaryWorkspaceId) : workspaces;
     const workspace = [...candidates].sort((a, b) => b.path.length - a.path.length).find((item) => {
       const root = resolve(item.path);
@@ -2506,10 +2506,14 @@ function portabilizeSession(
     matched.add(workspace.id);
     const suffix = relative(resolve(workspace.path), value).split(sep).join("/");
     return `statecase://workspace/${workspace.id}${suffix ? `/${suffix}` : ""}`;
-  }));
+  };
+  for (const record of records) transformStrings(record, portableValue);
   const memoryReferences = createMemoryReferenceRewriter(memories, "portable", matched.size === 1 ? [...matched][0] : undefined);
+  const nativeMemoryReferences = createMemoryReferenceRewriter(memories, "native", matched.size === 1 ? [...matched][0] : undefined);
+  const memoryRecords = records.map(memoryReferences);
   return {
-    bytes: encoder.encode(`${transformed.map((record) => JSON.stringify(memoryReferences(record))).join("\n")}\n`),
+    bytes: encoder.encode(`${memoryRecords.map((record) => JSON.stringify(transformStrings(record, portableValue))).join("\n")}\n`),
+    activity: extractActivityReferences(memoryRecords.map(nativeMemoryReferences)),
     ...(matched.size === 1 ? { workspaceId: [...matched][0] } : {}),
   };
 }

@@ -34,7 +34,7 @@ try {
       if (["memory-source", "memory-transfer", "memory-resume", "memory-target", "memory-return", "memory-recall", "memory-worktree", "memory-subdirectory", "memory-unrelated"].includes(record.phase)) phase = record.phase;
       if (["NATIVE_MODEL_MISMATCH", "NATIVE_EFFORT_MISMATCH", "NATIVE_INSTRUCTIONS_MISMATCH"].includes(record.preferenceFailure)) preferenceFailure = record.preferenceFailure;
       if (["NATIVE_MEMORY_MISMATCH", "health-probe-limit", "unexpected-route", "request-limit", "unexpected-model-turn", "native-tool-failed", "native-topic-not-read", "native-tool-not-offered", "provider-exception", "provider-failed", "model-turn-count", "native-result-failed"].includes(record.fixtureFailure)) memoryFailure = record.fixtureFailure;
-      if (["memory-history-call-count", "memory-history-path-not-localized", "memory-original-read-history-lost"].includes(record.fixtureFailure)) memoryFailure = record.fixtureFailure;
+      if (["memory-history-call-count", "memory-history-path-not-localized", "memory-original-read-history-lost", "memory-source-relative-history-missing"].includes(record.fixtureFailure)) memoryFailure = record.fixtureFailure;
     } catch { /* Ignore non-metadata output. */ }
   }
   process.stderr.write(`${JSON.stringify({ result: "fail", phase, preferenceFailure, memoryFailure, error: "NativeQualificationFailed" })}\n`);

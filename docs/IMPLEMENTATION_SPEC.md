@@ -1363,3 +1363,11 @@ sessions and append-merge activity inspection share the policy. Relative paths,
 freeform patch conversion, old-history migration and mixed-version fencing remain
 required; this format must not be deployed as mixed-client-compatible without
 that qualification. See ADR-0025 for exact boundaries.
+
+The relative-reference follow-up resolves canonical relative memory tool fields
+using per-record native cwd metadata before workspace URI conversion. It never
+uses the CLI process cwd or guesses from a mapped workspace. Missing/invalid cwd
+and noncanonical alias-sensitive spellings fail with the same integrity error.
+Source-local normalization also feeds memory activity/dependency extraction.
+Native relative-history execution must be qualified separately from unit tests;
+freeform patches, historical migration and mixed-version fencing remain open.

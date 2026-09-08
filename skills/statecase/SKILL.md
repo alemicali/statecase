@@ -17,7 +17,7 @@ statecase --json status
 
 Read the JSON fields `accessMode`, `namespaces`, and `expiresAt`. Decide whether full login/vault enrollment, scoped bootstrap, harness setup, a Drop mapping, or synchronization is missing.
 
-For native memory selection or relocation, read [memory collections](references/memory.md).
+For native memory selection, relocation or `MEMORY_REFERENCE_UNRESOLVED`, read [memory collections](references/memory.md).
 Memory is separate from global instructions and Drops; ordinary harness setup
 does not select it or enable native recall.
 

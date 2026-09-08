@@ -158,6 +158,26 @@ after target hydration and source return. The report records the reference
 topology and exact assertion boundaries. This does not close the remaining
 relative/freeform, historical migration or cross-host requirements above.
 
+### Relative reference implementation checkpoint
+
+Canonical relative memory paths now resolve from explicit native cwd observations
+as records are processed, never from the running Statecase process or a guessed
+workspace root. Reviewed session/turn metadata and Claude assistant/user record
+metadata update that context; prose and nested artifact/tool data cannot. Missing
+or invalid cwd with a selected collection fails closed for relative file-tool
+arguments. Canonical leading parent segments and `./` are supported; ambiguous
+noncanonical traversal/separators are rejected rather than normalized through
+possible filesystem aliases. Category/harness/workspace checks still apply.
+
+Memory conversion precedes workspace URI conversion, preserving native cwd
+evidence. Activity extraction sees source-local normalized memory fields, so
+parent-relative memory reads contribute real logical dependencies rather than
+being omitted by the generic relative-path policy. Buffered and streamed paths
+share the rule. The native drill now supplies relative memory arguments and
+requires them to be present in source history before testing original-UUID
+target resume. Its exact-candidate result is pending execution. Freeform patches,
+complete migration, physical aliases and mixed-client fencing remain open.
+
 ## Sources
 
 Fetched 2026-09-08: [Codex memories](https://learn.chatgpt.com/docs/customization/memories)

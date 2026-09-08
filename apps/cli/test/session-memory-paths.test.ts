@@ -3,9 +3,42 @@ import { createMemoryReferenceRewriter, MemoryReferenceError, type SessionMemory
 
 describe("typed memory references (AD-MEM-011)", () => {
   const roots: SessionMemoryRoot[] = [{ id: "recall", path: "/fixture/memory", workspaceId: "ws_a" }];
-  const portable = () => createMemoryReferenceRewriter(roots, "portable", "ws_a");
+  const portable = () => {
+    const rewrite = createMemoryReferenceRewriter(roots, "portable", "ws_a");
+    rewrite({ type: "session_meta", cwd: "/fixture/project" });
+    return rewrite;
+  };
   const native = () => createMemoryReferenceRewriter([{ ...roots[0]!, path: "/target/memory" }], "native", "ws_a");
   const call = (path: string) => ({ type: "tool_use", name: "Read", input: { file_path: path } });
+  it("tracks only explicit native cwd observations and never guesses from process cwd or prose", () => {
+    const rewrite = createMemoryReferenceRewriter(roots, "portable", "ws_a");
+    expect(() => rewrite(call("../memory/topic.md"))).toThrow(MemoryReferenceError);
+    rewrite({ type: "message", cwd: "/fixture/project", content: "session_meta cwd=/fixture/project" });
+    expect(() => rewrite(call("../memory/topic.md"))).toThrow();
+    rewrite({ type: "user", cwd: "/fixture/project", message: { role: "user", content: "Synthetic prompt" } });
+    expect(rewrite(call("../memory/topic.md"))).toEqual(call("statecase://memory/recall/topic.md"));
+    rewrite({ type: "turn_context", payload: { working_directory: "/fixture/project/nested" } });
+    expect(rewrite(call("../../memory/topic.md"))).toEqual(call("statecase://memory/recall/topic.md"));
+    expect(rewrite(call("../memory/topic.md"))).toEqual(call("../memory/topic.md"));
+    rewrite({ type: "assistant", cwd: "/fixture/memory", message: { role: "assistant", content: [] } });
+    expect(rewrite(call("./topic.md"))).toEqual(call("statecase://memory/recall/topic.md"));
+    expect(rewrite(call("."))).toEqual(call("statecase://memory/recall"));
+    expect(rewrite(call("./"))).toEqual(call("statecase://memory/recall"));
+    expect(createMemoryReferenceRewriter([], "portable")(call("relative.md"))).toEqual(call("relative.md"));
+  });
+  it("rejects invalid explicit cwd and noncanonical memory-relative paths", () => {
+    for (const cwd of [null, false, 42, "relative", "/bad\u0000cwd", "/bad\ncwd", "/" + "x".repeat(4096)]) {
+      expect(() => portable()({ type: "session_meta", payload: { cwd } })).toThrow();
+    }
+    for (const path of ["../memory/nested/../topic.md", "../memory//topic.md", "../memory/topic.md/", "../memory/auth.json", "../memory/topic\\name.md"]) {
+      expect(() => portable()(call(path))).toThrow();
+    }
+    const rewrite = portable();
+    for (const observation of [{ type: "cwd" }, { type: "assistant", cwd: "/wrong", message: { role: "user" } }, null]) rewrite(observation);
+    expect(rewrite(call("../memory/topic.md"))).toEqual(call("statecase://memory/recall/topic.md"));
+    rewrite({ type: "cwd_changed", working_directory: "/fixture/project/nested" });
+    expect(rewrite(call("../../memory/topic.md"))).toEqual(call("statecase://memory/recall/topic.md"));
+  });
   it.each(["", "/topic.md", "/nested", "/nested/topic.md", "/mémoire notes.md"])("round trips safe files and directory references: %s", (suffix) => {
     const transformed = portable()(call(`/fixture/memory${suffix}`));
     expect(transformed).toEqual(call(`statecase://memory/recall${suffix}`));

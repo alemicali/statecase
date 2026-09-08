@@ -885,6 +885,15 @@ historical memory tool arguments, preserve the old Read output and perform a new
 native Read from the target memory directory. Both transfer directions must then
 have a no-op canonical push. Relative/freeform and migration cases remain required.
 
+The relative-reference AD-MEM-011 extension requires cwd changes across records,
+native Claude user/assistant metadata, missing/malformed cwd refusal, absence of
+process-cwd/prose inference, canonical parent-relative paths, noncanonical-path
+denial, preserved authored content and resolved memory activity. The pinned
+native fixture sends relative Read/Edit/Write paths and must verify those exact
+relative arguments in source history before encrypted hydration, same-UUID
+target resume, native Read and return/no-op checks. A fixture implementation or
+prior absolute-path pass does not establish this new native result.
+
 A release candidate is rejected when:
 
 - a critical/required test is skipped or flaky;

@@ -4,6 +4,13 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Resolve canonical relative memory file-tool references from explicit native cwd
+  metadata, including cwd changes and Claude record envelopes, before workspace
+  path conversion. Include parent-relative reads in memory dependency activity;
+  refuse missing/invalid context or alias-sensitive noncanonical paths. Extend
+  native same-session qualification to relative source history and update the
+  agent-native memory error workflow.
+
 - Portabilize reviewed absolute memory file-tool references by logical collection
   ID in session history; localize them to the receiving harness/project binding
   without changing prose, tool outputs or authored content. Refuse missing,

@@ -14,6 +14,29 @@ afterEach(async () => {
 });
 
 describe("streamed session staging (AD-CX-008, PERF-003)", () => {
+  it("resolves relative memory references using each native cwd and records their dependency activity (AD-MEM-011)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "statecase-memory-relative-session-")); temporary.push(root);
+    const workspace = join(root, "project"), memory = join(root, "memory"), source = join(root, "source.jsonl");
+    const records = [
+      { type: "session_meta", payload: { cwd: workspace } },
+      { type: "tool_call", name: "read_file", arguments: { path: "../memory/topic.md" } },
+      { type: "turn_context", payload: { cwd: join(workspace, "nested") } },
+      { type: "assistant", cwd: join(workspace, "nested"), message: { role: "assistant", content: [
+        { type: "tool_use", name: "Write", input: { file_path: "../../memory/topic.md", content: "../../memory/unchanged prose.md" } },
+      ] } },
+    ];
+    await writeFile(source, records.map((record) => JSON.stringify(record)).join("\n") + "\n");
+    const staged = await stagePortableSession(source, [{ id: "ws_a", path: workspace }], { memories: [{ id: "recall", path: memory, workspaceId: "ws_a" }] });
+    try {
+      const lines = (await readFile(staged!.path, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+      expect(lines[1].arguments.path).toBe("statecase://memory/recall/topic.md");
+      expect(lines[3].message.content[0].input).toEqual({ file_path: "statecase://memory/recall/topic.md", content: "../../memory/unchanged prose.md" });
+      expect(staged!.activity).toEqual(expect.arrayContaining([
+        { path: join(memory, "topic.md"), access: "read", source: "native-event" },
+        { path: join(memory, "topic.md"), access: "write", source: "native-event" },
+      ]));
+    } finally { await staged?.dispose(); }
+  });
   it("maps memory tool references by identity while preserving prose and written content (AD-MEM-011)", async () => {
     const root = await mkdtemp(join(tmpdir(), "statecase-session-memory-path-")); temporary.push(root);
     const workspace = join(root, "project"), memory = join(root, "source-memory"), targetMemory = join(root, "target-memory");

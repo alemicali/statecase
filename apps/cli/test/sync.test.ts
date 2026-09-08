@@ -61,6 +61,7 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     await writeFile(join(harness, "sessions", "memory-session.jsonl"), [
       { type: "session_meta", payload: { cwd: workspace } },
       { type: "tool_call", name: "read_file", arguments: { path: join(memory, "MEMORY.md") } },
+      { type: "tool_call", name: "read_file", arguments: { path: "../recall/MEMORY.md" } },
     ].map((record) => JSON.stringify(record)).join("\n") + "\n");
     const source = harnessConfig(harness, workspace); source.workspaces[0]!.sync = "git";
     source.memories = [{ id: "recall", kind: "codex-global", harnessNamespace: "harness:codex:default", path: memory, mode: "two-way" }];
@@ -116,6 +117,7 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     expect(await readFile(join(target.memories[0]!.path, "MEMORY.md"), "utf8")).toBe("Recall at checkpoint");
     const localizedMemorySession = (await readFile(join(target.mappings[0]!.path, "sessions", "statecase", target.workspaces[0]!.id, "memory-session.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
     expect(localizedMemorySession[1].arguments.path).toBe(join(target.memories[0]!.path, "MEMORY.md"));
+    expect(localizedMemorySession[2].arguments.path).toBe(join(target.memories[0]!.path, "MEMORY.md"));
     expect(await readFile(join(target.memories[1]!.path, "MEMORY.md"), "utf8")).toBe("Private other project");
     expect(target.applied["memory:other"]).toBeUndefined();
     expect(target.memories).toEqual(before.memories);

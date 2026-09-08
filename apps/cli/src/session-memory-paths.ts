@@ -17,6 +17,19 @@ function suffixAllowed(suffix: string): boolean {
   return suffix === "" || memoryNativePath(`portable-memory/v1/${suffix}`) !== undefined ||
     memoryNativePath(`portable-memory/v1/${suffix}/reference.md`) !== undefined;
 }
+function observedCwd(record: unknown): string | undefined {
+  if (!object(record)) return undefined;
+  const type = typeof record.type === "string" ? record.type : "";
+  const claude = ["assistant", "user"].includes(type) && object(record.message) && record.message.role === type;
+  const metadata = ["session_meta", "session_start", "cwd", "cwd_changed", "turn_context"].includes(type);
+  if (!claude && !metadata) return undefined;
+  const payload = metadata && object(record.payload) ? record.payload : undefined;
+  const candidate = [record.cwd, record.working_directory, payload?.cwd, payload?.working_directory].find((value) => value !== undefined);
+  if (candidate === undefined) return undefined;
+  if (typeof candidate !== "string" || !isAbsolute(candidate) || candidate.length > 4096 ||
+      [...candidate].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)) throw new MemoryReferenceError();
+  return resolve(candidate);
+}
 
 /** Compile once per streamed file. Only reviewed tool path fields change;
  * user prose, tool outputs, edit replacements and written content never do. */
@@ -26,6 +39,7 @@ export function createMemoryReferenceRewriter(
   const roots = memories.map((memory) => ({ ...memory, path: resolve(memory.path) }));
   if (roots.length > 128 || new Set(roots.map((root) => root.id)).size !== roots.length ||
       memories.some((root) => !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(root.id) || !isAbsolute(root.path))) throw new MemoryReferenceError();
+  let cwd: string | undefined;
   const mapPath = (value: string): string => {
     if (direction === "native") {
       if (!value.startsWith(prefix)) return value;
@@ -36,13 +50,22 @@ export function createMemoryReferenceRewriter(
       return suffix ? resolve(root.path, ...parts) : root.path;
     }
     if (value.startsWith(prefix)) throw new MemoryReferenceError();
-    if (!isAbsolute(value)) return value;
-    const matches = roots.filter((root) => value === root.path || value.startsWith(`${root.path}${sep}`));
+    const absolute = isAbsolute(value);
+    if (!absolute && roots.length === 0) return value;
+    if (!absolute && !cwd) throw new MemoryReferenceError();
+    const candidate = absolute ? value : resolve(cwd!, value);
+    const matches = roots.filter((root) => candidate === root.path || candidate.startsWith(`${root.path}${sep}`));
     if (matches.length === 0) return value;
     if (matches.length !== 1) throw new MemoryReferenceError();
-    const root = matches[0]!, suffix = relative(root.path, value).split(sep).join("/");
+    const root = matches[0]!, suffix = relative(root.path, candidate).split(sep).join("/");
+    if (!absolute) {
+      const spelling = value.replace(/^(?:\.\/)+/u, "").replace(/^\.$/u, "");
+      // Allow canonical parent-relative paths; do not collapse traversals or
+      // duplicate separators whose filesystem meaning could involve aliases.
+      if (relative(cwd!, candidate).split(sep).join("/") !== spelling) throw new MemoryReferenceError();
+    }
     // Do not normalize away traversal before validating the observed native path.
-    const rawSuffix = value === root.path ? "" : value.slice(root.path.length + 1).split(sep).join("/");
+    const rawSuffix = !absolute ? suffix : value === root.path ? "" : value.slice(root.path.length + 1).split(sep).join("/");
     if (!suffixAllowed(rawSuffix) || suffix !== rawSuffix ||
         (root.workspaceId !== undefined && root.workspaceId !== workspaceId)) throw new MemoryReferenceError();
     return `${prefix}${root.id}${suffix ? `/${suffix}` : ""}`;
@@ -50,6 +73,7 @@ export function createMemoryReferenceRewriter(
   const mentionsReference = (value: string) => value.includes(prefix) ||
     (direction === "portable" && roots.some((root) => value.includes(root.path)));
   return (record) => {
+    if (direction === "portable" && roots.length > 0) cwd = observedCwd(record) ?? cwd;
     let nodes = 0;
     const visit = (value: unknown, depth: number): unknown => {
       if (++nodes > 100_000 || depth > 64) throw new MemoryReferenceError();

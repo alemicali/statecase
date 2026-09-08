@@ -658,3 +658,26 @@ negative controls also pass again. See the expanded
 same-host evidence; full-run CI status and broader release gates remain separate.
 The complete `34211942704` run subsequently finished successfully in all nine
 jobs, including background synchronization and quality/workerd checks.
+
+### Native-cwd relative memory references — 2026-09-08
+
+The documentation follow-up `20182aa` passed CI `34212268123`. A new failing-first
+regression then demonstrated that `../memory/topic.md` remained unportable and
+its activity could be omitted. Canonical relative memory paths now resolve from
+explicit native cwd observations as records are processed, including cwd changes
+and Claude user/assistant envelopes. Missing/invalid metadata and noncanonical
+alias-sensitive spellings fail closed. Neither process cwd nor prompt/artifact
+text supplies directory identity. Conversion precedes workspace URI rewriting;
+source-local normalized fields also contribute memory dependency activity.
+
+The complete local check passes 830 tests in 59 files, lint, types, build and
+clean-package smoke. Global branches are 91.96% (4384/4767), and the memory
+reference rewriter is 100% (141/141). The packaged memory skill now explains
+reference-integrity failures and preserves mapping/grant/transcript boundaries;
+it was updated with skill-creator and its validator passed.
+
+The native memory fixture now sends relative Read/Edit/Write arguments and
+requires their presence in the source's real history before target resume and
+return checks. That new exact-candidate native execution is still pending.
+Freeform patches, full historical migration, physical aliases, mixed versions,
+independent-host packaged/cloud parity and the wider production gates remain open.
