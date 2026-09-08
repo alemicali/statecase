@@ -114,4 +114,28 @@ describe("prepared workspace and profile share one durable decision (RT-006, WS-
     expect(log.slice(oldLog.length)).toContain(`${f.beforeCommit} ${f.captured.capsule.baseCommit}`);
     expect(await git(f.target, "reflog", "show", "--format=%H", "incoming")).toBe(f.captured.capsule.baseCommit);
   });
+  it.each(["dry-run", "unselected", "stale-profile"])("refuses %s before fetching missing Git objects", async kind => {
+    const f = await fixture();
+    if (kind === "unselected") { const old = await f.store.loadConfig(); old.workspaces = []; await f.store.saveConfig(old); }
+    const config = await f.store.loadConfig();
+    if (kind === "stale-profile") { const concurrent = await f.store.loadConfig(); concurrent.apiUrl = "https://changed.fixture.invalid"; await f.store.saveConfig(concurrent); }
+    const original = await readFile(join(f.home, "config.json"));
+    await expect(git(f.target, "cat-file", "-e", f.captured.capsule.baseCommit!)).rejects.toThrow();
+    await expect(f.store.materializeWorkspaceConfig(config, [{ root: f.target, captured: f.captured, gitFetch: "auto" }],
+      { writes: [], deletes: [] }, { dryRun: kind === "dry-run" })).rejects.toThrow();
+    await expect(git(f.target, "cat-file", "-e", f.captured.capsule.baseCommit!)).rejects.toThrow();
+    expect(await readFile(join(f.home, "config.json"))).toEqual(original);
+    expect(await readFile(join(f.target, ".git", "HEAD"))).toEqual(f.beforeHead);
+  });
+  it.each(["checkpoint-published", "file-plan-published"])("preserves edits made at %s while refusing the incoming checkpoint", async phase => {
+    const f = await fixture(), config = await f.store.loadConfig(); config.applied.project = { revisionId: "incoming", digests: {} };
+    await expect(f.store.materializeWorkspaceConfig(config, [{ root: f.target, captured: f.captured, gitFetch: "auto" }],
+      { writes: [], deletes: [] }, { afterBoundary: async boundary => {
+        if (boundary === phase) await writeFile(join(f.target, "note"), "concurrent edit");
+      } })).rejects.toThrow();
+    expect(await readFile(join(f.target, "note"), "utf8")).toBe("concurrent edit");
+    expect(await readFile(join(f.home, "config.json"), "utf8")).toBe(f.original);
+    expect(await readFile(join(f.target, ".git", "HEAD"))).toEqual(f.beforeHead);
+    expect(await f.store.recoverMaterialization()).toMatchObject({ pending: false });
+  });
 });
