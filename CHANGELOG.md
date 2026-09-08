@@ -4,6 +4,10 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Rejected Git metadata paths (including `.GIT` casing) and reserved recovery
+  artifact paths inside workspace capsules. Added failing-first regressions
+  proving a valid overlay must not overwrite `.git/config` or recovery files.
+
 - Hardened managed workspace rollback against independent source/target branch
   advances and HEAD changes; branch mutations now use expected-value Git
   updates. Added creation/deletion, detached/unborn, and foreign-ref-lock tests.

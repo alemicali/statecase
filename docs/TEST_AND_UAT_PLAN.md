@@ -300,6 +300,8 @@ policy; they are never uploaded merely because they are present.
   foreign HEAD/ref locks, creation/deletion/detached/unborn transitions,
   preservation of newer files during rollback, and retention/exclusion of
   recovery artifacts when exact rollback cannot safely complete.
+  Valid overlay blobs targeting `.git/config`, `.GIT/config`, or reserved
+  recovery artifacts must be rejected before materialization.
 
 ## 7. Protocol and cloud contract tests
 

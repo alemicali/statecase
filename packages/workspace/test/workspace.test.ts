@@ -1130,6 +1130,20 @@ describe("exact Git workspace capsules (WS-010..WS-018, WS-025..WS-026)", () => 
 });
 
 describe("authenticated managed workspace advancement (WS-034)", () => {
+  it.each([".git/config", ".GIT/config", "nested/context.statecase-transaction-11111111-2222-4333-8444-555555555555.backup"])(
+    "rejects reserved local metadata in an otherwise valid capsule: %s", async (path) => {
+      const source = await repository("reserved-source");
+      const target = await repository("reserved-target");
+      await writeFile(join(source, "tracked.txt"), "remote bytes must not replace local metadata\n");
+      const captured = await captureWorkspace(source);
+      captured.capsule.records[0]!.path = path;
+      captured.blobs[0]!.path = path;
+      const originalGitConfig = await readFile(join(target, ".git", "config"));
+      await expect(applyWorkspaceCapsule(target, captured, { materialize })).rejects.toThrow("unsafe workspace path");
+      expect(await readFile(join(target, ".git", "config"))).toEqual(originalGitConfig);
+    },
+  );
+
   it("advances staged/worktree state and restores paths removed from the overlay", async () => {
     const source = await repository("advance-source");
     const target = await repository("advance-target");

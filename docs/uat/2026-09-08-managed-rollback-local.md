@@ -58,3 +58,19 @@ aggregate resource bounds, package-specific critical coverage, and packaged
 live-cloud cross-host native Codex/Claude continuation remain release gates.
 The prior native Daytona bundle remains historical evidence for its exact
 candidate; later code changes require a native rerun.
+
+## CI and reserved-path follow-up
+
+Commit `a92a244617b8ae653747513883f47e5286354087` passed the complete
+[CI run 34182284800](https://github.com/alemicali/statecase/actions/runs/34182284800):
+quality/cloud tests, Node 22/24 compatibility, native macOS service lifecycle,
+native Codex return-sync, and background synchronization. The native test keeps
+its reference-backend, deterministic-provider, two-homes-on-one-host limits.
+
+Subsequent inbound-path review found that otherwise valid overlay blobs could
+target `.git/config`, `.GIT/config`, or reserved recovery artifacts. Three
+failing-first regressions demonstrated the missing rejection. Workspace path
+validation now refuses those destinations before mutation. The complete local
+check for that follow-up passed 498 tests, 90.39% global branches (3189/3528),
+88.88% workspace branches, and 96% file-materializer branches. Its CI is separate
+from the earlier run, and the critical workspace target remains unmet.

@@ -87,10 +87,11 @@ This is not yet full qualification. Remaining gates include:
 
 These gaps must be closed, not waived by the passing simple return-sync case.
 
-The latest full local check passed 495 tests and 90.38% global branch coverage;
-the workspace package remains at 88.85% branches, below its critical-code target.
-The file materializer is at 96% branches. This later branch/rollback-hardening
-candidate needs a native CI rerun; the prior Daytona result does not qualify
-subsequent code changes automatically.
+The latest full local check passed 498 tests and 90.39% global branch coverage;
+the workspace package remains at 88.88% branches, below its critical-code target.
+The file materializer is at 96% branches. The branch/rollback candidate
+`a92a244` passed CI including native Codex return-sync and background sync.
+The later explicit Git-metadata/recovery-path guard has local passing evidence
+and must pass its own CI; prior results do not qualify later changes automatically.
 The executed native bundle and precise isolation limits are recorded in
 `docs/uat/2026-09-08-native-codex-resume.md`.
