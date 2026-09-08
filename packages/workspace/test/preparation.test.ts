@@ -26,6 +26,14 @@ function environment(root: string) {
 async function git(root: string, ...args: string[]) {
   return (await execute("git", ["-C", root, ...args], { env: environment(root), encoding: "utf8" })).stdout.trim();
 }
+async function gitProxy(root: string, handler: string) {
+  const bin = await mkdtemp(join(root, "git-proxy-"));
+  const originalPath = `'${(process.env.PATH ?? "").replaceAll("'", "'\\''")}'`;
+  // exec keeps the ordinary Git subprocess count unchanged; starting another
+  // Node VM for every observational Git command overloaded concurrent tests.
+  await writeFile(join(bin, "git"), `#!/bin/sh\n${handler}\nexec /usr/bin/env PATH=${originalPath} git "$@"\n`, { mode: 0o700 });
+  vi.stubEnv("PATH", `${bin}:${process.env.PATH}`);
+}
 async function fixture(shallow = false) {
   const root = await mkdtemp(join(tmpdir(), "statecase-workspace-plan-")); temporary.push(root);
   vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1"); vi.stubEnv("GIT_CONFIG_GLOBAL", join(root, "empty-config"));
@@ -245,11 +253,7 @@ describe("prepare complete Git participants before native mutation (RT-006, WS-0
     if (kind === "many-branches") for (let index = 0; index < 65; index++) await git(f.source, "update-ref", `refs/heads/a/${String(index).padStart(3, "0")}`, f.oldCommit);
     await git(f.target, "config", "remote.origin.fetch", "+refs/heads/*:refs/heads/*");
     const fetchHead = join(f.target, ".git", "FETCH_HEAD"); await writeFile(fetchHead, "pre-existing fetch metadata\n");
-    const bin = join(f.root, "bin"); await mkdir(bin);
-    await writeFile(join(bin, "git"), `#!${process.execPath}\nimport{spawnSync}from'node:child_process';const args=process.argv.slice(2);
-      if(args.includes('fetch')&&args.at(-1)===${JSON.stringify(f.captured.capsule.baseCommit)})process.exit(1);
-      const result=spawnSync('git',args,{stdio:'inherit',env:{...process.env,PATH:${JSON.stringify(process.env.PATH)}}});process.exit(result.status??1);`, { mode: 0o700 });
-    await writeFile(join(bin, "package.json"), '{"type":"module"}'); vi.stubEnv("PATH", `${bin}:${process.env.PATH}`);
+    await gitProxy(f.root, `case " $* " in *" fetch "*" ${f.captured.capsule.baseCommit} "*) exit 1;; esac`);
     let called = false;
     await withPreparedWorkspaceTransaction([{ root: f.target, captured: f.captured, gitFetch: "auto" }], { writes: [], deletes: [] }, async plan => {
       called = true; await plan.guard();
@@ -259,12 +263,12 @@ describe("prepare complete Git participants before native mutation (RT-006, WS-0
   }, 30000); // Real Git plus a process-level fault proxy under concurrent V8 coverage.
 
   it.each(["advertisement-error", "empty", "malformed", "fetch-error"])("failed preparation acquisition (%s) leaves operational state untouched", async fault => {
-    const f = await fixture(); const bin = join(f.root, "bin"); await mkdir(bin);
-    await writeFile(join(bin, "git"), `#!${process.execPath}\nimport{spawnSync}from'node:child_process';const args=process.argv.slice(2);
-      if(args.includes('fetch')&&(args.at(-1)===${JSON.stringify(f.captured.capsule.baseCommit)}||${fault === "fetch-error"}))process.exit(1);
-      if(args.includes('ls-remote')&&${fault !== "fetch-error"}){${fault === "malformed" ? "process.stdout.write('invalid\\trefs/heads/main\\n');" : ""}process.exit(${fault === "advertisement-error" ? 128 : 0});}
-      const result=spawnSync('git',args,{stdio:'inherit',env:{...process.env,PATH:${JSON.stringify(process.env.PATH)}}});process.exit(result.status??1);`, { mode: 0o700 });
-    await writeFile(join(bin, "package.json"), '{"type":"module"}'); vi.stubEnv("PATH", `${bin}:${process.env.PATH}`); let called = false;
+    const f = await fixture();
+    await gitProxy(f.root, `case " $* " in
+      *" fetch "${fault === "fetch-error" ? "*" : `*" ${f.captured.capsule.baseCommit} "*`}) exit 1;;
+      ${fault === "fetch-error" ? "" : `*" ls-remote "*) ${fault === "malformed" ? "printf 'invalid\\trefs/heads/main\\n';" : ""} exit ${fault === "advertisement-error" ? 128 : 0};;`}
+      esac`);
+    let called = false;
     await expect(withPreparedWorkspaceTransaction([{ root: f.target, captured: f.captured, gitFetch: "auto" }], { writes: [], deletes: [] }, async () => { called = true; })).rejects.toMatchObject({ code: "BASELINE_UNAVAILABLE" });
     expect(called).toBe(false); await assertOriginal(f);
   }, 30000);
@@ -272,13 +276,8 @@ describe("prepare complete Git participants before native mutation (RT-006, WS-0
   it.each(["symbolic-error", "oid-error", "invalid-oid"])("refuses %s from Git during revalidation instead of treating it as absence", async fault => {
     const f = await fixture();
     await withPreparedWorkspaceTransaction([{ root: f.target, captured: f.captured, gitFetch: "auto" }], { writes: [], deletes: [] }, async plan => {
-      const bin = join(f.root, "bin"); await mkdir(bin);
-      const wrapper = `#!${process.execPath}\nimport{spawnSync}from'node:child_process';const args=process.argv.slice(2);
-        if(args.includes('refs/heads/incoming')&&args.includes(${JSON.stringify(fault === "symbolic-error" ? "symbolic-ref" : "rev-parse")})){
-          ${fault === "invalid-oid" ? "process.stdout.write('invalid-object-id\\n');process.exit(0);" : "process.exit(128);"}}
-        const result=spawnSync('git',args,{stdio:'inherit',env:{...process.env,PATH:${JSON.stringify(process.env.PATH)}}});process.exit(result.status??1);`;
-      await writeFile(join(bin, "git"), wrapper, { mode: 0o700 }); await writeFile(join(bin, "package.json"), '{"type":"module"}');
-      vi.stubEnv("PATH", `${bin}:${process.env.PATH}`);
+      await gitProxy(f.root, `case " $* " in *" ${fault === "symbolic-error" ? "symbolic-ref" : "rev-parse"} "*" refs/heads/incoming "*)
+        ${fault === "invalid-oid" ? "printf 'invalid-object-id\\n'; exit 0" : "exit 128"};; esac`);
       await expect(plan.guard()).rejects.toThrow(/safely|invalid/u);
     });
   }, 30000);
