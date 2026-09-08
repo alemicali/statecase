@@ -152,6 +152,12 @@ before live rollout. The native Claude drill now attempts same-UUID resume with
 localized historical Read/Edit/Write paths and a native Read from the target
 memory root; its new exact-candidate CI result must be recorded separately.
 
+That same-UUID native extension passed on `6ac73fe` in job `102014736920` of CI
+`34211942704`, including all prior fresh-memory/location controls and no-op pushes
+after target hydration and source return. The report records the reference
+topology and exact assertion boundaries. This does not close the remaining
+relative/freeform, historical migration or cross-host requirements above.
+
 ## Sources
 
 Fetched 2026-09-08: [Codex memories](https://learn.chatgpt.com/docs/customization/memories)

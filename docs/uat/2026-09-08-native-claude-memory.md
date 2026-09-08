@@ -71,13 +71,43 @@ location selection, not Statecase workspace-capsule transfer from worktrees or
 automatic effective-location discovery by the CLI. The complete run subsequently
 finished successfully in all nine jobs, including background synchronization.
 
+## Executed same-session memory-reference extension
+
+Candidate `6ac73fe4a71c802fb97cef5311e94978288c4194`,
+[CI run 34211942704](https://github.com/alemicali/statecase/actions/runs/34211942704),
+native-claude job `102014736920`: completed successfully, including the explicit
+memory step. Claude, Node, Git and runner image versions are unchanged.
+
+The extended drill retains all seven fresh-session assertions and adds an actual
+native resume of the original source UUID on the target. In the first resumed
+model request, all three historical memory Read/Edit/Write arguments point to the
+target's memory directory. The original Read result still contains the old topic
+marker, proving that historical output was preserved rather than replaced with
+current content. A new native Read then returns the transferred topic bytes from
+the target path. Resuming does not change the memory files.
+
+After hydration, a target push is a no-op. After target changes, return transfer
+and localization, a source push is also a no-op. These assertions check canonical
+session bytes across physical path changes rather than merely file availability.
+The redacted pass record reports the same seven fresh IDs plus the successful
+same-UUID resume, all five new memory-history/resume/no-op flags true and 16
+encrypted objects. The ordinary native session continuity step also passes.
+The complete run subsequently finished successfully in all nine jobs, including
+background synchronization and quality/workerd checks.
+
+This qualifies the pinned Claude absolute structured file-path history used by
+the fixture. It does not qualify relative references, freeform patches, old
+absolute-history migration, mixed versions or independent-host packaged/cloud
+execution. Prose, tool outputs and authored content are deliberately not path
+rewriting inputs.
+
 ## Boundaries
 
 This proves native index loading, on-demand topic reads, explicit native writes
 and bidirectional engine transport for this pinned version and selected
 locations. It does not prove hosted-model retention decisions, full settings
-precedence, subagent memory, automatic location discovery, session tool-history
-path localization, independent-host/cloud/package parity, or Codex memory.
+precedence, subagent memory, automatic location discovery, complete session
+reference localization, independent-host/cloud/package parity, or Codex memory.
 Statecase does not silently enable native memory during normal enrollment; the
 test explicitly enables it only in synthetic fixture settings.
 

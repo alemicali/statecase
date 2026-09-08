@@ -647,3 +647,14 @@ This does not complete reference portability: relative paths, native freeform
 patch conversion, historical migration, physical aliases and mixed-client
 fencing remain explicit work. The live deployment is unchanged. Do not treat the
 new session representation as backwards-compatible before migration/fencing UAT.
+
+The exact-candidate native-claude job `102014736920` in CI `34211942704` on
+`6ac73fe` passed. The original UUID resumed on the target with all three
+historical memory tool paths localized, its original Read output preserved and
+a new native Read returning the target memory bytes. Both post-hydration and
+post-return canonical pushes are no-ops. All seven fresh-session/location/
+negative controls also pass again. See the expanded
+[native report](uat/2026-09-08-native-claude-memory.md). This is reference-backend,
+same-host evidence; full-run CI status and broader release gates remain separate.
+The complete `34211942704` run subsequently finished successfully in all nine
+jobs, including background synchronization and quality/workerd checks.
