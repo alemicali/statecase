@@ -19,6 +19,10 @@ try {
   archive = resolve(repository, packed.stdout.trim().split(/\r?\n/u).at(-1));
   await run("npm", ["install", "--prefix", installation, "--no-audit", "--no-fund", archive], { cwd: repository });
   const executable = join(installation, "node_modules", ".bin", process.platform === "win32" ? "statecase.cmd" : "statecase");
+  for (const [name, filename] of [["jsonc-parser", "LICENSE.md"], ["toml-eslint-parser", "LICENSE"], ["eslint-visitor-keys", "LICENSE"]]) {
+    assert.deepEqual(await readFile(join(installation, "node_modules", "@statecase", "cli", "dist", "third-party", `${name}.LICENSE`)),
+      await readFile(join(repository, "node_modules", name, filename)));
+  }
   if (process.platform !== "win32") await access(executable, constants.X_OK);
   const environment = { PATH: process.env.PATH, HOME: join(installation, "user-home"), STATECASE_HOME: join(installation, "home"),
     CODEX_HOME: join(installation, "codex"), CODEX_SQLITE_HOME: join(installation, "sqlite"),

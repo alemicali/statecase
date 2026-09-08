@@ -382,15 +382,23 @@ Release work includes missing implementation, not only additional testing:
   is now implemented in `ConfigStore` and the CLI, preserving file-mode/headless
   profiles. Local tests and an isolated native/package drill cover encrypted
   update/logout, unavailable keys and keyring process restart. This is not
-  complete platform qualification: macOS, OS reboot/interactive unlock,
+  complete platform qualification: default-keychain UI, OS reboot/unlock,
   recovery/downgrade, orphan handling and independent review remain gates.
-- The current sync admission path accepts native sessions and skills; adapter
-  `config-filtered` entries are still excluded. The agreed portable harness
-  settings/memory/configuration scope therefore needs its actual filtering and
-  materialization implementation, with secret/host-specific field exclusions
-  and compatibility tests. Session continuity does not establish config parity.
+- ADR-0023 now implements filtered user preferences for Codex and Claude,
+  per-field synchronization, guarded native patching and historical recovery.
+  Raw `config-filtered` files remain excluded; only reviewed fields enter the
+  encrypted namespace. The wider configuration/memory scope is still missing:
+  instruction files, project memories, additional profile/role/model documents,
+  native compatibility and effective-value checks, cross-host qualification and
+  mixed-client fencing. Session continuity does not establish config parity.
 
 Neither gap is waived by successful round-trip UAT or overall coverage.
+
+The [portable-settings local qualification](uat/2026-09-08-portable-settings-local.md)
+records 663 passing tests, clean package startup, parser license checks,
+per-field encrypted two-device convergence, local-secret preservation and
+cross-epoch historical rollback. It does not qualify effective native settings,
+cross-host/live-cloud use, mixed-client fencing or memory portability.
 
 ### Profile exclusion and crash checkpoint — 2026-09-08
 

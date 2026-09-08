@@ -126,6 +126,38 @@ regression ID.
 - `SY-009`: randomized valid operation sequences converge after all clients
   exchange revisions.
 - `SY-010`: randomized invalid sequences never advance the head.
+- `SY-011`: committing an unrelated namespace must not acknowledge remote-only
+  content as locally applied, including unsupported future harness paths. A
+  repeated push preserves the remote head; supported content subsequently
+  hydrates, while unsupported content fails closed without advancing markers.
+
+### 4.2a Portable settings (ADR-0023)
+
+- `AD-CFG-001`: allowlisted JSON/TOML projection, strict syntax, duplicate keys,
+  known-field type validation and fixed redacted errors.
+- `AD-CFG-002`: range edits preserve unknown lexemes, comments, escapes, BOM
+  and large local-only numbers; randomized round trips and resource limits.
+- `AD-CFG-003`: canonical per-field envelopes and local registry resolution;
+  reject unknown versions, identities, encodings, extra fields and payload types.
+- `AD-CFG-004`: Codex preferences; retain authority/provider/path fields.
+- `AD-CFG-005`: Claude preferences; retain auth/env/hooks/policy fields.
+- `AD-CFG-006`: descriptor-safe reads, absent roots/files, links/FIFOs,
+  ownership/modes, bounds, source/root mutation and stale-snapshot refusal.
+- `AD-CFG-007`: two-device filtered transfer, preview, canonical applied digests,
+  disjoint preference merges, secret-only no-op and field-only deletion.
+- `AD-CFG-008`: local edit/delete versus divergent remote preference conflicts.
+- `AD-CFG-009`: local-only changes during apply abort and roll back earlier
+  unrelated writes without changing applied markers.
+- `AD-CFG-010`: malicious raw paths, unknown virtual versions/fields and invalid
+  authenticated payloads fail without native-file mutation.
+- `AD-CFG-011`: historical restore across key epochs, one physical recovery
+  target, current secret preservation and failed-commit emergency rollback.
+
+These IDs cover local implementation, not executed native/cloud settings UAT.
+Before release, repeat effective-preference checks with the exact packed CLI on
+two independent hosts, native precedence, background writes, revocation/scopes,
+mixed-client upgrade/downgrade refusal, SIGKILL/sleep/reboot and the remaining
+instruction/memory cases. Package smoke verifies included parser licenses.
 
 ### 4.3 Cryptography
 

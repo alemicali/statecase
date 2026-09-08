@@ -623,6 +623,26 @@ For Claude SDK/headless usage, a native external session-store adapter MAY be
 added. Interactive Claude CLI remains supported through the filesystem adapter
 and transparent runtime.
 
+### 8.2a Portable user preferences
+
+ADR-0023 defines the current field policies and encrypted layout. The client
+projects reviewed fields from user Codex `config.toml` and Claude
+`settings.json` into `portable-config/v1/user/<field>.json` entries in the
+harness namespace. Receivers independently validate canonical typed payloads;
+raw native config paths remain excluded. Per-field merge/tombstone semantics
+must never replace/delete local-only fields or native authority settings.
+
+Apply groups edits into one native document, preserves syntax outside edited
+ranges, guards the complete original file against concurrent changes and uses
+owner-only transactional replacement. Applied digests identify portable field
+bytes; emergency recovery targets the physical native file once. Historical
+restore verifies/rekeys those digests across key epochs. See ADR-0023 for exact
+limits, excluded settings, dependency versions and residual filesystem races.
+
+This implementation does not close the full configuration/memory scope.
+Additional documents, instruction and project-memory mapping, effective native
+settings/version validation and older-client fencing remain required.
+
 ### 8.3 Secrets
 
 Harness auth, OAuth sessions, API keys, and machine-bound tokens are excluded

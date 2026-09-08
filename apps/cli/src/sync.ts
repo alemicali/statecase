@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { classifyClaudePath, claudeProjectDirectory } from "@statecase/adapter-claude";
 import { classifyCodexPath } from "@statecase/adapter-codex";
 import { extractActivityReferences, scanCompleteJsonl, sessionWorkingDirectory, type ActivityReference } from "@statecase/adapter-common";
+import { MAX_SETTING_BYTES } from "@statecase/adapter-common/settings-transport";
 import { chunkBytes, chunkJsonlStream, concatChunks } from "@statecase/chunking";
 import { computeObjectId, computeObjectIdStream, decryptEnvelope, deriveScopeKey, encryptEnvelope } from "@statecase/crypto";
 import {
@@ -41,6 +42,8 @@ import type { StatecaseClient } from "./client.js";
 import { isCompleteJsonlRecordSupersequence } from "./append-merge.js";
 import { isCompleteJsonlFileRecordSupersequence, mergeJsonlAppendFiles } from "./append-merge-file.js";
 import { applyFileTransaction, type FileTransaction } from "./materialize.js";
+import { readSettingsSnapshot } from "./settings-file.js";
+import { prepareSettingsPlan, settingsDocuments, settingsField, type IncomingSetting, type SettingsPlan } from "./settings-sync.js";
 import {
   inspectPortableSessionActivity,
   localizePortableSession,
@@ -652,7 +655,11 @@ export class SyncEngine {
         .filter((entry) => !finalEntries.has(entry.logicalPath))
         .map((entry) => finalState.tombstones.find((item) => item.logicalPath === entry.logicalPath) ?? { namespace, logicalPath: entry.logicalPath, deletedAt: createdAt });
       if (changedEntries.length === 0 && tombstones.length === 0 && (!head || (head.keyEpoch ?? 1) === this.keyEpoch)) {
-        if (head) nextApplied.set(namespace, { revisionId: head.revisionId, digests, keyEpoch: head.keyEpoch ?? 1 });
+        // A different namespace may commit nextApplied below. Remote-only
+        // content is not hydrated merely because this namespace needs no push.
+        if (head && !appendMergedPaths.has(namespace) && namespaceStateEquals(finalState, localState)) {
+          nextApplied.set(namespace, { revisionId: head.revisionId, digests, keyEpoch: head.keyEpoch ?? 1 });
+        }
         continue;
       }
       const namespaceRevisionId = randomId("nrev");
@@ -1044,7 +1051,10 @@ export class SyncEngine {
           const keys = await this.#scopeKeys(mapping.namespace, historicalHead.keyEpoch ?? 1);
           for (const entry of target.entries) {
             const expected = workingConfig.applied[mapping.namespace]?.digests[entry.logicalPath];
-            const actual = await optionalFileDigest(sessionDestination(mapping, entry.logicalPath, workingConfig), keys);
+            const projected = settingsField(mapping.kind, entry.logicalPath)
+              ? validated.find((candidate) => candidate.logicalPath === entry.logicalPath)?.bytes : undefined;
+            const actual = projected ? await computeObjectId(keys.dedupKey, projected)
+              : await optionalFileDigest(sessionDestination(mapping, entry.logicalPath, workingConfig), keys);
             if (!expected || actual !== expected) {
               throw new Error("restored namespace failed content validation");
             }
@@ -1102,7 +1112,8 @@ export class SyncEngine {
       if (!workspaceId) {
         for (const entry of restoredEntries) {
           workingConfig.applied[mapping.namespace]!.digests[entry.logicalPath] =
-            (await optionalFileDigest(sessionDestination(mapping, entry.logicalPath, workingConfig), keys))!;
+            settingsField(mapping.kind, entry.logicalPath) ? entry.contentDigest
+              : (await optionalFileDigest(sessionDestination(mapping, entry.logicalPath, workingConfig), keys))!;
         }
       }
       const committed = await this.client.commitNamespaces(this.vaultId, {
@@ -1166,6 +1177,8 @@ export class SyncEngine {
     const deletions: Array<{ mapping: RootMapping; path: string; logicalPath: string }> = [];
     const workspacePayloads = new Map<string, { mapping: RootMapping; capsule?: CapturedWorkspace["capsule"]; blobs: WorkspaceBlob[] }>();
     const incompleteNamespaces = new Set<string>();
+    const incomingSettings: IncomingSetting[] = [];
+    let settingsPlan: SettingsPlan | undefined;
     let objectCount = manifestObjectCount;
     let byteCount = 0;
     const stagedDisposers: Array<() => Promise<void>> = [];
@@ -1174,6 +1187,10 @@ export class SyncEngine {
       const mapping = byNamespace.get(entry.namespace);
       if (!mapping) continue;
       assertRemotePathAllowed(mapping, entry.logicalPath);
+      const field = settingsField(mapping.kind, entry.logicalPath);
+      if (field && (entry.entryType !== "file" || entry.totalSize > MAX_SETTING_BYTES || entry.objectIds.length > 1 || entry.chunking?.strategy === "jsonl-records" || entry.workspacePath !== undefined || entry.workspaceLayer !== undefined || entry.fileMode !== undefined)) {
+        throw new Error("remote portable setting metadata is invalid");
+      }
       const keys = await this.#scopeKeys(entry.namespace, entry.keyEpoch ?? 1);
       const portable = portableSession(entry.logicalPath);
       const streamedSession = mapping.kind !== "drop" && (portable !== undefined || entry.chunking?.strategy === "jsonl-records");
@@ -1236,6 +1253,10 @@ export class SyncEngine {
       if (bytes.byteLength !== entry.totalSize || await computeObjectId(keys.dedupKey, bytes) !== entry.contentDigest) {
         throw new Error("downloaded file failed content verification");
       }
+      if (field) {
+        incomingSettings.push({ mapping, logicalPath: entry.logicalPath, field, bytes });
+        continue;
+      }
       if (mapping.id.startsWith("workspace_") && entry.entryType === "workspace-capsule") {
         const payload = workspacePayloads.get(entry.namespace) ?? { mapping, blobs: [] };
         payload.capsule = JSON.parse(new TextDecoder("utf8", { fatal: true, ignoreBOM: false }).decode(bytes)) as CapturedWorkspace["capsule"];
@@ -1273,6 +1294,8 @@ export class SyncEngine {
       const mapping = byNamespace.get(tombstone.namespace);
       if (!mapping) continue;
       assertRemotePathAllowed(mapping, tombstone.logicalPath);
+      const field = settingsField(mapping.kind, tombstone.logicalPath);
+      if (field) { incomingSettings.push({ mapping, logicalPath: tombstone.logicalPath, field }); continue; }
       if (workspaceMappingId(mapping)) continue;
       const portable = portableSession(tombstone.logicalPath);
       if (portable && mapping.kind !== "drop" && !config.workspaces.some((candidate) => candidate.id === portable.workspaceId)) {
@@ -1312,8 +1335,10 @@ export class SyncEngine {
       readyWorkspaces.push({ mapping: payload.mapping, captured, gitFetch, expectedCurrent });
     }
 
-    assertDistinctMaterializationPaths(materialized, deletions);
-    const conflicts: string[] = [];
+    settingsPlan = await prepareSettingsPlan(incomingSettings, config, appliedKeyEpoch,
+      async (namespace, epoch, bytes) => computeObjectId((await this.#scopeKeys(namespace, epoch)).dedupKey, bytes));
+    assertDistinctMaterializationPaths([...materialized, ...settingsPlan.targets], deletions);
+    const conflicts: string[] = [...settingsPlan.conflicts];
     for (const item of materialized) {
       if (item.sourcePath !== undefined) {
         const remoteSourcePath = item.sourcePath;
@@ -1347,7 +1372,10 @@ export class SyncEngine {
     }
     if (conflicts.length > 0 && !options.allowLocalOverwrite) throw new SyncConflict(conflicts);
     const workspaceFiles = readyWorkspaces.reduce((total, item) => total + item.captured.capsule.records.length, 0);
-    if (dryRun) return { outcome: "pulled", revisionId: remoteRevisionId, files: materialized.length + deletions.length + workspaceFiles, objects: objectCount, bytes: byteCount };
+    const fileCount = materialized.length + deletions.length + workspaceFiles + settingsPlan.writes.length;
+    if (dryRun) return { outcome: "pulled", revisionId: remoteRevisionId, files: fileCount, objects: objectCount, bytes: byteCount };
+
+    await settingsPlan.guard();
 
     if (options.replaceWorkspaces) {
       if (!options.prepareWorkspaceRecovery) throw new Error("workspace replacement requires persistent recovery preparation");
@@ -1363,10 +1391,16 @@ export class SyncEngine {
       await applyWorkspaceTransaction(
         readyWorkspaces.map((workspace) => ({ root: workspace.mapping.path, captured: workspace.captured, gitFetch: workspace.gitFetch, expectedCurrent: workspace.expectedCurrent })),
         {
-          writes: materialized.map(materializedWrite),
+          writes: [...materialized.map(materializedWrite), ...settingsPlan.writes],
           deletes: deletions.map((item) => item.path),
         },
-        { materialize: options.materialize ?? applyFileTransaction },
+        { materialize: async (transaction) => (options.materialize ?? applyFileTransaction)({
+          ...transaction,
+          beforeCommit: async (index, path) => {
+            await transaction.beforeCommit?.(index, path);
+            await settingsPlan!.guard(path);
+          },
+        }) },
       );
     }
     for (const mapping of selected) {
@@ -1375,6 +1409,7 @@ export class SyncEngine {
       for (const item of materialized.filter((candidate) => candidate.mapping.namespace === mapping.namespace)) {
         digests[item.logicalPath] = item.digest;
       }
+      for (const item of settingsPlan.digests.filter((candidate) => candidate.namespace === mapping.namespace)) digests[item.logicalPath] = item.digest;
       config.applied[mapping.namespace] = {
         revisionId: appliedRevision(mapping.namespace),
         digests,
@@ -1382,8 +1417,9 @@ export class SyncEngine {
       };
     }
     recordMaterializedSessionBindings(config, materialized, deletions);
-    return { outcome: "pulled", revisionId: remoteRevisionId, files: materialized.length + deletions.length + workspaceFiles, objects: objectCount, bytes: byteCount };
+    return { outcome: "pulled", revisionId: remoteRevisionId, files: fileCount, objects: objectCount, bytes: byteCount };
     } finally {
+      settingsPlan?.dispose();
       await Promise.all(stagedDisposers.map((dispose) => dispose()));
     }
   }
@@ -2201,6 +2237,14 @@ async function scanMapping(
   if (!info.isDirectory()) throw new Error(`sync root is not a directory: ${root}`);
   const output: ScannedEntry[] = [];
   try {
+    for (const document of settingsDocuments(mapping.kind)) {
+      const present = await lstat(join(root, document.nativePath)).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? undefined : Promise.reject(error));
+      if (!present) continue;
+      const snapshot = await readSettingsSnapshot(root, document);
+      try {
+        for (const entry of snapshot.entries) output.push({ namespace: mapping.namespace, logicalPath: entry.logicalPath, bytes: entry.bytes });
+      } finally { snapshot.dispose(); }
+    }
     await walk(root, "", mapping, workspaces, output, streamSessions);
     return output;
   } catch (error) {
@@ -2434,6 +2478,7 @@ function assertRemotePathAllowed(mapping: RootMapping, logicalPath: string): voi
   if (mapping.id.startsWith("workspace_") && mapping.namespace.startsWith("workspace:")) return;
   if (excludedBuiltIn(logicalPath)) throw new Error("remote path is excluded by adapter policy");
   if (mapping.kind !== "drop" && portableSession(logicalPath)) return;
+  if (settingsField(mapping.kind, logicalPath)) return;
   if (harnessClassification(mapping.kind, logicalPath) === "excluded") {
     throw new Error("remote path is excluded by adapter policy");
   }

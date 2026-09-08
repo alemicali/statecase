@@ -3,5 +3,13 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "exports": "./src/index.ts"
+  "exports": {
+    ".": "./src/index.ts",
+    "./config": "./src/config.ts",
+    "./settings-transport": "./src/settings-transport.ts"
+  },
+  "dependencies": {
+    "jsonc-parser": "3.3.1",
+    "toml-eslint-parser": "0.10.0"
+  }
 }

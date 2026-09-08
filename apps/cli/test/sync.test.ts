@@ -311,6 +311,211 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
       .rejects.toBeInstanceOf(SyncConflict);
   });
 
+  it.each(["skills/new/SKILL.md", "future-context/v2/preferences.json"])("does not acknowledge or later delete unhydrated %s when another namespace commits (SY-011)", async (remotePath) => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-unhydrated-multiscope-"));
+    temporary.push(base);
+    const first = join(base, "first");
+    const publisher = join(base, "publisher");
+    const drop = join(base, "drop");
+    await Promise.all([mkdir(join(first, "skills", "base"), { recursive: true }), mkdir(publisher), mkdir(drop)]);
+    await writeFile(join(first, "skills", "base", "SKILL.md"), "base skill\n");
+    await writeFile(join(drop, "note.txt"), "base note\n");
+    const remote = new MemoryRemote();
+    const key = await randomKey();
+    const engine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    const local = harnessConfig(first, join(base, "unused-workspace"));
+    local.mappings.push(config(drop).mappings[0]!);
+    await engine.push(local);
+    const namespace = "harness:codex:default";
+    const actualApplied = structuredClone(local.applied[namespace]);
+
+    // A synthetic newer adapter publishes an entry the original peer has not
+    // pulled. Drop classification here emulates a newer harness allowlist.
+    const newer = harnessConfig(publisher, join(base, "unused-workspace"));
+    newer.mappings[0]!.kind = "drop";
+    await engine.pull(newer);
+    await mkdir(join(publisher, remotePath, ".."), { recursive: true });
+    await writeFile(join(publisher, remotePath), "remote-only context\n");
+    await engine.push(newer);
+    const remoteHead = structuredClone(remote.namespaceHeads.get(namespace));
+
+    await writeFile(join(drop, "note.txt"), "unrelated edit\n");
+    expect((await engine.push(local)).outcome).toBe("pushed");
+    expect(remote.namespaceHeads.get(namespace)).toEqual(remoteHead);
+    expect((await engine.push(local)).outcome).toBe("unchanged");
+    expect(remote.namespaceHeads.get(namespace)).toEqual(remoteHead);
+    expect(local.applied[namespace]).toEqual(actualApplied);
+
+    if (remotePath.startsWith("skills/")) {
+      await engine.pull(local);
+      expect(await readFile(join(first, remotePath), "utf8")).toBe("remote-only context\n");
+      expect(local.applied[namespace]?.revisionId).toBe(remoteHead!.revisionId);
+    } else {
+      await expect(engine.pull(local)).rejects.toThrow();
+      expect(local.applied[namespace]).toEqual(actualApplied);
+      await expect(readFile(join(first, remotePath))).rejects.toMatchObject({ code: "ENOENT" });
+    }
+  });
+
+  it.each(["codex", "claude"] as const)("syncs %s preferences by field, preserving local secrets and unrelated concurrent edits (AD-CFG-007)", async (kind) => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-native-settings-sync-")); temporary.push(base);
+    const first = join(base, "first"), second = join(base, "second");
+    await Promise.all([mkdir(first, { mode: 0o700 }), mkdir(second, { mode: 0o700 })]);
+    const filename = kind === "codex" ? "config.toml" : "settings.json";
+    const document = (model: string | undefined, display: boolean, secret: string) => kind === "codex"
+      ? `${model ? `model="${model}"\n` : ""}secret="${secret}"\n[tui]\nanimations=${display}\n`
+      : JSON.stringify({ ...(model ? { model } : {}), verbose: display, env: { TOKEN: secret } });
+    await writeFile(join(first, filename), document("fixture", false, "source-canary"), { mode: 0o600 });
+    await writeFile(join(second, filename), kind === "codex" ? 'secret="target-canary"\n' : '{"env":{"TOKEN":"target-canary"}}', { mode: 0o600 });
+    const remote = new MemoryRemote(), key = await randomKey();
+    const engine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    const a = harnessConfig(first, join(base, "unused-a")), b = harnessConfig(second, join(base, "unused-b"));
+    for (const local of [a, b]) { local.mappings[0]!.kind = kind; local.mappings[0]!.namespace = `harness:${kind}:default`; }
+    const namespace = a.mappings[0]!.namespace;
+    expect((await engine.push(a)).files).toBe(2);
+    const inspection = join(base, "decrypted-inspection"); await mkdir(inspection, { mode: 0o700 });
+    const observer = structuredClone(a); observer.applied = {}; observer.mappings[0]!.kind = "drop"; observer.mappings[0]!.path = inspection;
+    await engine.pull(observer);
+    expect(JSON.parse(await readFile(join(inspection, "portable-config/v1/user/model.json"), "utf8"))).toEqual({ value: "fixture", version: 1 });
+    await expect(readFile(join(inspection, filename))).rejects.toMatchObject({ code: "ENOENT" });
+    const untouched = await readFile(join(second, filename));
+    const beforeConfig = structuredClone(b);
+    await engine.pull(b, true);
+    expect(await readFile(join(second, filename))).toEqual(untouched);
+    expect(b).toEqual(beforeConfig);
+    await engine.pull(b);
+    let restored = await readFile(join(second, filename), "utf8");
+    expect(restored).toContain("target-canary"); expect(restored).not.toContain("source-canary");
+    expect(restored).toContain("fixture");
+    expect(Object.keys(b.applied[namespace]!.digests)).toHaveLength(2);
+    expect((await engine.push(b)).outcome).toBe("unchanged");
+
+    // Local-only credential rotation must neither publish nor conflict.
+    await writeFile(join(second, filename), restored.replace("target-canary", "rotated-canary"));
+    expect((await engine.push(b)).outcome).toBe("unchanged");
+    await writeFile(join(first, filename), document("new-model", false, "source-canary"));
+    await writeFile(join(second, filename), document("fixture", true, "rotated-canary"));
+    await engine.push(a); await engine.push(b); await engine.pull(a); await engine.pull(b);
+    restored = await readFile(join(second, filename), "utf8");
+    expect(restored).toContain("new-model"); expect(restored).toContain("true"); expect(restored).toContain("rotated-canary");
+    expect((await engine.push(a)).outcome).toBe("unchanged");
+    expect((await engine.push(b)).outcome).toBe("unchanged");
+
+    await writeFile(join(first, filename), document(undefined, true, "source-canary"));
+    await engine.push(a); await engine.pull(b);
+    restored = await readFile(join(second, filename), "utf8");
+    expect(restored).not.toContain("new-model"); expect(restored).toContain("rotated-canary"); expect(restored).toContain("true");
+    expect(Object.keys(b.applied[namespace]!.digests)).toHaveLength(1);
+    await writeFile(join(first, filename), kind === "codex" ? 'secret="source-canary"\n' : '{"env":{"TOKEN":"source-canary"}}');
+    await engine.push(a); await engine.pull(b);
+    expect(await readFile(join(second, filename), "utf8")).toContain("rotated-canary");
+    expect(b.applied[namespace]!.digests).toEqual({});
+    expect((await engine.push(b)).outcome).toBe("unchanged");
+    expect(remote.plaintext).not.toMatch(/canary|new-model/u);
+  });
+
+  it.each(["edit", "delete"])("preserves a local setting %s against a divergent remote change (AD-CFG-008)", async (mutation) => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-settings-conflict-")); temporary.push(base);
+    const first = join(base, "a"), second = join(base, "b");
+    await Promise.all([mkdir(first, { mode: 0o700 }), mkdir(second, { mode: 0o700 })]);
+    await writeFile(join(first, "config.toml"), 'model="base"', { mode: 0o600 });
+    const remote = new MemoryRemote(), key = await randomKey();
+    const engine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    const a = harnessConfig(first, join(base, "unused")), b = harnessConfig(second, join(base, "unused"));
+    await engine.push(a); await engine.pull(b);
+    await writeFile(join(first, "config.toml"), 'model="remote"'); await engine.push(a);
+    const local = mutation === "edit" ? 'model="local"\nsecret="preserved"' : 'secret="preserved"';
+    await writeFile(join(second, "config.toml"), local);
+    const before = structuredClone(b.applied);
+    await expect(engine.pull(b)).rejects.toBeInstanceOf(SyncConflict);
+    expect(await readFile(join(second, "config.toml"), "utf8")).toBe(local);
+    expect(b.applied).toEqual(before);
+  });
+
+  it("rolls back all files if an harness rotates a local-only setting during pull (AD-CFG-009)", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-settings-cas-")); temporary.push(base);
+    const first = join(base, "a"), second = join(base, "b");
+    await Promise.all([mkdir(first, { mode: 0o700 }), mkdir(second, { mode: 0o700 })]);
+    await mkdir(join(first, "skills", "fixture"), { recursive: true });
+    const skillPath = "skills/fixture/SKILL.md";
+    await writeFile(join(first, "config.toml"), 'model="base"', { mode: 0o600 });
+    await writeFile(join(first, skillPath), "base skill");
+    const remote = new MemoryRemote(), key = await randomKey();
+    const engine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    const a = harnessConfig(first, join(base, "unused")), b = harnessConfig(second, join(base, "unused"));
+    await engine.push(a); await engine.pull(b);
+    await writeFile(join(first, "config.toml"), 'model="remote"');
+    await writeFile(join(first, skillPath), "new skill"); await engine.push(a);
+    const before = structuredClone(b.applied), apply = materialization.applyFileTransaction;
+    const spy = vi.spyOn(materialization, "applyFileTransaction").mockImplementationOnce(async (transaction) => apply({ ...transaction,
+      beforeCommit: async (index, path) => {
+        if (path === join(second, "config.toml")) await writeFile(path, 'model="base"\nsecret="rotated-canary"');
+        await transaction.beforeCommit?.(index, path);
+      },
+    }));
+    await expect(engine.pull(b)).rejects.toMatchObject({ code: "CONFIG_FILE_CHANGED" });
+    spy.mockRestore();
+    expect(await readFile(join(second, skillPath), "utf8")).toBe("base skill");
+    expect(await readFile(join(second, "config.toml"), "utf8")).toBe('model="base"\nsecret="rotated-canary"');
+    expect(b.applied).toEqual(before);
+    await engine.pull(b);
+    expect(await readFile(join(second, "config.toml"), "utf8")).toBe('model="remote"\nsecret="rotated-canary"');
+  });
+
+  it.each([
+    ["config.toml", 'model="injected"'],
+    ["portable-config/v2/user/model.json", '{"value":"fixture","version":1}'],
+    ["portable-config/v1/user/env.TOKEN.json", '{"value":"canary","version":1}'],
+    ["portable-config/v1/user/model.json", '{"value":"fixture","version":1,"secret":"canary"}'],
+    ["portable-config/v1/user/model.json", '{"value":42,"version":1}'],
+    ["portable-config/v1/user/model.json", " ".repeat(128 * 1024 + 1)],
+  ])("rejects sender-controlled config paths/payloads before any apply: %s (AD-CFG-010)", async (path, payload) => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-settings-hostile-")); temporary.push(base);
+    const source = join(base, "source"), target = join(base, "target");
+    await Promise.all([mkdir(source, { mode: 0o700 }), mkdir(target, { mode: 0o700 })]);
+    await mkdir(join(source, path, ".."), { recursive: true }); await writeFile(join(source, path), payload);
+    await writeFile(join(target, "config.toml"), 'secret="target-canary"', { mode: 0o600 });
+    const remote = new MemoryRemote(), key = await randomKey();
+    const engine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    const sender = harnessConfig(source, join(base, "unused")), receiver = harnessConfig(target, join(base, "unused"));
+    sender.mappings[0]!.kind = "drop";
+    await engine.push(sender);
+    await expect(engine.pull(receiver)).rejects.toThrow();
+    expect(await readFile(join(target, "config.toml"), "utf8")).toBe('secret="target-canary"');
+    expect(receiver.applied).toEqual({});
+  });
+
+  it.each([1, 2])("restores historical portable preferences at key epoch %i while preserving current secrets and rolling back failed commits (AD-CFG-011)", async (epoch) => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-settings-restore-")); temporary.push(base);
+    const root = join(base, "codex"); await mkdir(root, { mode: 0o700 });
+    const path = join(root, "config.toml");
+    await writeFile(path, 'model="old"\nsecret="original-canary"\n[tui]\nanimations=false\n', { mode: 0o600 });
+    const remote = new MemoryRemote(), key = await randomKey();
+    const client = new StatecaseClient("https://remote.test", "token", remote.fetch);
+    let engine = new SyncEngine(client, "vlt_test", key);
+    const local = harnessConfig(root, join(base, "unused"));
+    const historical = await engine.push(local);
+    engine = new SyncEngine(client, "vlt_test", { currentEpoch: epoch, keys: { 1: key, [epoch]: epoch === 1 ? key : await randomKey() } });
+    const current = 'model="new"\npersonality="friendly"\nsecret="rotated-canary"\n[tui]\nanimations=true\n';
+    await writeFile(path, current); await engine.push(local);
+    const before = structuredClone(local.applied), head = remote.scopedRevisionId;
+    await engine.restoreInPlace(local, local.mappings[0]!, historical.revisionId!, { dryRun: true });
+    expect(await readFile(path, "utf8")).toBe(current); expect(local.applied).toEqual(before);
+    const prepareRecovery = async (paths: readonly string[]) => {
+      expect(paths).toEqual([path]);
+      const snapshot = await createEmergencySnapshot({ id: `restore_${crypto.randomUUID().replaceAll("-", "")}`, createdAt: new Date().toISOString(), statecaseHome: join(base, "statecase"), targetRoot: root, paths });
+      return { rollback: () => restoreEmergencySnapshot(snapshot.path) };
+    };
+    remote.failNextNamespaceCommit = true;
+    await expect(engine.restoreInPlace(local, local.mappings[0]!, historical.revisionId!, { prepareRecovery })).rejects.toMatchObject({ status: 409 });
+    expect(await readFile(path, "utf8")).toBe(current); expect(local.applied).toEqual(before); expect(remote.scopedRevisionId).toBe(head);
+    await engine.restoreInPlace(local, local.mappings[0]!, historical.revisionId!, { prepareRecovery });
+    const restored = await readFile(path, "utf8");
+    expect(restored).toContain('model="old"'); expect(restored).toContain("animations=false");
+    expect(restored).toContain("rotated-canary"); expect(restored).not.toMatch(/personality|original-canary/u);
+    expect((await engine.push(local)).outcome).toBe("unchanged");
+  });
+
   it("publishes complete harness JSONL records and defers a live partial tail", async () => {
     const base = await mkdtemp(join(tmpdir(), "statecase-live-session-"));
     temporary.push(base);

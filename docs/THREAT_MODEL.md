@@ -290,6 +290,12 @@ Controls:
 - scoped append clients cannot invoke trusted same-path merge semantics;
 - exclude live DB/WAL/locks unless a consistent export exists;
 - portable-field filtering;
+- ADR-0023 per-field canonical configuration payloads, receiver-owned field
+  identities, no raw mixed-authority file transport, guarded syntax-range edits,
+  source/inode/root verification and owner-only replacement. Current checks
+  detect cooperative mutations, not hostile same-UID check-to-rename races;
+  parsed JS strings cannot be zeroized. Local emergency copies may retain
+  local-only values for rollback and must never become remote setting objects;
 - stopped-harness requirement for dangerous in-place restore;
 - fail closed and retain unknown local state.
 

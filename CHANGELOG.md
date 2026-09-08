@@ -4,6 +4,20 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Added filtered Codex/Claude user preference sync with canonical per-field
+  encrypted objects, independent-field merge, field-only deletion and guarded
+  native JSON/TOML edits. Preserve local-only secrets/comments and detect
+  concurrent native writes; support preview and historical restore across key
+  epochs with emergency rollback. Added explicit field policies, hostile-input
+  regressions and parser license packaging. Fixed the default JSON parser UMD
+  bundle's clean-install startup failure. Native settings qualification, memory
+  and safe mixed-client rollout remain open (ADR-0023).
+
+- Fixed a reproduced cross-namespace applied-marker bug: publishing an unrelated
+  Drop no longer acknowledges unhydrated remote harness entries. Repeated pushes
+  preserve those entries; supported paths hydrate and unsupported paths fail
+  closed. Added failing-first recognized/future-path regressions (SY-011).
+
 - Preserve explicitly selected macOS Keychain paths in launchd service
   definitions, independent of the interactive shell. Keep legacy service
   ownership checks and stop/uninstall behavior; reject malformed/ambiguous

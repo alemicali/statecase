@@ -72,6 +72,15 @@ recovery, scoped reissuance, and historical Drop restore passed a live Daytona
 drill against Cloudflare.
 This is not yet a public-production release.
 
+Filtered user preference sync is now implemented for Codex `config.toml` and
+Claude `settings.json`. Only the [reviewed fields](docs/adr/0023-portable-settings-fields.md)
+are transferred: ordinary sync/run/daemon operations patch native files while
+retaining local auth, hooks, paths and permissions. Different-field edits merge;
+same-field conflicts remain explicit. Local integration covers preview,
+concurrent-write refusal and historical rollback. Upgrade all participating
+clients before using this layout; older-client fencing, native effective-value
+qualification, additional configurations and memory remain release work.
+
 The [native Linux lifecycle drill](docs/uat/2026-09-08-native-systemd.md) passed
 start/stop, private IPC, filesystem notifications, duplicate-writer denial,
 and SIGKILL recovery with the hardened systemd-user definition.

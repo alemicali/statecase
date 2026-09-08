@@ -3,7 +3,7 @@
 Status: accepted
 Date: 2026-09-06
 Owners: Statecase maintainers
-Test IDs: SY-002, SY-003, SY-004, SY-005, SY-006, SY-007, AU-006, UAT-05
+Test IDs: SY-002, SY-003, SY-004, SY-005, SY-006, SY-007, SY-011, AU-006, UAT-05
 
 ## Context
 
@@ -64,3 +64,10 @@ modify/modify, modify/delete, tombstones, append-only policy, deterministic
 ordering, and atomic workspaces. Multi-device tests prove convergence, retained
 applied markers, explicit conflict paths, protected local resolution, and
 expected-head race rejection.
+
+The SY-011 regression additionally covers a namespace with no outgoing changes
+while a different namespace commits. The same local-state equality guard must
+apply in this branch: acknowledging remote-only entries would make the next
+scan interpret their absence as a local deletion. Both recognized skills and
+synthetic future adapter paths are covered; this is not a claim that older
+released clients understand future layouts.
