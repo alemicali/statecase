@@ -11,6 +11,27 @@ health endpoint advertises scoped protocol `1.1` and legacy migration protocol
 
 ## Remote inventory
 
+The required client contract in ADR-0027 is **not deployed** on the Worker version
+listed above. A CLI built from that change deliberately refuses protected calls
+to the old service. Do not distribute it as live-compatible or add headers to an
+old CLI to suppress this refusal.
+
+For the private cutover: stop synchronization services/clients, retain local state
+and recovery material, qualify the exact matched Worker/CLI artifacts, deploy the
+Worker, verify public health advertises contract 1 and all required capabilities,
+and verify old-client refusal with authorized disposable credentials before
+resuming upgraded clients. Then execute packaged independent-peer/cloud UAT.
+Browser login/device approval remain available without client contract headers.
+Bootstrap compatibility refusal precedes redemption; an ambiguous network failure
+is not proof that a grant was not consumed. Never automatically reissue a grant
+on that assumption.
+
+Do not use mixed old/new Worker traffic or rollback to the old ungated artifact.
+Rollback must retain the contract gate; otherwise keep synchronization stopped
+and repair forward. A successful cached health check does not protect a daemon
+from an unsupported Worker downgrade. The local profile/old-binary migration gate
+is still open and must be closed before claiming safe unattended fleet upgrades.
+
 | Component | Resource |
 | --- | --- |
 | Worker | `statecase-api` |

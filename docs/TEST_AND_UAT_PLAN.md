@@ -390,7 +390,16 @@ deployed Worker test environment.
 - `PR-013`: rate-limit response includes bounded retry guidance; client jitter
   avoids synchronized retry storms.
 - `PR-014`: protocol minor-version negotiation ignores optional fields; unknown
-  required capability fails explicitly.
+  required capability fails explicitly. ADR-0027 requires bounded public health
+  negotiation without credentials, one shared handshake per client, retry and
+  426 invalidation, exact 16 KiB response limits and redacted stream failures.
+  Inventory every protected route: incompatible device/capability requests must
+  fail before domain work. Real workerd checks R2/head preservation and a D1
+  bootstrap grant surviving refusal then redeeming exactly once. CLI bootstrap
+  returns JSON exit 6 without configuration/credential changes or secret upload.
+  Actual old packaged binaries, local profile upgrade/downgrade and deployed
+  matched-pair cutover remain separate required UAT; synthetic missing headers
+  are not evidence that offline old binaries are fenced.
 - `PR-015`: Worker logs contain no plaintext body or authorization material.
 
 ## 8. Authentication and authorization tests

@@ -1,4 +1,4 @@
-import type { CommitRequest, ScopedCommitRequest } from "@statecase/protocol";
+import { CLIENT_HEADERS, acceptsServiceContract, type CommitRequest, type ScopedCommitRequest } from "@statecase/protocol";
 
 export class RemoteError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) {
@@ -126,6 +126,7 @@ export class StatecaseClient {
   readonly #baseUrl: string;
   readonly #token?: string;
   readonly #fetch: typeof fetch;
+  #compatibility?: Promise<void>;
 
   constructor(baseUrl: string, token?: string, fetchImplementation: typeof fetch = fetch) {
     this.#baseUrl = baseUrl.replace(/\/+$/u, "");
@@ -308,19 +309,52 @@ export class StatecaseClient {
   }
 
   async #request(path: string, init: RequestInit = {}): Promise<Response> {
+    if (path.startsWith("/v1/") || path === "/api/bootstrap/redeem") {
+      this.#compatibility ??= this.#verifyCompatibility().catch((error) => { this.#compatibility = undefined; throw error; });
+      await this.#compatibility;
+    }
     const headers = new Headers(init.headers);
+    for (const [name, value] of Object.entries(CLIENT_HEADERS)) headers.set(name, value);
     if (!headers.has("content-type") && init.body !== undefined) headers.set("content-type", "application/json");
     if (this.#token) headers.set("authorization", `Bearer ${this.#token}`);
     let response: Response;
     try {
-      response = await this.#fetch(`${this.#baseUrl}${path}`, { ...init, headers });
+      response = await this.#fetch(`${this.#baseUrl}${path}`, { ...init, headers, redirect: "error" });
     } catch {
       throw new RemoteError(0, "NETWORK_ERROR", "Statecase service is unavailable");
     }
     if (response.ok) return response;
+    if (response.status === 426) this.#compatibility = undefined;
     const body = await response.json().catch(() => ({})) as { error?: string | { code?: string; message?: string }; error_description?: string };
     const code = typeof body.error === "object" ? body.error.code : body.error;
     const message = typeof body.error === "object" ? body.error.message : body.error_description;
     throw new RemoteError(response.status, code ?? "REMOTE_ERROR", message ?? "Statecase request failed");
+  }
+
+  async #verifyCompatibility(): Promise<void> {
+    let response: Response;
+    try { response = await this.#fetch(`${this.#baseUrl}/health`, { method: "GET", redirect: "error", signal: AbortSignal.timeout(10_000) }); }
+    catch { throw new RemoteError(0, "NETWORK_ERROR", "Statecase service is unavailable"); }
+    if (response.status >= 500 || response.status === 429) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new RemoteError(response.status, "NETWORK_ERROR", "Statecase service is unavailable");
+    }
+    const incompatible = () => new RemoteError(426, "UNSUPPORTED_PROTOCOL", "service compatibility could not be verified; use matching Statecase client and service releases");
+    if (!response.ok || !response.body) { await response.body?.cancel().catch(() => undefined); throw incompatible(); }
+    const reader = response.body.getReader(), chunks: Uint8Array[] = [];
+    let length = 0;
+    try {
+      while (true) {
+        const chunk = await reader.read().catch(() => { throw new RemoteError(0, "NETWORK_ERROR", "Statecase service is unavailable"); });
+        if (chunk.done) break;
+        length += chunk.value.byteLength;
+        if (length > 16 * 1024) throw incompatible();
+        chunks.push(chunk.value);
+      }
+      const bytes = new Uint8Array(length); let offset = 0;
+      for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
+      if (!acceptsServiceContract(JSON.parse(new TextDecoder("utf8", { fatal: true, ignoreBOM: false }).decode(bytes)))) throw incompatible();
+    } catch (error) { if (error instanceof RemoteError) throw error; throw incompatible(); }
+    finally { await reader.cancel().catch(() => undefined); reader.releaseLock(); }
   }
 }

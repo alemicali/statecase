@@ -4,6 +4,14 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Add required client/service contract negotiation with a bounded credential-free
+  health handshake, per-request capabilities and HTTP 426 rejection before domain
+  operations or one-time bootstrap consumption. Preserve retryable network/stream
+  failures and stable CLI integrity exit 6; update agent guidance and UAT drivers.
+  Refuse API redirects to prevent forwarding bootstrap secrets/request bodies.
+  This requires a coordinated Worker/CLI deployment and does not fence old offline
+  profiles or support rollback to an ungated Worker.
+
 - Guard ordinary file/session writes and deletions against changes after conflict
   preflight using bounded descriptor observations immediately before commit.
   Preserve late local work and roll back earlier writes; report redacted conflicts.

@@ -52,6 +52,7 @@ export function exitCodeFor(error: unknown): number {
     return 6;
   }
   if (error instanceof RemoteError) {
+    if (error.status === 426) return 6;
     if (error.status === 401) return 3;
     if (error.status === 403 || error.status === 404) return 4;
     if (error.status === 409) return 5;

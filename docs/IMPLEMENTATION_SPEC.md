@@ -1229,6 +1229,11 @@ preflight removes the child before returning.
 ## 18. Compatibility and schema evolution
 
 Protocol requests carry a major/minor version and client capabilities.
+ADR-0027 defines the initial required service-wide client contract, public bounded
+health negotiation and HTTP 426 refusal before protected domain operations or
+bootstrap consumption. Login/device approval remain exempt. This requires a
+coordinated CLI/Worker cutover; offline old-profile fencing and historical-binary
+upgrade/downgrade qualification are separate, still-open release requirements.
 Manifests and object envelopes are independently versioned. Readers MUST ignore
 unknown optional fields and reject unknown required features. Writers never
 rewrite historical manifests during a schema migration; they create a new

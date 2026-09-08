@@ -119,7 +119,13 @@ Use `statecase --json retention plan` to inspect encrypted object and byte count
   bindings or applied revisions. Do not blindly retry an ambiguous remote mutation.
 - `BASELINE_UNAVAILABLE` with exit `5`: if policy is `ask`, request approval to fetch with system Git or have the operator provision the commit. After approval, reattach the same ID/path with `--git-fetch auto` and retry. Never ask for Git credentials in chat and never change a `never` policy without explicit direction.
 - `GIT_LFS_CONTENT_UNAVAILABLE` with exit `5`: report the logical paths and reason. If the workspace policy is `ask`, request approval to reattach it with `--git-fetch auto`; Statecase will use only device-local Git LFS, its cache, and the existing origin. For `binary-missing`, ask the operator to install Git LFS; for `download-failed`, ask them to verify device-local credentials/network; for `integrity`, stop and preserve the rollback. Never request credentials, copy LFS storage, or silently switch to metadata-only mode.
-- Exit `6`: stop. Treat this as an integrity or cryptographic failure.
+- Exit `6`: stop. This includes integrity, cryptographic and client/service
+  compatibility failures. If the diagnostic requires compatible releases, ask
+  the operator to align the CLI and service versions before retrying. Do not
+  forge capability headers, downgrade a profile, remove native files or bypass
+  Statecase with raw copying. A compatibility refusal before bootstrap redemption
+  does not consume the one-time grant; preserve its secret mount for the authorized
+  retry. An ambiguous network failure is not proof that redemption did not occur.
 - Exit `7`: keep local work intact and retry later with bounded backoff.
 - Exit `8`: the requested work completed only partially or with unresolved context; report the warnings and do not claim an exact resume.
 - Any proposed restore or overwrite must be previewed and explicitly approved by the operator.

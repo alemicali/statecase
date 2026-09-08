@@ -1,5 +1,21 @@
 # Statecase threat model
 
+## Client compatibility boundary (ADR-0027)
+
+The required remote client contract prevents accidental old-client use of new
+semantics before protected domain access and bootstrap consumption. Authentication
+and namespace authorization remain independent. Capability declarations are not
+attestation: an authorized malicious client can forge them. Public compatibility
+discovery contains no credentials, has a 16 KiB body limit and real-fetch timeout,
+and never echoes server/transport diagnostics. Network failures remain retryable.
+CLI API calls refuse redirects as well: a successful health handshake does not
+authorize forwarding bearer/bootstrap traffic or request bodies to another URL.
+This does not fence old offline binaries, retroactively protect local profiles,
+or make a rollback to an old Worker safe. Cached handshakes require deployment
+discipline and a contract-preserving rollback artifact; historical/local migration,
+actual deployed cutover, broader native formats and independent review remain
+mandatory release work.
+
 Status: baseline threat model; update with every trust-boundary change
 Last updated: 2026-09-05
 

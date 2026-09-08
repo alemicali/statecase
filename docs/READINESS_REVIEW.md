@@ -4,6 +4,40 @@ Status: foreground sync implemented and deployed; release qualification in progr
 production launch
 Last updated: 2026-09-08
 
+## Required client/service contract checkpoint — 2026-09-08
+
+The previous committed candidate `5907829` passed all nine jobs in CI
+`34218349868`. PR-014 now adds explicit contract/capability negotiation rather
+than inferring compatibility from transport generation 1.1. Missing/unsupported
+clients are refused before protected domain work or bootstrap consumption;
+browser auth stays available. The CLI performs a bounded credential-free public
+handshake, shares successful negotiation per instance and invalidates on HTTP
+426. A failing-first disconnected-stream test corrected network errors wrongly
+reported as incompatibility. CLI JSON compatibility failures use exit 6.
+
+The initial complete local check passes 920 tests in 62 files, lint, types, build and
+clean-installed package checks. Global branches are 92.60% (4533/4895); the new
+protocol compatibility module and HTTP client are both 100% (16/16 and 43/43).
+The separate 12-test workerd suite preserves D1 bootstrap grants on refusal,
+then redeems once, and rejects device/capability object/commit requests without
+R2/head changes. Hono tests inventory all protected routes before domain calls.
+The packaged agent skill was narrowly updated with skill-creator and validated.
+The background drill also passed automatic bidirectional transfer, interrupted
+upload/journal replay, offline crash recovery, disjoint convergence, deletion
+and idle no-op with cleanup verified. This uses two synthetic authenticated
+daemons on one host and local workerd/D1/R2, not independent hosts or native
+harnesses. A subsequent real-loopback failing test reproduced API redirects
+forwarding a synthetic bootstrap body; the client now refuses all API redirects.
+The final local check with redirect refusal passes 921 tests in 62 files,
+lint/types/build and clean-package smoke; coverage totals above are unchanged.
+Exact-candidate hosted CI is still required for this follow-up.
+
+ADR-0027 explicitly requires a coordinated matched-pair CLI/Worker cutover.
+The live Worker is unchanged and lacks this contract: the new CLI refuses it.
+This is not local offline old-binary fencing, full historical/profile migration,
+safe mixed-Worker rollout, unsupported-Worker rollback or complete native-format
+qualification. Those and independent-host/live-cloud UAT remain release gates.
+
 ## Decisions now clear
 
 - Product: Statecase. The canonical one-liner is "Take your agents anywhere.

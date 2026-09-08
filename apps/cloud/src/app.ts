@@ -6,9 +6,9 @@ import { DEFAULT_RETENTION_POLICY, type GarbageCollectionPlanResult } from "@sta
 
 import {
   commitRequestSchema,
-  PROTOCOL_VERSION,
-  SCOPED_PROTOCOL_VERSION,
   scopedCommitRequestSchema,
+  SERVICE_HEALTH,
+  acceptsClientContract,
   type CommitRequest,
   type ProtocolErrorCode,
   type ScopedCommitRequest,
@@ -177,7 +177,7 @@ export function createCloudApp(services: CloudServices): Hono<AppEnvironment> {
   const app = new Hono<AppEnvironment>();
   app.use("*", secureHeaders());
 
-  app.get("/health", (context) => context.json({ protocolVersion: SCOPED_PROTOCOL_VERSION, legacyProtocolVersion: PROTOCOL_VERSION, service: "statecase", status: "ok" }));
+  app.get("/health", (context) => { context.header("cache-control", "no-store"); return context.json(SERVICE_HEALTH); });
   app.get("/", (context) => context.html(DEVICE_HTML));
   app.get("/login", (context) => context.html(DEVICE_HTML));
   app.get("/device", (context) => context.html(DEVICE_HTML));
@@ -186,6 +186,7 @@ export function createCloudApp(services: CloudServices): Hono<AppEnvironment> {
   app.post("/api/bootstrap/redeem", async (context) => {
     context.header("cache-control", "no-store");
     context.header("pragma", "no-cache");
+    if (!acceptsClientContract(context.req.raw.headers)) return upgradeRequired(context);
     const body = await parseBody(context, z.object({ token: z.string().min(40).max(512) }).strict());
     if (!body.success) return body.response;
     const redeemed = await services.capabilities.redeem(body.data.token);
@@ -199,6 +200,7 @@ export function createCloudApp(services: CloudServices): Hono<AppEnvironment> {
     const principal = await services.auth.authenticate(context.req.raw);
     if (!principal) return jsonError(context, "AUTH_REQUIRED", "authentication required", 401);
     context.set("principal", principal);
+    if (!acceptsClientContract(context.req.raw.headers)) return upgradeRequired(context);
     await next();
   });
 
@@ -662,9 +664,14 @@ function jsonError(
   context: Context<AppEnvironment>,
   code: ProtocolErrorCode,
   message: string,
-  status: 400 | 401 | 404 | 409 | 413 | 500,
+  status: 400 | 401 | 404 | 409 | 413 | 426 | 500,
 ): Response {
   return context.json({ error: { code, message } }, status);
+}
+
+function upgradeRequired(context: Context<AppEnvironment>): Response {
+  context.header("cache-control", "no-store");
+  return jsonError(context, "CLIENT_UPGRADE_REQUIRED", "a compatible Statecase client is required; upgrade before retrying", 426);
 }
 
 async function readLimited(source: ReadableStream<Uint8Array>, maximum: number): Promise<Uint8Array> {
