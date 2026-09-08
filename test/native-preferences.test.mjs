@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assertNativePreferences, summarizeNativeConfigChange } from "../scripts/uat/native-preferences.mjs";
+import { assertNativePreferences, summarizeNativeConfigChange, summarizeNativeProjectChange } from "../scripts/uat/native-preferences.mjs";
 
 describe("native effective-preference qualification assertions (AD-CFG-012)", () => {
   it.each(["codex", "claude"])("accepts only the expected actual model and effort for %s", (kind) => {
@@ -23,5 +23,15 @@ describe("native effective-preference qualification assertions (AD-CFG-012)", ()
     for (const invalid of ["bad = [", "x".repeat(1024 * 1024 + 1), null]) {
       expect(summarizeNativeConfigChange("", invalid)).toEqual({ kind: "invalid", fields: [], other: false });
     }
+  });
+  it("categorizes project-local trust changes without exposing project identities", () => {
+    expect(summarizeNativeProjectChange('', '[projects."/private-canary"]\ntrust_level="trusted"\n', { target: "/private-canary" }))
+      .toEqual([{ scope: "target", kind: "added", trustBefore: "absent", trustAfter: "trusted", other: false }]);
+    expect(summarizeNativeProjectChange('[projects."/private-canary"]\ntrust_level="trusted"\nsecret="canary"\n', '', {}))
+      .toEqual([{ scope: "other", kind: "removed", trustBefore: "trusted", trustAfter: "absent", other: true }]);
+    expect(summarizeNativeProjectChange('', 'projects="canary"', {})).toEqual([{ scope: "invalid" }]);
+    expect(summarizeNativeProjectChange('', '[projects."/unknown"]\ntrust_level="canary"\n', {}))
+      .toEqual([{ scope: "other", kind: "added", trustBefore: "absent", trustAfter: "other", other: false }]);
+    expect(summarizeNativeProjectChange('', '', {})).toEqual([]);
   });
 });

@@ -9,7 +9,7 @@ import { gunzipSync } from "node:zlib";
 import { SyncEngine } from "../../apps/cli/src/sync.ts";
 import { StatecaseClient } from "../../apps/cli/src/client.ts";
 import { randomKey } from "../../packages/crypto/src/index.ts";
-import { assertNativePreferences, summarizeNativeConfigChange } from "./native-preferences.mjs";
+import { assertNativePreferences, summarizeNativeConfigChange, summarizeNativeProjectChange } from "./native-preferences.mjs";
 import { nativeResponseEvents } from "./native-responses-events.mjs";
 
 // AD-CX-007, WS-022, UAT-02 subset. Real harness + actual encryption/engine,
@@ -38,6 +38,7 @@ let key;
 let expectedEffort = "low";
 let preferenceProbe;
 let configChange;
+let projectChange;
 const inputBytes = "synthetic input continuity\n";
 const environment = (machine) => ({
   PATH: process.env.PATH, HOME: machine.home,
@@ -176,6 +177,7 @@ try {
     requireNative(fresh !== sessionId, "NATIVE_SESSION_REUSED");
     const afterProbeSettings = await readFile(join(target.home, "codex", "config.toml"), "utf8");
     configChange = summarizeNativeConfigChange(beforeProbeSettings, afterProbeSettings);
+    projectChange = summarizeNativeProjectChange(beforeProbeSettings, afterProbeSettings, { source: source.project, target: target.project });
     requireNative(afterProbeSettings === beforeProbeSettings, "NATIVE_CONFIG_CHANGED");
   }
   console.log(JSON.stringify({ result: "pass", harness: version, node: process.version,
@@ -189,7 +191,7 @@ try {
   const conflictKinds = Array.isArray(error.paths) ? [...new Set(error.paths.map((path) =>
     path.startsWith("harness:codex:default:") ? "codex" : path.startsWith("workspace:ws_native:") ? "workspace" : "other"))] : undefined;
   console.error(JSON.stringify({ result: "fail", phase, error: error.name, fixtureError: fixtureError?.name,
-    preferenceFailure: fixtureError?.code, nativeFailure: error.code, preferenceProbe, configChange, requests, conflictKinds }));
+    preferenceFailure: fixtureError?.code, nativeFailure: error.code, preferenceProbe, configChange, projectChange, requests, conflictKinds }));
   process.exitCode = 1;
 } finally {
   key?.fill(0);

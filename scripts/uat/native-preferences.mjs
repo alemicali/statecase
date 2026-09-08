@@ -26,3 +26,23 @@ export function summarizeNativeConfigChange(before, after) {
       fields: allowed.filter((key) => changed.includes(key)), other: changed.some((key) => !allowed.includes(key)) };
   } catch { return { kind: "invalid", fields: [], other: false }; }
 }
+
+export function summarizeNativeProjectChange(before, after, paths) {
+  try {
+    const projects = (text) => {
+      if (typeof text !== "string" || Buffer.byteLength(text) > 1024 * 1024) throw new Error();
+      const value = getStaticTOMLValue(parseTOML(text, { tomlVersion: "1.0" })).projects ?? {};
+      if (typeof value !== "object" || Array.isArray(value) || value === null) throw new Error();
+      return value;
+    };
+    const a = projects(before), b = projects(after);
+    const trust = (value) => value === undefined ? "absent" : ["trusted", "untrusted"].includes(value) ? value : "other";
+    return [...new Set([...Object.keys(a), ...Object.keys(b)])].filter((path) => !isDeepStrictEqual(a[path], b[path])).slice(0, 8).map((path) => ({
+      scope: path === paths.target ? "target" : path === paths.source ? "source" : "other",
+      kind: a[path] === undefined ? "added" : b[path] === undefined ? "removed" : "modified",
+      trustBefore: trust(a[path]?.trust_level), trustAfter: trust(b[path]?.trust_level),
+      other: [...new Set([...Object.keys(a[path] ?? {}), ...Object.keys(b[path] ?? {})])]
+        .some((key) => key !== "trust_level" && !isDeepStrictEqual(a[path]?.[key], b[path]?.[key])),
+    }));
+  } catch { return [{ scope: "invalid" }]; }
+}

@@ -22,7 +22,7 @@ try {
   process.stdout.write(result.stdout);
 } catch (error) {
   // Do not expose native diagnostics, command arguments, or fixture transcripts.
-  let phase, preferenceFailure, preferenceProbe, nativeError, nativeFailure, configChange, requests;
+  let phase, preferenceFailure, preferenceProbe, nativeError, nativeFailure, configChange, projectChange, requests;
   for (const line of String(error.stderr ?? "").split("\n")) {
     try {
       const record = JSON.parse(line);
@@ -36,9 +36,16 @@ try {
         configChange = { kind: record.configChange.kind, fields: allowed.filter((field) => Array.isArray(record.configChange.fields) && record.configChange.fields.includes(field)), other: record.configChange.other === true };
       }
       if (Number.isInteger(record.requests) && record.requests >= 0 && record.requests <= 4) requests = record.requests;
+      if (Array.isArray(record.projectChange)) projectChange = record.projectChange.slice(0, 8).map((change) => ({
+        scope: ["source", "target", "other"].includes(change?.scope) ? change.scope : "invalid",
+        kind: ["added", "removed", "modified"].includes(change?.kind) ? change.kind : "invalid",
+        trustBefore: ["absent", "trusted", "untrusted"].includes(change?.trustBefore) ? change.trustBefore : "other",
+        trustAfter: ["absent", "trusted", "untrusted"].includes(change?.trustAfter) ? change.trustAfter : "other",
+        other: change?.other === true,
+      }));
     } catch { /* Only explicitly allowlisted phase metadata may leave the child. */ }
   }
-  process.stderr.write(`${JSON.stringify({ result: "fail", phase, preferenceFailure, preferenceProbe, nativeError, nativeFailure, configChange, requests, error: error.name, code: error.code })}\n`);
+  process.stderr.write(`${JSON.stringify({ result: "fail", phase, preferenceFailure, preferenceProbe, nativeError, nativeFailure, configChange, projectChange, requests, error: error.name, code: error.code })}\n`);
   process.exitCode = 1;
 } finally {
   await rm(directory, { recursive: true, force: true });

@@ -117,3 +117,9 @@ source cwd and relied solely on `-C`. The fixture now supplies the destination
 cwd explicitly to `execFile`, keeping process startup within that synthetic
 device. The complete byte-preservation assertion remains unchanged; this is
 a candidate correction, not a passing native result until rerun.
+
+CI `34196243122` / `f358926` still reports the same `projects`-only mutation.
+Explicit process cwd is retained for fixture isolation but did not resolve
+the assertion. Additional diagnostics report only source/target/other scope,
+addition/removal/modification and allowlisted trust enums, never native paths
+or arbitrary keys/values. The assertion is still unchanged.
