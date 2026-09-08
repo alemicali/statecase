@@ -38,12 +38,14 @@ import {
 
 import { sessionBindingKey, type LocalConfig, type RootMapping } from "./config.js";
 import type { ScopedVaultKeys } from "./capability.js";
-import type { StatecaseClient } from "./client.js";
+import type { StatecaseClient, RemoteNamespaceHead, RemoteNamespaceRevision } from "./client.js";
 import { isCompleteJsonlRecordSupersequence } from "./append-merge.js";
 import { isCompleteJsonlFileRecordSupersequence, mergeJsonlAppendFiles } from "./append-merge-file.js";
 import { applyFileTransaction, type FileTransaction } from "./materialize.js";
 import { readSettingsSnapshot } from "./settings-file.js";
 import { prepareSettingsPlan, settingsDocuments, settingsField, type IncomingSetting, type SettingsPlan } from "./settings-sync.js";
+import { instructionPath, scanInstructions, prepareInstructionPlan, type IncomingInstruction, type InstructionPlan } from "./instructions-sync.js";
+import { InstructionError, MAX_INSTRUCTION_BYTES, MAX_INSTRUCTION_FILES, MAX_INSTRUCTION_SET_BYTES } from "@statecase/adapter-common/instructions";
 import {
   inspectPortableSessionActivity,
   localizePortableSession,
@@ -190,6 +192,10 @@ export class SyncEngine {
       ...workspaceMappings(config),
     ];
     const scanned = await scanWritableMappings(writable, config.workspaces, false);
+    try {
+    if (scopedRemote.commitProvenance !== 1 && scanned.some((entry) => isInstructionAuthorityPath(entry.namespace, entry.logicalPath))) {
+      throw new InstructionError("INSTRUCTION_AUTHORITY_UNVERIFIED");
+    }
     const head = await this.client.head(this.vaultId);
     if (options.expectedHeadRevisionId !== undefined && head.revisionId !== options.expectedHeadRevisionId) {
       throw new SyncConflict([`${this.vaultId}:head-advanced-before-resolution`]);
@@ -368,6 +374,7 @@ export class SyncEngine {
     await this.#markNamespaceRevisions(config, appliedMappings);
     recordSessionBindings(config, writable, scanned);
     return { outcome: "pushed", revisionId, files: scanned.length, objects: envelopes.size + 1, bytes: transferredBytes + manifestEnvelope.byteLength };
+    } finally { for (const file of scanned) await file.dispose?.(); }
   }
 
   async dependencies(historicalRevisionId?: string): Promise<DependencyReport[]> {
@@ -453,6 +460,9 @@ export class SyncEngine {
     const scanned = await scanWritableMappings(writable, config.workspaces, true);
     try {
     const remote = await this.client.namespaceHeads(this.vaultId);
+    if (remote.commitProvenance !== 1 && scanned.some((entry) => isInstructionAuthorityPath(entry.namespace, entry.logicalPath))) {
+      throw new InstructionError("INSTRUCTION_AUTHORITY_UNVERIFIED");
+    }
     if (options.expectedHeadRevisionId !== undefined && remote.revisionId !== options.expectedHeadRevisionId) {
       throw new SyncConflict([`${this.vaultId}:head-advanced-before-resolution`]);
     }
@@ -654,6 +664,9 @@ export class SyncEngine {
       const tombstones = remoteState.entries
         .filter((entry) => !finalEntries.has(entry.logicalPath))
         .map((entry) => finalState.tombstones.find((item) => item.logicalPath === entry.logicalPath) ?? { namespace, logicalPath: entry.logicalPath, deletedAt: createdAt });
+      if (appendOnly && [...changedEntries, ...tombstones].some((entry) => isInstructionAuthorityPath(namespace, entry.logicalPath))) {
+        throw new InstructionError("INSTRUCTION_AUTHORITY_UNVERIFIED");
+      }
       if (changedEntries.length === 0 && tombstones.length === 0 && (!head || (head.keyEpoch ?? 1) === this.keyEpoch)) {
         // A different namespace may commit nextApplied below. Remote-only
         // content is not hydrated merely because this namespace needs no push.
@@ -1178,6 +1191,9 @@ export class SyncEngine {
     const workspacePayloads = new Map<string, { mapping: RootMapping; capsule?: CapturedWorkspace["capsule"]; blobs: WorkspaceBlob[] }>();
     const incompleteNamespaces = new Set<string>();
     const incomingSettings: IncomingSetting[] = [];
+    const incomingInstructions: IncomingInstruction[] = [];
+    const instructionBounds = new Map<string, { files: number; bytes: number }>();
+    let instructionPlan: InstructionPlan | undefined;
     let settingsPlan: SettingsPlan | undefined;
     let objectCount = manifestObjectCount;
     let byteCount = 0;
@@ -1188,6 +1204,15 @@ export class SyncEngine {
       if (!mapping) continue;
       assertRemotePathAllowed(mapping, entry.logicalPath);
       const field = settingsField(mapping.kind, entry.logicalPath);
+      const instruction = instructionPath(mapping.kind, entry.logicalPath);
+      if (instruction) {
+        const bounds = instructionBounds.get(entry.namespace) ?? { files: 0, bytes: 0 };
+        bounds.files++; bounds.bytes += entry.totalSize; instructionBounds.set(entry.namespace, bounds);
+        if (entry.entryType !== "file" || entry.totalSize > MAX_INSTRUCTION_BYTES || entry.objectIds.length > 256 || entry.chunking?.strategy === "jsonl-records" ||
+            entry.workspacePath !== undefined || entry.workspaceLayer !== undefined || entry.fileMode !== undefined || bounds.files > MAX_INSTRUCTION_FILES || bounds.bytes > MAX_INSTRUCTION_SET_BYTES) {
+          throw new InstructionError("INSTRUCTION_FORMAT_INVALID");
+        }
+      }
       if (field && (entry.entryType !== "file" || entry.totalSize > MAX_SETTING_BYTES || entry.objectIds.length > 1 || entry.chunking?.strategy === "jsonl-records" || entry.workspacePath !== undefined || entry.workspaceLayer !== undefined || entry.fileMode !== undefined)) {
         throw new Error("remote portable setting metadata is invalid");
       }
@@ -1257,6 +1282,7 @@ export class SyncEngine {
         incomingSettings.push({ mapping, logicalPath: entry.logicalPath, field, bytes });
         continue;
       }
+      if (instruction) { incomingInstructions.push({ mapping, logicalPath: entry.logicalPath, bytes }); continue; }
       if (mapping.id.startsWith("workspace_") && entry.entryType === "workspace-capsule") {
         const payload = workspacePayloads.get(entry.namespace) ?? { mapping, blobs: [] };
         payload.capsule = JSON.parse(new TextDecoder("utf8", { fatal: true, ignoreBOM: false }).decode(bytes)) as CapturedWorkspace["capsule"];
@@ -1296,6 +1322,7 @@ export class SyncEngine {
       assertRemotePathAllowed(mapping, tombstone.logicalPath);
       const field = settingsField(mapping.kind, tombstone.logicalPath);
       if (field) { incomingSettings.push({ mapping, logicalPath: tombstone.logicalPath, field }); continue; }
+      if (instructionPath(mapping.kind, tombstone.logicalPath)) { incomingInstructions.push({ mapping, logicalPath: tombstone.logicalPath }); continue; }
       if (workspaceMappingId(mapping)) continue;
       const portable = portableSession(tombstone.logicalPath);
       if (portable && mapping.kind !== "drop" && !config.workspaces.some((candidate) => candidate.id === portable.workspaceId)) {
@@ -1337,8 +1364,10 @@ export class SyncEngine {
 
     settingsPlan = await prepareSettingsPlan(incomingSettings, config, appliedKeyEpoch,
       async (namespace, epoch, bytes) => computeObjectId((await this.#scopeKeys(namespace, epoch)).dedupKey, bytes));
-    assertDistinctMaterializationPaths([...materialized, ...settingsPlan.targets], deletions);
-    const conflicts: string[] = [...settingsPlan.conflicts];
+    instructionPlan = await prepareInstructionPlan(incomingInstructions, config, appliedKeyEpoch,
+      async (namespace, epoch, bytes) => computeObjectId((await this.#scopeKeys(namespace, epoch)).dedupKey, bytes));
+    assertDistinctMaterializationPaths([...materialized, ...settingsPlan.targets, ...instructionPlan.targets], deletions);
+    const conflicts: string[] = [...settingsPlan.conflicts, ...instructionPlan.conflicts];
     for (const item of materialized) {
       if (item.sourcePath !== undefined) {
         const remoteSourcePath = item.sourcePath;
@@ -1372,10 +1401,11 @@ export class SyncEngine {
     }
     if (conflicts.length > 0 && !options.allowLocalOverwrite) throw new SyncConflict(conflicts);
     const workspaceFiles = readyWorkspaces.reduce((total, item) => total + item.captured.capsule.records.length, 0);
-    const fileCount = materialized.length + deletions.length + workspaceFiles + settingsPlan.writes.length;
+    const fileCount = materialized.length + deletions.length + workspaceFiles + settingsPlan.writes.length + instructionPlan.writes.length + instructionPlan.deletes.length;
     if (dryRun) return { outcome: "pulled", revisionId: remoteRevisionId, files: fileCount, objects: objectCount, bytes: byteCount };
 
     await settingsPlan.guard();
+    await instructionPlan.guard();
 
     if (options.replaceWorkspaces) {
       if (!options.prepareWorkspaceRecovery) throw new Error("workspace replacement requires persistent recovery preparation");
@@ -1391,14 +1421,15 @@ export class SyncEngine {
       await applyWorkspaceTransaction(
         readyWorkspaces.map((workspace) => ({ root: workspace.mapping.path, captured: workspace.captured, gitFetch: workspace.gitFetch, expectedCurrent: workspace.expectedCurrent })),
         {
-          writes: [...materialized.map(materializedWrite), ...settingsPlan.writes],
-          deletes: deletions.map((item) => item.path),
+          writes: [...materialized.map(materializedWrite), ...settingsPlan.writes, ...instructionPlan.writes],
+          deletes: [...deletions.map((item) => item.path), ...instructionPlan.deletes],
         },
         { materialize: async (transaction) => (options.materialize ?? applyFileTransaction)({
           ...transaction,
           beforeCommit: async (index, path) => {
             await transaction.beforeCommit?.(index, path);
             await settingsPlan!.guard(path);
+            await instructionPlan!.guard(path);
           },
         }) },
       );
@@ -1410,6 +1441,7 @@ export class SyncEngine {
         digests[item.logicalPath] = item.digest;
       }
       for (const item of settingsPlan.digests.filter((candidate) => candidate.namespace === mapping.namespace)) digests[item.logicalPath] = item.digest;
+      for (const item of instructionPlan.digests.filter((candidate) => candidate.namespace === mapping.namespace)) digests[item.logicalPath] = item.digest;
       config.applied[mapping.namespace] = {
         revisionId: appliedRevision(mapping.namespace),
         digests,
@@ -1420,6 +1452,8 @@ export class SyncEngine {
     return { outcome: "pulled", revisionId: remoteRevisionId, files: fileCount, objects: objectCount, bytes: byteCount };
     } finally {
       settingsPlan?.dispose();
+      instructionPlan?.dispose();
+      for (const item of incomingInstructions) item.bytes?.fill(0);
       await Promise.all(stagedDisposers.map((dispose) => dispose()));
     }
   }
@@ -1531,10 +1565,10 @@ export class SyncEngine {
     };
   }
 
-  async #resolveNamespaceManifest(head: { namespace: string; revisionId: string; manifestObjectId: string; keyEpoch?: number }): Promise<{ manifest: NamespaceManifestV1; manifestObjects: number }> {
+  async #resolveNamespaceManifest(head: RemoteNamespaceHead): Promise<{ manifest: NamespaceManifestV1; manifestObjects: number }> {
     const chain: NamespaceManifestV1[] = [];
     const seen = new Set<string>();
-    let pointer = { ...head, previousRevisionId: null as string | null };
+    let pointer: RemoteNamespaceHead & { previousRevisionId?: string | null } = head;
     for (let depth = 0; depth < 256; depth += 1) {
       if (seen.has(pointer.revisionId)) throw new Error("namespace manifest chain contains a cycle");
       seen.add(pointer.revisionId);
@@ -1556,6 +1590,25 @@ export class SyncEngine {
       };
       if (manifest.vaultId !== this.vaultId || manifest.namespace !== pointer.namespace || manifest.namespaceRevisionId !== pointer.revisionId) {
         throw new Error("namespace revision and encrypted manifest do not match");
+      }
+      if (pointer.commitMode !== "replace" && [...manifest.entries, ...manifest.tombstones].some((entry) => isInstructionAuthorityPath(pointer.namespace, entry.logicalPath))) {
+        throw new InstructionError("INSTRUCTION_AUTHORITY_UNVERIFIED");
+      }
+      if (pointer.commitMode === "append") {
+        // The encrypted manifest is controlled by the scope-key holder. Its
+        // claimed mode/parent must agree with immutable server provenance.
+        const revision: RemoteNamespaceRevision = pointer.previousRevisionId === undefined
+          ? await this.client.namespaceRevision(this.vaultId, pointer.namespace, pointer.revisionId)
+          : pointer as RemoteNamespaceRevision;
+        if (revision.namespace !== pointer.namespace || revision.revisionId !== pointer.revisionId ||
+            revision.manifestObjectId !== pointer.manifestObjectId || (revision.keyEpoch ?? 1) !== pointerKeyEpoch || revision.commitMode !== "append") {
+          throw new Error("namespace commit provenance does not match its pointer");
+        }
+        if (revision.previousRevisionId === null
+          ? manifest.mode !== "snapshot" || manifest.parentNamespaceRevisionIds.length !== 0
+          : manifest.mode !== "delta" || manifest.parentNamespaceRevisionIds.length !== 1 || manifest.parentNamespaceRevisionIds[0] !== revision.previousRevisionId) {
+          throw new Error("append manifest does not preserve its authorized predecessor");
+        }
       }
       await this.#assertNamespacePathClaims(manifest, keys.dedupKey);
       chain.push(manifest);
@@ -2245,6 +2298,7 @@ async function scanMapping(
         for (const entry of snapshot.entries) output.push({ namespace: mapping.namespace, logicalPath: entry.logicalPath, bytes: entry.bytes });
       } finally { snapshot.dispose(); }
     }
+    output.push(...await scanInstructions(mapping));
     await walk(root, "", mapping, workspaces, output, streamSessions);
     return output;
   } catch (error) {
@@ -2393,6 +2447,8 @@ function portableSession(logicalPath: string): { workspaceId: string; filename: 
 }
 
 function sessionDestination(mapping: RootMapping, logicalPath: string, config: LocalConfig): string {
+  const instruction = instructionPath(mapping.kind, logicalPath);
+  if (instruction) return safeDestination(mapping.path, instruction);
   const portable = portableSession(logicalPath);
   if (!portable || mapping.kind === "drop") return safeDestination(mapping.path, logicalPath);
   const boundPath = config.sessionBindings?.[sessionBindingKey(mapping.namespace, logicalPath)];
@@ -2479,6 +2535,7 @@ function assertRemotePathAllowed(mapping: RootMapping, logicalPath: string): voi
   if (excludedBuiltIn(logicalPath)) throw new Error("remote path is excluded by adapter policy");
   if (mapping.kind !== "drop" && portableSession(logicalPath)) return;
   if (settingsField(mapping.kind, logicalPath)) return;
+  if (instructionPath(mapping.kind, logicalPath)) return;
   if (harnessClassification(mapping.kind, logicalPath) === "excluded") {
     throw new Error("remote path is excluded by adapter policy");
   }
@@ -2567,6 +2624,10 @@ async function optionalFileDigest(
 
 function compareEntries(left: VaultManifestV1["entries"][number], right: VaultManifestV1["entries"][number]): number {
   return left.namespace.localeCompare(right.namespace, "en") || left.logicalPath.localeCompare(right.logicalPath, "en");
+}
+
+function isInstructionAuthorityPath(namespace: string, logicalPath: string): boolean {
+  return namespace.startsWith("harness:") && logicalPath.startsWith("portable-instructions/");
 }
 
 function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {

@@ -789,6 +789,31 @@ Statecase-owned artifacts are removed.
 
 ## 17. Release acceptance
 
+### Global instructions and memory — AD-CTX-001..009
+
+See [ADR-0024](adr/0024-portable-instructions-and-memory.md) for the complete
+test-ID contract. The deterministic suite covers registry/import closure,
+file/tree/link/size boundaries, timestamp collisions, concurrent file creation,
+encrypted two-device transfer, preview, deletion, conflicts, multi-file rollback
+and historical restore under key epochs 1/2 with failed-publication recovery.
+Authority cases include missing/append provenance, instruction tombstones and
+future reserved versions, retained owner instructions, dishonest snapshots,
+skipped parents, all pointer identity fields and older-server no-upload behavior.
+The workerd capability scenario verifies replace denial and persisted append
+provenance in namespace heads, immutable revisions and checkpoints.
+
+Native AD-CTX-007 uses independent instruction markers never supplied in user
+prompts. Fresh target requests must include the synchronized global content;
+Codex must select AGENTS.override.md over AGENTS.md, and Claude must include
+CLAUDE.md, its reviewed relative import and an unconditional global rule.
+Unit negative controls reject missing markers, fallback content and markers
+present only in tool metadata. Run native binaries only on disposable hosted
+VMs. Local helper tests do not establish native behavior; record exact native
+CI results separately. AD-CTX-008 workspace-memory, complete import syntax,
+cross-host/live-Worker and mixed-client qualification remain required.
+
+### Acceptance gates
+
 A release candidate is rejected when:
 
 - a critical/required test is skipped or flaky;

@@ -135,16 +135,17 @@ describe("atomic namespace heads for scoped capabilities (AU-004..AU-007, PR-003
       updates: [update("harness:codex:default", "nrev_harness"), update("workspace:ws_01", "nrev_workspace")],
     })).resolves.toEqual({ outcome: "committed", revisionId: "rev_vault_01", previousRevisionId: null });
     expect(await coordinator.namespaceHeads()).toEqual([
-      { namespace: "harness:codex:default", revisionId: "nrev_harness", manifestObjectId: "obj_nrev_harness" },
-      { namespace: "workspace:ws_01", revisionId: "nrev_workspace", manifestObjectId: "obj_nrev_workspace" },
+      { namespace: "harness:codex:default", revisionId: "nrev_harness", manifestObjectId: "obj_nrev_harness", commitMode: "replace" },
+      { namespace: "workspace:ws_01", revisionId: "nrev_workspace", manifestObjectId: "obj_nrev_workspace", commitMode: "replace" },
     ]);
     expect(await coordinator.namespaceHeads(new Set(["workspace:ws_01"]))).toEqual([
-      { namespace: "workspace:ws_01", revisionId: "nrev_workspace", manifestObjectId: "obj_nrev_workspace" },
+      { namespace: "workspace:ws_01", revisionId: "nrev_workspace", manifestObjectId: "obj_nrev_workspace", commitMode: "replace" },
     ]);
     expect(await coordinator.namespaceRevision("workspace:ws_01", "nrev_workspace")).toEqual({
       namespace: "workspace:ws_01",
       revisionId: "nrev_workspace",
       manifestObjectId: "obj_nrev_workspace",
+      commitMode: "replace",
       previousRevisionId: null,
     });
     expect(await coordinator.namespaceRevision("workspace:ws_01", "nrev_missing")).toBeNull();
@@ -166,9 +167,21 @@ describe("atomic namespace heads for scoped capabilities (AU-004..AU-007, PR-003
       namespace: "drop:rotated",
       revisionId: "nrev_epoch_02",
       manifestObjectId: "obj_nrev_epoch_02",
+      commitMode: "replace",
       keyEpoch: 2,
     }]);
     expect(await coordinator.namespaceRevision("drop:rotated", "nrev_epoch_02")).toMatchObject({ keyEpoch: 2 });
+  });
+
+  it("records the authorized commit mode independently of encrypted content (AD-CTX-009)", async () => {
+    const coordinator = new VaultCoordinatorCore(new InMemoryCoordinatorStorage());
+    for (const [index, mode] of ["replace", "append"].entries()) {
+      await coordinator.commitNamespaces({ protocolVersion: "1.1", operationId: `op_mode_${index}`, vaultRevisionId: `rev_mode_${index}`,
+        updates: [{ ...update("harness:codex:default", `nrev_mode_${index}`, index ? "nrev_mode_0" : null), mode: mode as "replace" | "append" }] });
+      expect((await coordinator.namespaceHeads())[0]).toMatchObject({ commitMode: mode });
+      expect(await coordinator.namespaceRevision("harness:codex:default", `nrev_mode_${index}`)).toMatchObject({ commitMode: mode, previousRevisionId: index ? "nrev_mode_0" : null });
+    }
+    expect(await coordinator.namespaceRevision("harness:codex:default", "nrev_mode_0")).toMatchObject({ commitMode: "replace" });
   });
 
   it("allows disjoint offline namespace commits while rejecting a stale touched namespace", async () => {

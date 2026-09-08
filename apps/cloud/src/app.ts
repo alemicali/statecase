@@ -217,7 +217,7 @@ export function createCloudApp(services: CloudServices): Hono<AppEnvironment> {
     const decisions = await Promise.all(heads.map((head) =>
       services.authorizeNamespace(context.get("principal"), vaultId, head.namespace, "read")));
     const visible = heads.filter((_head, index) => decisions[index]);
-    return context.json({ revisionId: (await services.coordinator(vaultId).scopedHead())?.revisionId ?? null, namespaces: visible });
+    return context.json({ revisionId: (await services.coordinator(vaultId).scopedHead())?.revisionId ?? null, namespaces: visible, commitProvenance: 1 });
   });
 
   app.get("/v1/vaults/:vaultId/namespaces/:namespace/revisions/:revisionId", async (context) => {

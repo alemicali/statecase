@@ -357,6 +357,191 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     }
   });
 
+  it.each(["codex", "claude"] as const)("transfers %s global instructions with preview, deletion and local conflict protection (AD-CTX-004)", async (kind) => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-instruction-sync-")); temporary.push(base);
+    const first = join(base, "first"), second = join(base, "different", "second");
+    await mkdir(first, { mode: 0o700 }); await mkdir(second, { recursive: true, mode: 0o700 });
+    const primary = kind === "codex" ? "AGENTS.md" : "CLAUDE.md";
+    const extra = kind === "codex" ? "AGENTS.override.md" : "instructions/guide.md";
+    if (kind === "claude") await mkdir(join(first, "instructions"), { mode: 0o700 });
+    const original = kind === "codex" ? "Synthetic global guidance\n" : "Synthetic guidance @instructions/guide.md\n";
+    await writeFile(join(first, primary), original, { mode: 0o600 }); await writeFile(join(first, extra), "Synthetic extra guidance\n", { mode: 0o600 });
+    await writeFile(join(second, "local-only.txt"), "private-canary\n", { mode: 0o600 });
+    const remote = new MemoryRemote(), key = await randomKey();
+    const engine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    const a = harnessConfig(first, join(base, "unused-a")), b = harnessConfig(second, join(base, "unused-b"));
+    for (const local of [a, b]) { local.mappings[0]!.kind = kind; local.mappings[0]!.namespace = `harness:${kind}:default`; }
+    expect((await engine.push(a)).files).toBe(2);
+    const before = structuredClone(b); await engine.pull(b, true); expect(b).toEqual(before);
+    await expect(readFile(join(second, primary))).rejects.toMatchObject({ code: "ENOENT" });
+    await engine.pull(b); expect(await readFile(join(second, primary), "utf8")).toBe(original);
+    expect(await readFile(join(second, extra), "utf8")).toBe("Synthetic extra guidance\n");
+    expect(await readFile(join(second, "local-only.txt"), "utf8")).toBe("private-canary\n");
+    expect((await engine.push(b)).outcome).toBe("unchanged");
+    expect(Object.keys(b.applied[a.mappings[0]!.namespace]!.digests).every((path) => path.startsWith("portable-instructions/v1/"))).toBe(true);
+    await writeFile(join(first, primary), "Updated global guidance\n"); await rm(join(first, extra));
+    await engine.push(a); await engine.pull(b);
+    expect(await readFile(join(second, primary), "utf8")).toBe("Updated global guidance\n");
+    await expect(readFile(join(second, extra))).rejects.toMatchObject({ code: "ENOENT" });
+    await writeFile(join(first, primary), "Remote branch\n"); await writeFile(join(second, primary), "Local branch\n");
+    await engine.push(a); const applied = structuredClone(b.applied);
+    await expect(engine.pull(b)).rejects.toThrow(SyncConflict); expect(b.applied).toEqual(applied);
+    expect(await readFile(join(second, primary), "utf8")).toBe("Local branch\n");
+    expect(remote.plaintext).not.toMatch(/guidance|private-canary|Local branch/u);
+  });
+
+  it("rejects incomplete and external Claude instruction imports before upload or materialization (AD-CTX-002, AD-CTX-005)", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-instruction-hostile-")); temporary.push(base);
+    const source = join(base, "source"), target = join(base, "target");
+    await mkdir(source, { mode: 0o700 }); await mkdir(target, { mode: 0o700 });
+    const remote = new MemoryRemote(), key = await randomKey();
+    const engine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    const a = harnessConfig(source, join(base, "unused-a")), b = harnessConfig(target, join(base, "unused-b"));
+    for (const local of [a, b]) { local.mappings[0]!.kind = "claude"; local.mappings[0]!.namespace = "harness:claude:default"; }
+    await writeFile(join(source, "CLAUDE.md"), "@/private-canary\n", { mode: 0o600 });
+    await expect(engine.push(a)).rejects.toMatchObject({ code: "INSTRUCTION_DEPENDENCY_UNRESOLVED" });
+    expect(remote.namespaceHeads.size).toBe(0);
+    await rm(join(source, "CLAUDE.md")); a.mappings[0]!.kind = "drop";
+    await mkdir(join(source, "portable-instructions", "v1"), { recursive: true, mode: 0o700 });
+    await writeFile(join(source, "portable-instructions", "v1", "CLAUDE.md"), "@/private-canary\n", { mode: 0o600 });
+    await engine.push(a);
+    await expect(engine.pull(b)).rejects.toMatchObject({ code: "INSTRUCTION_DEPENDENCY_UNRESOLVED" });
+    expect(b.applied).toEqual({}); await expect(readFile(join(target, "CLAUDE.md"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each(["append", undefined] as const)("rejects instruction authority from commit provenance %s (AD-CTX-009)", async (commitMode) => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-instruction-authority-")); temporary.push(base);
+    const root = join(base, "source"), target = join(base, "target"); await mkdir(root, { mode: 0o700 }); await mkdir(target, { mode: 0o700 });
+    await writeFile(join(root, "AGENTS.md"), "Synthetic authority\n", { mode: 0o600 });
+    const remote = new MemoryRemote(), key = await randomKey();
+    const engine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    const a = harnessConfig(root, join(base, "unused")), b = harnessConfig(target, join(base, "unused"));
+    await engine.push(a);
+    const head = remote.namespaceHeads.get(a.mappings[0]!.namespace)!;
+    Object.assign(head, { commitMode });
+    await expect(engine.pull(b)).rejects.toMatchObject({ code: "INSTRUCTION_AUTHORITY_UNVERIFIED" });
+    expect(b.applied).toEqual({}); await expect(readFile(join(target, "AGENTS.md"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each([false, true])("refuses instruction publication to an older server before uploads, legacy=%s (AD-CTX-009)", async (legacy) => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-instruction-old-server-")); temporary.push(base);
+    const root = join(base, "source"); await mkdir(root, { mode: 0o700 });
+    await writeFile(join(root, "AGENTS.md"), "Synthetic instructions\n", { mode: 0o600 });
+    const remote = new MemoryRemote(), key = await randomKey(); remote.commitProvenance = undefined;
+    if (legacy) await seedLegacyFile(remote, key, "old.txt", new TextEncoder().encode("old"));
+    const before = [remote.objects.size, remote.namespaceObjects.size, remote.revisionId, remote.scopedRevisionId];
+    const engine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    await expect(engine.push(harnessConfig(root, join(base, "unused")))).rejects.toMatchObject({ code: "INSTRUCTION_AUTHORITY_UNVERIFIED" });
+    expect([remote.objects.size, remote.namespaceObjects.size, remote.revisionId, remote.scopedRevisionId]).toEqual(before);
+  });
+
+  it.each(["v1/AGENTS.md", "future/AGENTS.override.md"])("rejects append instruction tombstones including reserved version %s (AD-CTX-009)", async (suffix) => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-instruction-tombstone-authority-")); temporary.push(base);
+    const remote = new MemoryRemote(), key = await randomKey(), namespace = "harness:codex:default";
+    const manifest = { ...namespaceManifest("nrev_hostile", "delta", ["nrev_owner"]), namespace,
+      tombstones: [{ namespace, logicalPath: `portable-instructions/${suffix}`, deletedAt: "2026-09-08T10:00:00.000Z" }] };
+    remote.namespaceHeads.set(namespace, { namespace, revisionId: manifest.namespaceRevisionId, manifestObjectId: await storeNamespaceManifest(remote, key, manifest), commitMode: "append" } as import("../src/client.js").RemoteNamespaceHead);
+    const local = harnessConfig(base, join(base, "unused"));
+    await expect(new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key).pull(local)).rejects.toMatchObject({ code: "INSTRUCTION_AUTHORITY_UNVERIFIED" });
+    expect(local.applied).toEqual({});
+  });
+
+  it("keeps owner instructions through sandbox deltas but refuses sandbox additions, edits and deletions (AD-CTX-009)", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-instruction-capability-")); temporary.push(base);
+    const first = join(base, "owner"), second = join(base, "sandbox"), third = join(base, "observer");
+    for (const path of [first, second, third]) await mkdir(path, { mode: 0o700 });
+    const remote = new MemoryRemote(), key = await randomKey(), namespace = "harness:codex:default";
+    const keys = await deriveScopeKey(key, namespace);
+    const access = { vaultId: "vlt_test", namespaces: [namespace], actions: ["read", "append"] as Array<"read" | "append">, expiresAt: Date.now() + 60_000,
+      namespaceKeys: { [namespace]: { encryptionKey: Buffer.from(keys.encryptionKey).toString("base64url"), dedupKey: Buffer.from(keys.dedupKey).toString("base64url") } } };
+    const client = new StatecaseClient("https://remote.test", "token", remote.fetch);
+    const owner = new SyncEngine(client, "vlt_test", key), sandbox = new SyncEngine(client, "vlt_test", access);
+    const a = harnessConfig(first, join(base, "unused")), b = harnessConfig(second, join(base, "unused"));
+    await writeFile(join(first, "AGENTS.md"), "Owner instruction\n", { mode: 0o600 }); await owner.push(a); await sandbox.pull(b);
+    await mkdir(join(second, "skills", "synthetic"), { recursive: true, mode: 0o700 });
+    await writeFile(join(second, "skills", "synthetic", "SKILL.md"), "Synthetic content\n", { mode: 0o600 });
+    expect((await sandbox.push(b)).outcome).toBe("pushed");
+    await owner.pull(harnessConfig(third, join(base, "unused")));
+    expect(await readFile(join(third, "AGENTS.md"), "utf8")).toBe("Owner instruction\n");
+    const head = remote.scopedRevisionId, writes = remote.namespaceObjectWrites.length;
+    await writeFile(join(second, "AGENTS.override.md"), "Sandbox override\n", { mode: 0o600 });
+    await expect(sandbox.push(b)).rejects.toMatchObject({ code: "INSTRUCTION_AUTHORITY_UNVERIFIED" });
+    await rm(join(second, "AGENTS.override.md"));
+    await writeFile(join(second, "AGENTS.md"), "Sandbox edit\n", { mode: 0o600 });
+    await expect(sandbox.push(b)).rejects.toMatchObject({ code: "INSTRUCTION_AUTHORITY_UNVERIFIED" });
+    await rm(join(second, "AGENTS.md"));
+    await expect(sandbox.push(b)).rejects.toMatchObject({ code: "INSTRUCTION_AUTHORITY_UNVERIFIED" });
+    expect(remote.scopedRevisionId).toBe(head); expect(remote.namespaceObjectWrites.length).toBe(writes);
+  });
+
+  it.each(["snapshot", "skipped-parent", "root-delta", "root-parent", "wrong-namespace", "wrong-revision", "wrong-object", "wrong-epoch", "wrong-mode"])(
+    "rejects encrypted append history with %s provenance mismatch (AD-CTX-009)", async (variant) => {
+      const base = await mkdtemp(join(tmpdir(), "statecase-append-provenance-")); temporary.push(base);
+      const remote = new MemoryRemote(), key = await randomKey();
+      const root = variant.startsWith("root-");
+      const manifest = namespaceManifest("nrev_attack", variant === "snapshot" || variant === "root-parent" ? "snapshot" : "delta", [variant === "skipped-parent" ? "nrev_skipped" : "nrev_owner"]);
+      const head = { namespace: manifest.namespace, revisionId: manifest.namespaceRevisionId, manifestObjectId: await storeNamespaceManifest(remote, key, manifest), commitMode: "append" as const };
+      const revision = { ...head, previousRevisionId: root ? null : "nrev_owner" };
+      const changes = { "wrong-namespace": { namespace: "drop:other" }, "wrong-revision": { revisionId: "nrev_other" }, "wrong-object": { manifestObjectId: "obj_other" },
+        "wrong-epoch": { keyEpoch: 2 }, "wrong-mode": { commitMode: "replace" } };
+      Object.assign(revision, changes[variant as keyof typeof changes] ?? {});
+      remote.namespaceHeads.set(manifest.namespace, head); remote.namespaceRevisions.set(`${manifest.namespace}\0${head.revisionId}`, revision);
+      const local = config(base), engine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+      await expect(engine.pull(local)).rejects.toThrow(variant.startsWith("wrong-") ? "commit provenance" : "authorized predecessor");
+      expect(local.applied).toEqual({});
+    },
+  );
+
+  it("rolls back earlier instruction writes when a later native file changes before commit (AD-CTX-006)", async () => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-instruction-rollback-")); temporary.push(base);
+    const first = join(base, "a"), second = join(base, "b"); for (const path of [first, second]) await mkdir(path, { mode: 0o700 });
+    for (const name of ["AGENTS.md", "AGENTS.override.md"]) await writeFile(join(first, name), "base", { mode: 0o600 });
+    const remote = new MemoryRemote(), key = await randomKey(), engine = new SyncEngine(new StatecaseClient("https://remote.test", "token", remote.fetch), "vlt_test", key);
+    const a = harnessConfig(first, join(base, "unused")), b = harnessConfig(second, join(base, "unused"));
+    await engine.push(a); await engine.pull(b);
+    for (const name of ["AGENTS.md", "AGENTS.override.md"]) await writeFile(join(first, name), "remote", { mode: 0o600 });
+    await engine.push(a);
+    const applied = structuredClone(b.applied), apply = materialization.applyFileTransaction;
+    let firstApplied = false;
+    const spy = vi.spyOn(materialization, "applyFileTransaction").mockImplementationOnce(async (transaction) => apply({ ...transaction,
+      beforeCommit: async (index, path) => {
+        if (index === 1) { firstApplied = (await readFile(join(second, "AGENTS.md"), "utf8")) === "remote"; await writeFile(path, "concurrent", { mode: 0o600 }); }
+        await transaction.beforeCommit?.(index, path);
+      },
+    }));
+    await expect(engine.pull(b)).rejects.toMatchObject({ code: "NATIVE_FILE_CHANGED" }); spy.mockRestore();
+    expect(firstApplied).toBe(true); expect(await readFile(join(second, "AGENTS.md"), "utf8")).toBe("base");
+    expect(await readFile(join(second, "AGENTS.override.md"), "utf8")).toBe("concurrent"); expect(b.applied).toEqual(applied);
+  });
+
+  it.each([1, 2])("restores instruction history at epoch %i with preview and failed-publication recovery (AD-CTX-006)", async (epoch) => {
+    const base = await mkdtemp(join(tmpdir(), "statecase-instruction-restore-")); temporary.push(base);
+    const root = join(base, "codex"); await mkdir(root, { mode: 0o700 });
+    const primary = join(root, "AGENTS.md"), override = join(root, "AGENTS.override.md");
+    await writeFile(primary, "historical", { mode: 0o600 });
+    const remote = new MemoryRemote(), key = await randomKey(), client = new StatecaseClient("https://remote.test", "token", remote.fetch);
+    let engine = new SyncEngine(client, "vlt_test", key); const local = harnessConfig(root, join(base, "unused"));
+    const historical = await engine.push(local);
+    engine = new SyncEngine(client, "vlt_test", { currentEpoch: epoch, keys: { 1: key, [epoch]: epoch === 1 ? key : await randomKey() } });
+    await writeFile(primary, "current", { mode: 0o600 }); await writeFile(override, "current override", { mode: 0o600 }); await engine.push(local);
+    await writeFile(join(root, "auth.json"), "local-only-canary", { mode: 0o600 });
+    const before = structuredClone(local.applied), head = remote.scopedRevisionId;
+    await engine.restoreInPlace(local, local.mappings[0]!, historical.revisionId!, { dryRun: true });
+    expect(await readFile(primary, "utf8")).toBe("current"); expect(await readFile(override, "utf8")).toBe("current override"); expect(local.applied).toEqual(before);
+    const prepareRecovery = async (paths: readonly string[]) => {
+      expect([...paths].sort()).toEqual([primary, override].sort());
+      const snapshot = await createEmergencySnapshot({ id: `restore_${crypto.randomUUID().replaceAll("-", "")}`, createdAt: new Date().toISOString(), statecaseHome: join(base, "statecase"), targetRoot: root, paths });
+      return { rollback: () => restoreEmergencySnapshot(snapshot.path) };
+    };
+    remote.failNextNamespaceCommit = true;
+    await expect(engine.restoreInPlace(local, local.mappings[0]!, historical.revisionId!, { prepareRecovery })).rejects.toMatchObject({ status: 409 });
+    expect(await readFile(primary, "utf8")).toBe("current"); expect(await readFile(override, "utf8")).toBe("current override");
+    expect(local.applied).toEqual(before); expect(remote.scopedRevisionId).toBe(head);
+    await engine.restoreInPlace(local, local.mappings[0]!, historical.revisionId!, { prepareRecovery });
+    expect(await readFile(primary, "utf8")).toBe("historical"); await expect(readFile(override)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(join(root, "auth.json"), "utf8")).toBe("local-only-canary"); expect((await engine.push(local)).outcome).toBe("unchanged");
+  });
+
   it.each(["codex", "claude"] as const)("syncs %s preferences by field, preserving local secrets and unrelated concurrent edits (AD-CFG-007)", async (kind) => {
     const base = await mkdtemp(join(tmpdir(), "statecase-native-settings-sync-")); temporary.push(base);
     const first = join(base, "first"), second = join(base, "second");
@@ -2004,6 +2189,8 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     expect(await emptyEngine.pull(config(emptyRootPath))).toMatchObject({ outcome: "unchanged", revisionId: null });
     await writeFile(join(emptyRootPath, "first.txt"), "first\n");
     expect(await emptyEngine.push(config(emptyRootPath))).toMatchObject({ outcome: "pushed" });
+    const firstReader = join(base, "first-reader"); await mkdir(firstReader);
+    await emptyEngine.pull(config(firstReader)); expect(await readFile(join(firstReader, "first.txt"), "utf8")).toBe("first\n");
   });
 
   it("rejects mismatched, oversized, branching, and cyclic encrypted namespace histories (PR-006)", async () => {
@@ -2469,9 +2656,11 @@ class MemoryRemote {
       manifestObjectId: string;
       keyEpoch?: number;
       retainedVaultRevisionIds?: string[];
+      mode: "replace" | "append";
     }>;
   }> = [];
   allowLegacyReads = true;
+  commitProvenance: 1 | undefined = 1;
   failNextNamespaceCommit = false;
 
   fetch: typeof fetch = async (input, init) => {
@@ -2501,7 +2690,7 @@ class MemoryRemote {
       const bytes = this.namespaceObjects.get(key);
       return bytes ? new Response(bytes) : Response.json({ error: { code: "NOT_FOUND" } }, { status: 404 });
     }
-    if (url.pathname.endsWith("/namespaces")) return Response.json({ revisionId: this.scopedRevisionId, namespaces: [...this.namespaceHeads.values()] });
+    if (url.pathname.endsWith("/namespaces")) return Response.json({ revisionId: this.scopedRevisionId, namespaces: [...this.namespaceHeads.values()], commitProvenance: this.commitProvenance });
     if (url.pathname.endsWith("/namespace-commits")) {
       const request = JSON.parse(String(init?.body)) as (typeof this.namespaceCommitRequests)[number];
       this.namespaceCommitRequests.push(structuredClone(request));
@@ -2513,7 +2702,7 @@ class MemoryRemote {
       if (stale.length > 0) return Response.json({ error: { code: "STALE_BASE", message: "advanced" } }, { status: 409 });
       for (const update of request.updates) {
         const previousRevisionId = this.namespaceHeads.get(update.namespace)?.revisionId ?? null;
-        const head = { namespace: update.namespace, revisionId: update.namespaceRevisionId, manifestObjectId: update.manifestObjectId, keyEpoch: update.keyEpoch ?? 1 };
+        const head = { namespace: update.namespace, revisionId: update.namespaceRevisionId, manifestObjectId: update.manifestObjectId, keyEpoch: update.keyEpoch ?? 1, commitMode: update.mode };
         this.namespaceHeads.set(update.namespace, head);
         this.namespaceRevisions.set(`${update.namespace}\0${update.namespaceRevisionId}`, { ...head, previousRevisionId });
       }

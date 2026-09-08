@@ -81,6 +81,17 @@ concurrent-write refusal and historical rollback. Upgrade all participating
 clients before using this layout; older-client fencing, native effective-value
 qualification, additional configurations and memory remain release work.
 
+Global instruction sync now covers Codex `AGENTS.md`/`AGENTS.override.md` and
+Claude `CLAUDE.md`, `rules/**/*.md` and reviewed `instructions/**/*.md` includes.
+It preserves native bytes, detects conflicts and supports guarded historical
+restore. Claude imports must form a closed relative dependency set inside
+these roots; external or unsupported imports fail explicitly. Limits are
+1 MiB/file, 256 files and 8 MiB per harness instruction set.
+Instruction changes require full-write server provenance: sandbox append grants
+can consume but cannot change them. A provenance-capable Worker is required
+before publishing instructions. Workspace memory and complete native/live-cloud
+qualification remain release work; see [ADR-0024](docs/adr/0024-portable-instructions-and-memory.md).
+
 The [native Linux lifecycle drill](docs/uat/2026-09-08-native-systemd.md) passed
 start/stop, private IPC, filesystem notifications, duplicate-writer denial,
 and SIGKILL recovery with the hardened systemd-user definition.

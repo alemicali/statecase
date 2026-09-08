@@ -30,7 +30,7 @@ try {
     try {
       const record = JSON.parse(line);
       if (["setup", "native-source", "encrypted-transfer", "native-resume", "return-publish", "return-pull", "native-preferences"].includes(record.phase)) phase = record.phase;
-      if (["NATIVE_MODEL_MISMATCH", "NATIVE_EFFORT_MISMATCH"].includes(record.preferenceFailure)) preferenceFailure = record.preferenceFailure;
+      if (["NATIVE_MODEL_MISMATCH", "NATIVE_EFFORT_MISMATCH", "NATIVE_INSTRUCTIONS_MISMATCH"].includes(record.preferenceFailure)) preferenceFailure = record.preferenceFailure;
     } catch { /* Ignore non-metadata output. */ }
   }
   process.stderr.write(`${JSON.stringify({ result: "fail", phase, preferenceFailure, error: "NativeQualificationFailed" })}\n`);

@@ -472,13 +472,15 @@ describe("Cloud API contract (PR-001..PR-015)", () => {
     expect(await committed.json()).toMatchObject({ outcome: "committed", revisionId: "rev_scoped" });
     expect(await (await app.request("/v1/vaults/vlt_01/namespaces")).json()).toEqual({
       revisionId: "rev_scoped",
-      namespaces: [{ namespace: "workspace:ws_01", revisionId: "nrev_01", manifestObjectId: "obj_manifest" }],
+      namespaces: [{ namespace: "workspace:ws_01", revisionId: "nrev_01", manifestObjectId: "obj_manifest", commitMode: "append" }],
+      commitProvenance: 1,
     });
     expect(await (await app.request("/v1/vaults/vlt_01/namespaces/workspace%3Aws_01/revisions/nrev_01")).json()).toEqual({
       namespace: "workspace:ws_01",
       revisionId: "nrev_01",
       manifestObjectId: "obj_manifest",
       previousRevisionId: null,
+      commitMode: "append",
     });
     expect(await (await app.request("/v1/vaults/vlt_01/scoped-revisions/rev_scoped")).json()).toMatchObject({
       revisionId: "rev_scoped",

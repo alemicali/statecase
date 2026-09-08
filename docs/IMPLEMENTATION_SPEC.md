@@ -1268,3 +1268,20 @@ Each step begins with failing tests identified in the accompanying test plan.
 - lack of constant-memory, incremental transfer and append merge for
   multi-gigabyte sessions;
 - critical test or UAT scenario not automated/documented.
+## Global instruction transport supplement — ADR-0024
+
+Global instruction roots use adapter-reviewed `portable-instructions/v1/`
+logical paths within the harness namespace. Preserve Markdown bytes and
+resolve only closed reviewed imports; never import arbitrary referenced host
+files. Limits, parsing subset, descriptor/parent guards, transaction semantics
+and opt-in workspace-memory design are specified in
+[ADR-0024](adr/0024-portable-instructions-and-memory.md).
+
+Namespace heads/revisions/checkpoints now carry optional `commitMode`, absent
+only for pre-provenance revisions. Persist it from the authorized commit mode,
+never from encrypted manifest declarations. Instruction entries/tombstones
+require `replace`; append history must preserve the server-recorded predecessor.
+The namespace-list response advertises `commitProvenance: 1`; instruction
+publication requires this feature before uploads, also during legacy migration.
+An updated Worker must be deployed before live instruction publication. This
+does not retire the outstanding mixed-client fencing requirement.

@@ -11,6 +11,7 @@ import { StatecaseClient } from "../../apps/cli/src/client.ts";
 import { randomKey } from "../../packages/crypto/src/index.ts";
 import { assertNativePreferences, summarizeNativeConfigChange, summarizeNativeProjectChange } from "./native-preferences.mjs";
 import { nativeResponseEvents } from "./native-responses-events.mjs";
+import { assertNativeInstructions } from "./native-instructions.mjs";
 
 // AD-CX-007, WS-022, UAT-02 subset. Real harness + actual encryption/engine,
 // deterministic loopback Responses provider, in-memory reference transport.
@@ -27,6 +28,8 @@ if (externalIsolation) {
 const root = await mkdtemp(join(parent, "statecase-native-codex-"));
 const originalCwd = process.cwd();
 const marker = `native-canary-${randomBytes(12).toString("hex")}`;
+const instructionMarker = `instruction-${randomBytes(12).toString("hex")}`;
+const fallbackMarker = `fallback-${randomBytes(12).toString("hex")}`;
 const source = { home: join(root, "source-home"), project: join(root, "source-project") };
 const target = { home: join(root, "target-home"), project: join(root, "different", "target-project") };
 let phase = "setup";
@@ -61,6 +64,9 @@ const provider = createServer(async (request, response) => {
     if (request.headers["content-encoding"] === "gzip") bytes = gunzipSync(bytes, { maxOutputLength: 8 * 1024 * 1024 });
     const body = JSON.parse(bytes.toString());
     assertNativePreferences("codex", body, { model: "gpt-5.6-terra", effort: expectedEffort });
+    if (phase === "native-preferences" || stage === "source") {
+      assertNativeInstructions("codex", body, { required: [instructionMarker], forbidden: [fallbackMarker] });
+    }
     requests++;
     assert.ok(requests <= 3, "unexpected provider retry or extra tool turn");
     const machine = stage === "source" ? source : target;
@@ -115,6 +121,8 @@ try {
   await new Promise((accept, reject) => { provider.once("error", reject); provider.listen(0, "127.0.0.1", accept); });
   await configure(source);
   await configure(target);
+  await writeFile(join(source.home, "codex", "AGENTS.md"), `Synthetic fallback instruction: ${fallbackMarker}\n`, { mode: 0o600 });
+  await writeFile(join(source.home, "codex", "AGENTS.override.md"), `Synthetic active instruction: ${instructionMarker}\n`, { mode: 0o600 });
   const targetLocalSettings = await readFile(join(target.home, "codex", "config.toml"), "utf8");
   await writeFile(join(source.project, "input.txt"), inputBytes);
   phase = "native-source";
@@ -142,6 +150,7 @@ try {
   await assert.rejects(readFile(join(target.project, "artifact.txt")), { code: "ENOENT" });
   assert.deepEqual(b.applied, {});
   assert.equal(await readFile(join(target.home, "codex", "config.toml"), "utf8"), targetLocalSettings);
+  await assert.rejects(readFile(join(target.home, "codex", "AGENTS.override.md")), { code: "ENOENT" });
   const hydrated = await engine.hydrate(b, reports[0].sessionCapsuleId, { mode: "strict" });
   assert.equal(hydrated.warnings.length, 0);
   assert.equal(await readFile(join(target.project, "input.txt"), "utf8"), inputBytes);
@@ -151,6 +160,9 @@ try {
   assert.ok(hydratedSettings.endsWith(targetLocalSettings), "native local-only config changed");
   assert.ok(!hydratedSettings.includes("statecase_fixture_source"), "source provider configuration crossed devices");
   assert.ok(!hydratedSettings.includes(source.project), "source project trust crossed devices");
+  for (const name of ["AGENTS.md", "AGENTS.override.md"]) {
+    assert.deepEqual(await readFile(join(target.home, "codex", name)), await readFile(join(source.home, "codex", name)));
+  }
 
   phase = "native-resume";
   stage = "target";
@@ -187,6 +199,7 @@ try {
     nativeDatabaseNotCopied: true, patchDependency: true, hydrationPreviewNonMutating: true,
     sourceUnchangedBeforeSync: true, returnSync: true, syncFromMappedCwd: true,
     nativeEffectivePreferences: true, freshPreferenceSession: true, localConfigPreserved: true, cliPreferenceOverride: true,
+    nativeGlobalInstructions: true, nativeInstructionOverridePrecedence: true,
     encryptedObjects: remote.objectCount() }));
 } catch (error) {
   const conflictKinds = Array.isArray(error.paths) ? [...new Set(error.paths.map((path) =>
@@ -266,14 +279,14 @@ function referenceTransport(canary) {
     if (match) return Response.json(revisions.get(`${decodeURIComponent(match[1])}\0${match[2]}`));
     match = /\/scoped-revisions\/([^/]+)$/u.exec(url.pathname);
     if (match) return Response.json(checkpoints.get(match[1]));
-    if (url.pathname.endsWith("/namespaces")) return Response.json({ revisionId: head, namespaces: [...heads.values()] });
+    if (url.pathname.endsWith("/namespaces")) return Response.json({ revisionId: head, namespaces: [...heads.values()], commitProvenance: 1 });
     if (url.pathname.endsWith("/head")) return Response.json({ revisionId: null, manifestObjectId: null });
     if (url.pathname.endsWith("/namespace-commits")) {
       const request = JSON.parse(init.body);
       for (const update of request.updates) assert.equal(heads.get(update.namespace)?.revisionId ?? null, update.baseNamespaceRevisionId);
       for (const update of request.updates) {
         const previousRevisionId = heads.get(update.namespace)?.revisionId ?? null;
-        const value = { namespace: update.namespace, revisionId: update.namespaceRevisionId, manifestObjectId: update.manifestObjectId, keyEpoch: update.keyEpoch ?? 1 };
+        const value = { namespace: update.namespace, revisionId: update.namespaceRevisionId, manifestObjectId: update.manifestObjectId, keyEpoch: update.keyEpoch ?? 1, commitMode: update.mode };
         heads.set(update.namespace, value);
         revisions.set(`${update.namespace}\0${update.namespaceRevisionId}`, { ...value, previousRevisionId });
       }

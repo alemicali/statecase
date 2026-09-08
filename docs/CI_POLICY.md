@@ -28,6 +28,10 @@ Branch protection should require these logical checks on pull requests:
    Each runs on a disposable hosted VM with a deterministic loopback model
    provider and in-memory reference storage. These jobs do not replace the
    packaged/live-cloud cross-host UAT or qualify interactive session pickers.
+   Fresh-session probes must also observe synchronized global instructions in
+   actual request context, including Codex override precedence and Claude
+   reviewed relative imports/global rules (AD-CTX-007). Markers must never be
+   injected into prompts or tool metadata as a substitute for native loading.
 8. `native-credentials` and `native-macos-credentials` — clean installed CLI
    tarballs migrate synthetic credential files, refuse locked/unavailable native
    stores, reopen in independent CLI processes and retain encryption on logout.

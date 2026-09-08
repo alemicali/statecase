@@ -454,3 +454,22 @@ background service. It passes the local 574-test check (90.66% global branches)
 and all nine jobs in CI `34189968387` on `e23475c`, including the manager's
 effective selected-keychain environment. These checks do not close default-keychain
 UI/reboot, harness configuration, workspace crash recovery or wider release gates.
+
+### Global instruction checkpoint — 2026-09-08
+
+Global instruction transport and server-attested write authority are under
+qualification (ADR-0024). The local check passed 722 tests across
+52 files, 91.48% global branch coverage and clean-installed package checks;
+new instruction scan/plan code reached 95.89% branches, descriptor code 96.36%
+and instruction policy 96.87%. The separate workerd suite passed 12 tests,
+including scoped replace denial and immutable commit provenance. Tests include
+concurrent absence/tree guards and historical instruction recovery;
+the exact committed candidate still requires native CI evidence.
+
+Native instruction fixtures now require fresh-session global context, Codex
+override precedence and Claude imports/rules. Their implementation is not a
+native pass. The live Worker has not been updated by this change; instruction
+publication intentionally refuses a server without the new provenance feature.
+Project memory, full native precedence/import/version coverage, mixed-client
+fencing, packaged independent-host UAT and all existing release gates remain
+open. This checkpoint does not claim production readiness.

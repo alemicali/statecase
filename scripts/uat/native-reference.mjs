@@ -22,14 +22,14 @@ export function referenceTransport(canary) {
     if (match) return Response.json(revisions.get(`${decodeURIComponent(match[1])}\0${match[2]}`));
     match = /\/scoped-revisions\/([^/]+)$/u.exec(url.pathname);
     if (match) return Response.json(checkpoints.get(match[1]));
-    if (url.pathname.endsWith("/namespaces")) return Response.json({ revisionId: head, namespaces: [...heads.values()] });
+    if (url.pathname.endsWith("/namespaces")) return Response.json({ revisionId: head, namespaces: [...heads.values()], commitProvenance: 1 });
     if (url.pathname.endsWith("/head")) return Response.json({ revisionId: null, manifestObjectId: null });
     if (url.pathname.endsWith("/namespace-commits")) {
       const request = JSON.parse(init.body);
       for (const update of request.updates) assert.equal(heads.get(update.namespace)?.revisionId ?? null, update.baseNamespaceRevisionId);
       for (const update of request.updates) {
         const previousRevisionId = heads.get(update.namespace)?.revisionId ?? null;
-        const value = { namespace: update.namespace, revisionId: update.namespaceRevisionId, manifestObjectId: update.manifestObjectId, keyEpoch: update.keyEpoch ?? 1 };
+        const value = { namespace: update.namespace, revisionId: update.namespaceRevisionId, manifestObjectId: update.manifestObjectId, keyEpoch: update.keyEpoch ?? 1, commitMode: update.mode };
         heads.set(update.namespace, value);
         revisions.set(`${update.namespace}\0${update.namespaceRevisionId}`, { ...value, previousRevisionId });
       }

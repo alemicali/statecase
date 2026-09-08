@@ -444,12 +444,15 @@ describe("Statecase in workerd (PR-001, PR-005, PR-010, PR-011, AU-001)", () => 
       { headers: capabilityHeaders },
     )).json()).toMatchObject({
       revisionId: "rev_capability_runtime",
-      namespaces: [{ namespace, revisionId: "nrev_capability_runtime", manifestObjectId: "obj_manifest" }],
+      namespaces: [{ namespace, revisionId: "nrev_capability_runtime", manifestObjectId: "obj_manifest", commitMode: "append" }],
     });
     expect(await (await exports.default.fetch(
       `http://statecase.test/v1/vaults/${vault.id}/namespaces/${encodeURIComponent(namespace)}/revisions/nrev_capability_runtime`,
       { headers: capabilityHeaders },
-    )).json()).toMatchObject({ revisionId: "nrev_capability_runtime", previousRevisionId: null });
+    )).json()).toMatchObject({ revisionId: "nrev_capability_runtime", previousRevisionId: null, commitMode: "append" });
+    expect(await (await exports.default.fetch(
+      `http://statecase.test/v1/vaults/${vault.id}/namespaces`, { headers: capabilityHeaders },
+    )).json()).toMatchObject({ commitProvenance: 1, namespaces: [{ namespace, commitMode: "append" }] });
     expect((await exports.default.fetch(`http://statecase.test/v1/vaults/${vault.id}/namespace-commits`, {
       method: "POST",
       headers: { authorization: `Bearer ${access.accessToken}`, "content-type": "application/json" },

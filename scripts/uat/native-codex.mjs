@@ -27,7 +27,7 @@ try {
     try {
       const record = JSON.parse(line);
       if (["setup", "native-source", "encrypted-transfer", "native-resume", "return-publish", "return-pull", "native-preferences"].includes(record.phase)) phase = record.phase;
-      if (["NATIVE_MODEL_MISMATCH", "NATIVE_EFFORT_MISMATCH"].includes(record.preferenceFailure)) preferenceFailure = record.preferenceFailure;
+      if (["NATIVE_MODEL_MISMATCH", "NATIVE_EFFORT_MISMATCH", "NATIVE_INSTRUCTIONS_MISMATCH"].includes(record.preferenceFailure)) preferenceFailure = record.preferenceFailure;
       if (["synced", "override"].includes(record.preferenceProbe)) preferenceProbe = record.preferenceProbe;
       if (["Error", "AssertionError"].includes(record.error)) nativeError = record.error;
       if (["NATIVE_SESSION_ID_INVALID", "NATIVE_SESSION_REUSED", "NATIVE_CONFIG_CHANGED", "NATIVE_TURN_INCOMPLETE"].includes(record.nativeFailure)) nativeFailure = record.nativeFailure;

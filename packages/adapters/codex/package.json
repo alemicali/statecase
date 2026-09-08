@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "exports": { ".": "./src/index.ts", "./config": "./src/config.ts" },
+  "exports": { ".": "./src/index.ts", "./config": "./src/config.ts", "./instructions": "./src/instructions.ts" },
   "dependencies": {
     "@statecase/adapter-common": "*"
   }

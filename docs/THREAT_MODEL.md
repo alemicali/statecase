@@ -3,6 +3,33 @@
 Status: baseline threat model; update with every trust-boundary change
 Last updated: 2026-09-05
 
+## Global instruction authority update — 2026-09-08
+
+Encrypted harness namespace access is not sufficient authority to alter native
+global instructions. A malicious read/append sandbox can encrypt a new override
+or rule, including one the receiver's harness trusts automatically. ADR-0024
+requires server-derived immutable `commitMode: replace` for any instruction
+entry or tombstone. Validate each chain segment, not merely the final combined
+manifest. Bind append ancestry to the authorized immutable predecessor so a
+forged snapshot cannot erase the owner's instruction base. Unknown provenance
+fails closed for instruction changes; instruction uploads require a server
+advertising `commitProvenance: 1` before any objects are published.
+
+This relies on the existing trusted authorization server, not cryptographic
+sender signatures. Policies for pre-existing skill/settings authority,
+mixed-client fencing, deployed-server qualification and independent review
+remain open. A compromised fully authorized device can still publish harmful
+instructions. Explicit selection, preview and conflict handling are not a
+prompt-injection sanitizer.
+
+Native instruction import graphs are bounded and must stay inside reviewed
+roots. External/missing imports fail without reading referenced host files.
+No-follow double descriptor reads detect same-size writes despite timestamp
+collisions; absence/membership guards detect newly created overrides/rules.
+Enumeration errors are redacted and captured plaintext buffers disposed.
+These checks and transactional rollback are not an atomic filesystem snapshot
+or a proof against all same-UID ABA races.
+
 ## Security objectives
 
 Statecase must preserve confidentiality, integrity, availability, isolation,

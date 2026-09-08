@@ -184,6 +184,8 @@ export interface NamespaceHead {
   namespace: string;
   revisionId: string;
   manifestObjectId: string;
+  /** Server-authorized mode; absent only on revisions predating provenance. */
+  commitMode?: "replace" | "append";
   keyEpoch?: number;
 }
 
@@ -449,12 +451,14 @@ export class VaultCoordinatorCore {
         namespace: update.namespace,
         revisionId: update.namespaceRevisionId,
         manifestObjectId: update.manifestObjectId,
+        commitMode: update.mode,
         ...(update.keyEpoch === undefined ? {} : { keyEpoch: update.keyEpoch }),
       } satisfies NamespaceHead;
       writes[namespaceRevisionKey(update.namespace, update.namespaceRevisionId)] = {
         namespace: update.namespace,
         revisionId: update.namespaceRevisionId,
         manifestObjectId: update.manifestObjectId,
+        commitMode: update.mode,
         ...(update.keyEpoch === undefined ? {} : { keyEpoch: update.keyEpoch }),
         previousRevisionId: currentHeads.get(update.namespace)?.revisionId ?? null,
       } satisfies NamespaceRevision;

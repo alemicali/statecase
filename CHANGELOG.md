@@ -4,6 +4,18 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Added encrypted global instruction transport for Codex AGENTS files and
+  Claude CLAUDE/rules/reviewed Markdown includes. Validate closed imports,
+  bounded stable native reads, owner-only materialization, conflicts, deletion,
+  preview and cross-epoch historical recovery. Regressions cover concurrent
+  creation, timestamp collisions, links, size limits and redacted failures.
+- Record server-authorized namespace commit provenance. Reject sandbox changes
+  to instruction paths and append histories that skip their authorized parent;
+  require a provenance-capable server before instruction uploads. Extended
+  native CI fixtures check fresh-session instruction loading and precedence;
+  native qualification, live deployment and workspace memory remain gates
+  (ADR-0024, AD-CTX-001..009).
+
 - Fixed premature native mutex finalization during suspended lock acquisition.
   Retain acquired mutexes until explicit release or process exit; deterministic
   forced-GC process regressions cover both recovery/publication boundaries,

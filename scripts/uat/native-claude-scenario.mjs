@@ -12,6 +12,7 @@ import { randomKey } from "../../packages/crypto/src/index.ts";
 import { claudeProjectDirectory } from "../../packages/adapters/claude/src/index.ts";
 import { referenceTransport } from "./native-reference.mjs";
 import { assertNativePreferences } from "./native-preferences.mjs";
+import { assertNativeInstructions } from "./native-instructions.mjs";
 
 // AD-CL-006, WS-034, UAT-03 subset. Native file tools/session persistence;
 // deterministic Messages fixture and reference storage, not hosted inference.
@@ -24,6 +25,7 @@ assert.equal(process.env.STATECASE_UAT_CONFIRM, "run-native-harness-in-disposabl
 const root = await mkdtemp(join(parent, "statecase-native-claude-"));
 const originalCwd = process.cwd();
 const marker = `claude-canary-${randomBytes(12).toString("hex")}`;
+const instructionMarkers = ["global", "include", "rule"].map((kind) => `${kind}-${randomBytes(12).toString("hex")}`);
 const sourcePrompt = `Read input.txt, edit artifact.txt to contain ${marker}, and create note.txt.`;
 const inputBytes = "synthetic tracked input continuity\n";
 const noteBytes = "synthetic untracked note\n";
@@ -59,6 +61,7 @@ const provider = createServer(async (request, response) => {
     const body = JSON.parse(bytes.toString());
     if (pathname.endsWith("/count_tokens")) { response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ input_tokens: 100 })); return; }
     assertNativePreferences("claude", body, { model: "claude-sonnet-4-6", effort: expectedEffort });
+    if (phase === "native-preferences" || stage === "source") assertNativeInstructions("claude", body, { required: instructionMarkers, forbidden: [] });
     requests++;
     check(requests <= (stage === "source" ? 5 : 3), "unexpected-model-turn");
     const machine = stage === "source" ? source : target;
@@ -105,7 +108,7 @@ const provider = createServer(async (request, response) => {
     for (const event of events) response.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
     response.end();
   } catch (error) {
-    fixtureFailure ??= ["NATIVE_MODEL_MISMATCH", "NATIVE_EFFORT_MISMATCH"].includes(error.code) ? error.code : "provider-exception";
+    fixtureFailure ??= ["NATIVE_MODEL_MISMATCH", "NATIVE_EFFORT_MISMATCH", "NATIVE_INSTRUCTIONS_MISMATCH"].includes(error.code) ? error.code : "provider-exception";
     response.writeHead(500); response.end();
   }
 });
@@ -130,6 +133,13 @@ try {
     }), { mode: 0o600 });
   }
   const targetLocalSettings = await readFile(join(target.home, "claude", "settings.json"), "utf8");
+  for (const directory of ["instructions", "rules"]) await mkdir(join(source.home, "claude", directory), { mode: 0o700 });
+  const instructionFiles = [
+    ["CLAUDE.md", `Synthetic global instruction: ${instructionMarkers[0]}\n@instructions/shared.md\n`],
+    ["instructions/shared.md", `Synthetic included instruction: ${instructionMarkers[1]}\n`],
+    ["rules/shared.md", `Synthetic unconditional rule: ${instructionMarkers[2]}\n`],
+  ];
+  for (const [name, content] of instructionFiles) await writeFile(join(source.home, "claude", name), content, { mode: 0o600 });
   phase = "native-source";
   const sessionId = await harness(source, sourcePrompt);
   assert.match(sessionId, /^[a-f0-9-]{36}$/u);
@@ -163,6 +173,7 @@ try {
   assert.ok((await readFile(targetSession)).byteLength > 0);
   const hydratedSettings = await readFile(join(target.home, "claude", "settings.json"), "utf8");
   assert.deepEqual(JSON.parse(hydratedSettings), { model: "claude-sonnet-4-6", effortLevel: "low", env: { STATECASE_FIXTURE_LOCAL_ONLY: "target-canary" } });
+  for (const [name, content] of instructionFiles) assert.equal(await readFile(join(target.home, "claude", name), "utf8"), content);
   phase = "native-resume"; stage = "target"; requests = 0;
   assert.equal(await harness(target, "Continue the earlier task: read its artifact and append the continuation line.", sessionId), sessionId);
   assert.equal(await readFile(join(source.project, "artifact.txt"), "utf8"), `${marker}\n`);
@@ -186,6 +197,7 @@ try {
     nativeReadEditWrite: true, trackedBaseline: true, untrackedNote: true, mappedCwd: true,
     hydrationPreviewNonMutating: true, nativeProjectPath: true, returnSync: true,
     nativeEffectivePreferences: true, freshPreferenceSession: true, localConfigPreserved: true, cliPreferenceOverride: true,
+    nativeGlobalInstructions: true, nativeInstructionImports: true, nativeGlobalRules: true,
     encryptedObjects: remote.objectCount() }));
 } catch (error) {
   console.error(JSON.stringify({ result: "fail", phase, error: error.name, fixtureFailure,

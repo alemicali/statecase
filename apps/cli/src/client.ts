@@ -32,6 +32,7 @@ export interface RemoteNamespaceHead {
   revisionId: string;
   manifestObjectId: string;
   keyEpoch?: number;
+  commitMode?: "replace" | "append";
 }
 
 export interface RemoteNamespaceRevision extends RemoteNamespaceHead {
@@ -41,6 +42,7 @@ export interface RemoteNamespaceRevision extends RemoteNamespaceHead {
 export interface RemoteNamespaceHeads {
   revisionId: string | null;
   namespaces: RemoteNamespaceHead[];
+  commitProvenance?: 1;
 }
 
 export interface RemoteScopedRevision extends RemoteNamespaceHeads {
