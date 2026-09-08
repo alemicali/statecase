@@ -104,8 +104,14 @@ macOS uses `/usr/bin/security` and the OS default keychain/search list. Set
 explicitly; use the same selection for every CLI/daemon process on that
 profile. Changing it does not migrate a key. Statecase does not create or
 unlock your keychain, change the default search list, or grant all applications
-access to its item. Locked/unavailable storage fails closed. The new backend
-still requires its recorded native CI qualification before a support claim.
+access to its item. Locked/unavailable storage fails closed. The explicit
+temporary-keychain flow passed native CI; default-keychain UI, reboot and
+interactive unlock are not qualified by that drill.
+`daemon install` pins the explicitly selected macOS keychain path in the
+launchd definition; it does not copy your shell's other environment values.
+Stop the daemon before reinstalling with a changed selection, then start it
+again. Stop/uninstall still work without repeating the selected path. This
+setting is local to the installation and never synchronizes to other devices.
 
 Once protected, all credential reads/writes use the native wrapping key;
 `logout` removes the service token but keeps vault keys and the file encrypted.

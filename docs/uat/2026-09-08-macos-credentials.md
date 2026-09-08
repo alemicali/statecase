@@ -2,7 +2,7 @@
 
 Date: 2026-09-08
 Test IDs: AU-012, AU-013, CR-011
-Status: implementation and local regression checks passed; native macOS CI pending
+Status: explicit native macOS/package flow passed; launchd-selection follow-up pending CI
 
 ## Failing-first evidence
 
@@ -39,7 +39,25 @@ migration, independent-process reopen, idempotency, wrong explicit path,
 lock/refusal, explicit fixture unlock, encrypted logout with retained vault key,
 deleted-keychain refusal and cleanup.
 
-Until CI executes this scope, local mocked helpers are not native macOS
-qualification. Default-keychain UI, login-session behavior, reboot/sleep,
+CI [34189667851](https://github.com/alemicali/statecase/actions/runs/34189667851)
+on `ad0dec800c4cb29118f695f771488bf57dfa7cce` passed all nine jobs. The dedicated
+native macOS credential job reported every stage above passing and fixture
+cleanup verified, with Node 24.20.0:
+
+- Package SHA-256: `0922133a56cd86869b6712ae53af7e37f53ddcdd5f38fb74c9d9b947ce8fb4c7`.
+- macOS driver SHA-256: `be8e42aef1cc28f3a570a5f59198f4b834a22eb32295888fdfdefedf7441200b`.
+
+The subsequent launchd-selection follow-up reproduces and fixes loss of
+`STATECASE_KEYCHAIN_PATH` between the installing shell and native service. The
+installer pins only this local selection in its environment dictionary. Unit
+tests preserve legacy ownership/control, XML escaping and reject ambiguous
+dictionaries; the lifecycle driver now checks the native manager's effective
+environment using an unused synthetic keychain path. A fixed original Linux
+envelope context also verifies compatibility independently of the new writer.
+The full local check passed 574 tests, 90.66% global branches (3380/3728),
+credentials 93.33% and service 100% branches. This follow-up still requires its
+own CI; it was not part of `ad0dec8`'s package evidence above.
+
+Default-keychain UI, login-session behavior, reboot/sleep,
 credential recovery/downgrade, orphan-key cleanup and independent security
 review remain separate gates. This is not a cloud/harness continuity test.

@@ -1298,6 +1298,7 @@ function daemonServiceDefinition(store: ConfigStore, argv: string[]) {
       nodeExecutable: process.execPath,
       statecaseHome: store.home,
       roots: [...config.mappings.map((mapping) => mapping.path), ...config.workspaces.map((workspace) => workspace.path)],
+      ...(platform === "darwin" && process.env.STATECASE_KEYCHAIN_PATH !== undefined ? { keychainPath: process.env.STATECASE_KEYCHAIN_PATH } : {}),
       ...(platform === "darwin" && process.getuid ? { uid: process.getuid() } : {}),
     });
   });

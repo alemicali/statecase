@@ -4,11 +4,18 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Preserve explicitly selected macOS Keychain paths in launchd service
+  definitions, independent of the interactive shell. Keep legacy service
+  ownership checks and stop/uninstall behavior; reject malformed/ambiguous
+  environment dictionaries. Added a pinned original Linux envelope-context
+  regression to verify pre-macOS protected-file compatibility.
+
 - Added explicit macOS Keychain credential protection with bounded stdin-only
   key storage, selected-keychain lookup isolation, authenticated backend identity
   and foreign-backend refusal. Existing Linux encrypted files remain compatible.
-  Added boundary tests and a clean-package disposable macOS keychain CI drill;
-  native qualification is pending, not implied by the launchd job.
+  Added boundary tests and a clean-package disposable macOS keychain CI drill,
+  now passed independently from the launchd job. Reboot/default-keychain UI,
+  recovery and independent review remain unqualified.
 
 - Fixed native UAT driver startup outside the repository: Codex and Claude
   scenarios now resolve the installed SQLite dependency explicitly through a

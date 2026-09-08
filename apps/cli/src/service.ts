@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { chmod, lstat, mkdir, open, readFile, realpath, rename, rm } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, posix, resolve } from "node:path";
 import { promisify } from "node:util";
 
 const MARKER = "statecase-service-v1";
@@ -11,6 +11,7 @@ export interface ServiceSource {
   statecaseExecutable: string;
   nodeExecutable?: string;
   statecaseHome: string;
+  keychainPath?: string;
   roots: readonly string[];
   uid?: number;
 }
@@ -31,7 +32,11 @@ const runManager: ServiceCommandRunner = (file, args) => promisify(execFile)(fil
 
 export function serviceDefinition(source: ServiceSource): ServiceDefinition {
   const nodeExecutable = source.nodeExecutable ?? process.execPath;
-  for (const path of [source.home, source.statecaseExecutable, nodeExecutable, source.statecaseHome, ...source.roots]) {
+  const keychainPath = source.platform === "darwin" ? source.keychainPath : undefined;
+  if (keychainPath !== undefined && (!posix.isAbsolute(keychainPath) || Buffer.byteLength(keychainPath) > 2048)) {
+    throw new Error("selected keychain must be a bounded absolute path");
+  }
+  for (const path of [source.home, source.statecaseExecutable, nodeExecutable, source.statecaseHome, ...source.roots, ...(keychainPath === undefined ? [] : [keychainPath])]) {
     if ([...path].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)) {
       throw new Error("service paths must not contain control characters");
     }
@@ -41,6 +46,7 @@ export function serviceDefinition(source: ServiceSource): ServiceDefinition {
     home: resolve(source.home),
     statecaseExecutable: resolve(source.statecaseExecutable),
     nodeExecutable: resolve(nodeExecutable),
+    keychainPath,
     statecaseHome: resolve(source.statecaseHome),
     roots: [...new Set(source.roots.map((root) => resolve(root)))],
   };
@@ -151,10 +157,16 @@ async function assertLoadedPath(definition: ServiceDefinition, path: string): Pr
 }
 
 function assertProfile(definition: ServiceDefinition, contents: string): void {
-  const profile = definition.source.platform === "linux"
-    ? `Environment=${systemdQuote(`STATECASE_HOME=${definition.source.statecaseHome}`)}\n`
-    : `  <dict><key>STATECASE_HOME</key>\n    <string>${xml(definition.source.statecaseHome)}</string></dict>\n`;
-  if (!contents.includes(profile)) throw new Error("Statecase service belongs to another profile; refusing to modify it");
+  let matches: boolean;
+  if (definition.source.platform === "linux") {
+    matches = contents.includes(`Environment=${systemdQuote(`STATECASE_HOME=${definition.source.statecaseHome}`)}\n`);
+  } else {
+    // Accept the original environment dictionary and the extended keychain
+    // form. Match the full owned shape, not a loose profile substring.
+    const environments = [...contents.matchAll(/  <key>EnvironmentVariables<\/key>\n  <dict><key>STATECASE_HOME<\/key>\n    <string>([^<]*)<\/string>(?:\n    <key>STATECASE_KEYCHAIN_PATH<\/key>\n    <string>[^<]*<\/string>)?<\/dict>\n/gu)];
+    matches = environments.length === 1 && environments[0]![1] === xml(definition.source.statecaseHome);
+  }
+  if (!matches) throw new Error("Statecase service belongs to another profile; refusing to modify it");
 }
 
 function systemdDefinition(source: ServiceSource): ServiceDefinition {
@@ -222,7 +234,7 @@ function launchdDefinition(source: ServiceSource): ServiceDefinition {
     "  </array>",
     "  <key>EnvironmentVariables</key>",
     "  <dict><key>STATECASE_HOME</key>",
-    `    <string>${xml(source.statecaseHome)}</string></dict>`,
+    `    <string>${xml(source.statecaseHome)}</string>${source.keychainPath === undefined ? "" : `\n    <key>STATECASE_KEYCHAIN_PATH</key>\n    <string>${xml(source.keychainPath)}</string>`}</dict>`,
     "  <key>RunAtLoad</key><true/>",
     "  <key>KeepAlive</key><true/>",
     "  <key>ThrottleInterval</key><integer>5</integer>",

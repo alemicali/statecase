@@ -21,6 +21,7 @@ await writeFile(join(profile, "config.json"), JSON.stringify({ version: 1, apiUr
   { id: "drop_native", namespace: "drop:drop_native", kind: "drop", path: drop, mode: "two-way", name: "Native service fixture" },
 ], workspaces: [], applied: {} }), { mode: 0o600, flag: "wx" });
 const env = { PATH: process.env.PATH, HOME: home, STATECASE_HOME: profile,
+  STATECASE_KEYCHAIN_PATH: join(root, "unused-fixture.keychain-db"),
   CODEX_HOME: join(home, "codex"), CODEX_SQLITE_HOME: join(home, "codex-sqlite"), CLAUDE_CONFIG_DIR: join(home, "claude") };
 let definition;
 try {
@@ -28,9 +29,11 @@ try {
   assert.equal(definition, join(home, "Library", "LaunchAgents", "com.statecase.daemon.plist"));
   const contents = await readFile(definition, "utf8");
   assert.ok(contents.includes(`<string>${process.execPath}</string>`));
+  assert.ok(contents.includes(`<key>STATECASE_KEYCHAIN_PATH</key>\n    <string>${env.STATECASE_KEYCHAIN_PATH}</string>`));
   await command(env, "daemon", "start");
   const initial = await waitForStatus((status) => status?.running && status.roots === 1);
   await assertOwned();
+  assert.ok((await inspect()).includes(`STATECASE_KEYCHAIN_PATH => ${env.STATECASE_KEYCHAIN_PATH}`));
   assert.equal(initial.queued, true);
   const socket = await stat(join(profile, "daemon.sock"));
   assert.ok(socket.isSocket());
@@ -62,6 +65,7 @@ try {
 }
 console.log(JSON.stringify({ result: "pass", nativeManager: "launchd-gui", node: process.version,
   pinnedNodeRuntime: true, privateIpc: true, duplicateWriterDenied: true, profileIsolation: true,
+  selectedKeychainEnvironment: true,
   filesystemEvents: true, sigkillRecovery: true, idempotentStartStop: true, cleanupVerified: true,
   boundary: "isolated unauthenticated fixture; no remote sync or machine reboot claimed" }));
 

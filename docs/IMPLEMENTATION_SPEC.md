@@ -537,6 +537,9 @@ array searches for a selected keychain, and never enables overwrite or
 unrestricted item access. Backend mismatch is rejected before native access;
 distinct authenticated contexts bind backend identity while preserving the
 original Linux envelope format. Native macOS qualification is a separate gate.
+The launchd installer persists an explicitly selected keychain path in its
+owned environment dictionary so background execution does not depend on the
+installer's shell environment. Old definitions remain controllable/removable.
 Missing native services do not prevent legacy/headless file-mode use.
 
 All credential reads require an owned regular file without group/other

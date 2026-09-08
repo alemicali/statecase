@@ -373,6 +373,11 @@ deployed Worker test environment.
   tests cover control injection, escaped byte limits, environment filtering,
   canonical output and foreign-backend refusal before native calls. OS reboot
   and interactive unlock remain separate gates.
+  Launchd definitions must pin an explicit keychain path with XML escaping,
+  retain ownership checks for old/new dictionaries, reject duplicate/unknown
+  dictionaries, and remain stoppable/removable without repeating the path.
+  Native lifecycle evidence checks the manager's effective environment using
+  an unused synthetic keychain path; it is not an authenticated daemon UAT.
 - `AU-013`: unavailable/locked/missing/wrong native keys preserve the previous
   file and fail closed. Test stale read/save, active foreign locks, replaced
   locks, precommit failure, retained native keys, redacted errors and encrypted

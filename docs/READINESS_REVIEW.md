@@ -426,6 +426,10 @@ The local credential adapter now supports macOS Keychain, preserves Linux
 protected-file compatibility, rejects foreign backends before native access,
 and authenticates backend identity. Failing-first tests cover native command
 construction, bounded stdin/output, explicit-path isolation, update and failure
-semantics. A clean-package UAT and dedicated macOS credential CI job now exist;
-native results are still pending. This does not close harness configuration,
-workspace crash recovery or the wider release gates above.
+semantics. CI `34189667851` on `ad0dec8` passed all nine jobs, including the new
+clean-package native macOS keychain drill and verified fixture cleanup. See the
+[recorded credential evidence](uat/2026-09-08-macos-credentials.md).
+A subsequent launchd-selection fix now pins the chosen keychain path for the
+background service. It passes the local 574-test check (90.66% global branches)
+but still needs its exact-commit CI. These checks do not close default-keychain
+UI/reboot, harness configuration, workspace crash recovery or wider release gates.
