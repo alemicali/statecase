@@ -32,6 +32,8 @@ Branch protection should require these logical checks on pull requests:
    checkpoint suites, including linked worktrees and interrupted release/replay.
    Include ADR-0035 complete workspace/reference/profile and stable native
    reference observation suites; these use synthetic Git repositories only.
+   ADR-0036 also runs actual encrypted-engine SIGKILL/fresh-process recovery with
+   the test-only reference transport, synthetic sessions, Drops and Git roots.
 6. `background-sync` — two authenticated daemon processes with local
    workerd/D1/R2, interrupted object upload, durable journal replay, offline
    restart, disjoint updates, deletion, and idle no-op verification. All account

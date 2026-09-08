@@ -806,6 +806,16 @@ This API rejects dry-run before preparation; recovery preview remains read-only.
 Full dependency retention, every reference backend/fault case, activity barriers
 and ordinary runtime integration remain required, not implied by these tests.
 
+ADR-0036 connects the internal engine handoff to that complete coordinator. Build
+the verified applied/binding proposal before native writes, retain the original
+ConfigStore object identity, and pass full workspace applications and guarded
+files together. Restore in-memory marker references if the coordinator rejects.
+A narrowed hydration view selects content but maps back to the original profile
+for publication; unrelated mappings and markers remain unchanged. Dry-run invokes
+no coordinator. Explicit historical restore keeps its existing emergency
+lifecycle until its remote/local decision is integrated. Normal command, daemon
+and shim wiring remains pending activity, recovery and broader qualification.
+
 Baseline blobs that conform to the Git LFS pointer format MUST NOT be treated as
 the referenced content. Capture and hydration report
 `GIT_LFS_CONTENT_UNAVAILABLE` with logical paths while the worktree still holds

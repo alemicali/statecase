@@ -32,6 +32,8 @@ import {
   type GitFetchPolicy,
   type WorkspaceBlob,
   type WorkspaceMaterializedWrite,
+  type WorkspaceApplication,
+  type WorkspaceFileTransaction,
   WorkspaceBaselineUnavailable,
   workspaceMatchesCapsule,
 } from "@statecase/workspace";
@@ -148,16 +150,26 @@ export interface VaultKeyring {
   keys: Record<number, Uint8Array>;
 }
 
+export interface SyncEngineOptions {
+  /** Internal durable composition boundary. The proposal keeps the original
+   * ConfigStore observation identity; it contains only applied/binding changes. */
+  commitMaterialization?: (proposal: LocalConfig, workspaces: readonly WorkspaceApplication[], files: WorkspaceFileTransaction) => Promise<void>;
+}
+
 export class SyncEngine {
   readonly vaultKey?: Uint8Array;
   readonly vaultKeyring?: VaultKeyring;
   readonly keyEpoch: number;
   readonly scopedAccess?: ScopedVaultKeys;
+  /** A narrowed hydration view selects content, never replacement profile
+   * authority. Weak identity binding also keeps concurrent views independent. */
+  readonly #materializationOwners = new WeakMap<LocalConfig, LocalConfig>();
 
   constructor(
     readonly client: StatecaseClient,
     readonly vaultId: string,
     access: Uint8Array | VaultKeyring | ScopedVaultKeys,
+    private readonly options: SyncEngineOptions = {},
   ) {
     if (access instanceof Uint8Array) {
       if (access.byteLength !== 32) throw new TypeError("invalid vault key");
@@ -865,14 +877,17 @@ export class SyncEngine {
       .map((mapping) => ({ ...mapping, mode: "consume" as const }));
     scoped.workspaces = workspace ? [{ ...workspace, sync: "git" }] : [];
     scoped.memories = selectedMemories.map((memory) => ({ ...memory, mode: "consume" as const }));
-    const result = pinnedRevisions.size === 1
-      ? await this.pull(scoped, options.dryRun ?? false, [...pinnedRevisions][0]!)
-      : await this.#hydratePinnedNamespaces(scoped, report, options.dryRun ?? false);
-    if (!options.dryRun) {
-      for (const [namespace, applied] of Object.entries(scoped.applied)) config.applied[namespace] = applied;
-      config.sessionBindings = scoped.sessionBindings;
-    }
-    return { result, report, warnings };
+    this.#materializationOwners.set(scoped, this.#materializationOwners.get(config) ?? config);
+    try {
+      const result = pinnedRevisions.size === 1
+        ? await this.pull(scoped, options.dryRun ?? false, [...pinnedRevisions][0]!)
+        : await this.#hydratePinnedNamespaces(scoped, report, options.dryRun ?? false);
+      if (!options.dryRun) {
+        for (const [namespace, applied] of Object.entries(scoped.applied)) config.applied[namespace] = applied;
+        config.sessionBindings = scoped.sessionBindings;
+      }
+      return { result, report, warnings };
+    } finally { this.#materializationOwners.delete(scoped); }
   }
 
   async #hydratePinnedNamespaces(
@@ -1482,6 +1497,33 @@ export class SyncEngine {
     await instructionPlan.guard();
     await memoryPlan.guard();
 
+    // Build the complete applied/binding proposal before publishing any file.
+    // Keep previous marker objects intact so a failed durable decision can
+    // restore the caller's in-memory view as well as the on-disk checkpoint.
+    const profile = this.#materializationOwners.get(config) ?? config;
+    const proposed: LocalConfig = { ...profile, applied: { ...profile.applied }, sessionBindings: { ...profile.sessionBindings } };
+    for (const mapping of selected) {
+      if (incompleteNamespaces.has(mapping.namespace)) continue;
+      const digests: Record<string, string> = {};
+      for (const item of materialized.filter((candidate) => candidate.mapping.namespace === mapping.namespace)) digests[item.logicalPath] = item.digest;
+      for (const item of settingsPlan.digests.filter((candidate) => candidate.namespace === mapping.namespace)) digests[item.logicalPath] = item.digest;
+      for (const item of instructionPlan.digests.filter((candidate) => candidate.namespace === mapping.namespace)) digests[item.logicalPath] = item.digest;
+      for (const item of memoryPlan.digests.filter((candidate) => candidate.namespace === mapping.namespace)) digests[item.logicalPath] = item.digest;
+      proposed.applied[mapping.namespace] = { revisionId: appliedRevision(mapping.namespace), digests, keyEpoch: appliedKeyEpoch(mapping.namespace) };
+    }
+    recordMaterializedSessionBindings(proposed, materialized, deletions);
+    const guardedFiles = <T extends FileTransaction>(transaction: T): T => ({
+      ...transaction,
+      beforeCommit: async (index, path) => {
+        await transaction.beforeCommit?.(index, path);
+        await settingsPlan!.guard(path);
+        await instructionPlan!.guard(path);
+        await memoryPlan!.guard(path);
+        try { await fileGuards.get(resolve(path))?.assertUnchanged(); }
+        catch { throw new SyncConflict([path]); }
+      },
+    });
+
     if (options.replaceWorkspaces) {
       if (!options.prepareWorkspaceRecovery) throw new Error("workspace replacement requires persistent recovery preparation");
       const workspace = readyWorkspaces[0];
@@ -1493,41 +1535,26 @@ export class SyncEngine {
         });
       }
     } else {
-      await applyWorkspaceTransaction(
-        readyWorkspaces.map((workspace) => ({ root: workspace.mapping.path, captured: workspace.captured, gitFetch: workspace.gitFetch, expectedCurrent: workspace.expectedCurrent })),
-        {
-          writes: [...materialized.map(materializedWrite), ...settingsPlan.writes, ...instructionPlan.writes, ...memoryPlan.writes],
-          deletes: [...deletions.map((item) => item.path), ...instructionPlan.deletes, ...memoryPlan.deletes],
-        },
-        { materialize: async (transaction) => (options.materialize ?? applyFileTransaction)({
-          ...transaction,
-          beforeCommit: async (index, path) => {
-            await transaction.beforeCommit?.(index, path);
-            await settingsPlan!.guard(path);
-            await instructionPlan!.guard(path);
-            await memoryPlan!.guard(path);
-            try { await fileGuards.get(resolve(path))?.assertUnchanged(); }
-            catch { throw new SyncConflict([path]); }
-          },
-        }) },
-      );
-    }
-    for (const mapping of selected) {
-      if (incompleteNamespaces.has(mapping.namespace)) continue;
-      const digests: Record<string, string> = {};
-      for (const item of materialized.filter((candidate) => candidate.mapping.namespace === mapping.namespace)) {
-        digests[item.logicalPath] = item.digest;
-      }
-      for (const item of settingsPlan.digests.filter((candidate) => candidate.namespace === mapping.namespace)) digests[item.logicalPath] = item.digest;
-      for (const item of instructionPlan.digests.filter((candidate) => candidate.namespace === mapping.namespace)) digests[item.logicalPath] = item.digest;
-      for (const item of memoryPlan.digests.filter((candidate) => candidate.namespace === mapping.namespace)) digests[item.logicalPath] = item.digest;
-      config.applied[mapping.namespace] = {
-        revisionId: appliedRevision(mapping.namespace),
-        digests,
-        keyEpoch: appliedKeyEpoch(mapping.namespace),
+      const workspaces = readyWorkspaces.map((workspace) => ({ root: workspace.mapping.path, captured: workspace.captured, gitFetch: workspace.gitFetch, expectedCurrent: workspace.expectedCurrent }));
+      const files: WorkspaceFileTransaction = {
+        writes: [...materialized.map(materializedWrite), ...settingsPlan.writes, ...instructionPlan.writes, ...memoryPlan.writes],
+        deletes: [...deletions.map((item) => item.path), ...instructionPlan.deletes, ...memoryPlan.deletes],
       };
+      // Explicit historical restore retains its emergency/publication lifecycle;
+      // it must not accidentally commit a temporary working profile here.
+      if (this.options.commitMaterialization && !options.materialize) {
+        const originalApplied = profile.applied, originalBindings = profile.sessionBindings;
+        profile.applied = proposed.applied; profile.sessionBindings = proposed.sessionBindings;
+        try { await this.options.commitMaterialization(profile, workspaces, guardedFiles(files)); }
+        catch (error) {
+          profile.applied = originalApplied;
+          if (originalBindings === undefined) delete profile.sessionBindings; else profile.sessionBindings = originalBindings;
+          throw error;
+        }
+      } else await applyWorkspaceTransaction(workspaces, files,
+        { materialize: async transaction => (options.materialize ?? applyFileTransaction)(guardedFiles(transaction)) });
     }
-    recordMaterializedSessionBindings(config, materialized, deletions);
+    config.applied = proposed.applied; config.sessionBindings = proposed.sessionBindings;
     return { outcome: "pulled", revisionId: remoteRevisionId, files: fileCount, objects: objectCount, bytes: byteCount };
     } finally {
       settingsPlan?.dispose();

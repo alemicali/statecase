@@ -382,6 +382,16 @@ configuration changes, prepublication orphans, active-harness barriers and norma
 runtime integration remain unqualified. A recoverable decision is not atomic
 visibility to uncooperating native readers.
 
+ADR-0036 retains ConfigStore's observed object identity when the encrypted engine
+hands off its applied/binding proposal, full workspaces and guarded files. A
+hydration selection clone never supplies replacement profile authority: its
+proposal derives from the original observed profile and preserves unrelated
+mappings/markers. Failed publication restores in-memory values without restoring
+invalidated save authority. Per-target native content guards remain in the handoff.
+The local identity association is neither authentication nor a global lock.
+Normal runtime/activity integration, all historical restore publication faults
+and live cross-host/mixed-writer qualification remain open.
+
 ### Workspace dependency incompleteness
 
 Threats: transcript restores without modified code; missed watcher event;

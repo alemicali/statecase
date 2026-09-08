@@ -533,6 +533,14 @@ unit assertion for historical executable evidence.
   Preserve concurrent edits observed before admission or after staging. These
   internal tests do not replace normal-runtime/cross-host qualification, full
   dependency retention or the exhaustive low-level fault matrix.
+  ADR-0036 exercises the real encrypted engine with ConfigStore: paired applied
+  and session-binding proposals, caught rollback, dry-run, complete changed-branch
+  application and scoped hydration preserving original profile identity and
+  unrelated state. Bundled child tests require actual SIGKILL at session,
+  workspace, HEAD/profile installation, durable commit and pin retirement,
+  followed by independent-process replay. Verify exact original or complete new
+  state, plaintext exclusion from reference object storage and unrelated-file
+  preservation. These do not substitute for command/activity/live-cloud UAT.
 - `RT-007`: two daemons for one profile cannot run concurrently.
 - `RT-008`: sleep/wake and network change trigger reconcile without a storm.
 - `RT-009`: rapid file events debounce but the maximum publish deadline holds.

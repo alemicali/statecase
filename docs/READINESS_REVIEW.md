@@ -2,7 +2,40 @@
 
 Status: foreground sync implemented and deployed; release qualification in progress; not ready for public
 production launch
-Last updated: 2026-09-08
+Last updated: 2026-09-09
+
+## Encrypted engine joins the profile decision — 2026-09-09
+
+ADR-0036 now passes the engine's verified applied/binding proposal, guarded files
+and complete workspace applications to the internal ConfigStore coordinator.
+Scoped hydration retains original observed profile authority and unrelated
+mappings/markers. Caught failures restore original JavaScript marker identities
+without restoring invalidated save authority. Six whole-engine tests publish
+encrypted synthetic session/Drop/changed-branch state, require actual SIGKILL
+at native/profile/commit/retirement boundaries and recover in another process.
+Exact old or complete new state is verified alongside unrelated-file preservation.
+
+The full `npm run check` passed 1,340 tests. Two further proposal/source-guard
+cases then passed all the same gates (lint, types, full coverage, build and clean
+package smoke): **1,342 tests in 73 files**. JSON coverage for the changed engine
+hydration/handoff region (lines 880–890 and 1500–1557 at this candidate) records
+27/30 branches, **90%**; the three uncovered branches are existing in-place-restore
+guards included in that conservative region. Whole SyncEngine branches remain
+86.77% and whole workspace branches 89.67%; these module-wide targets remain open.
+New reference participant branches are 96.13%, profile checkpoint 94.89%; global
+branches are 93.03% (5451/5859). No threshold, existing timeout or test was reduced.
+
+Exact-candidate hosted qualification is pending. The combined ADR-0035/0036
+[review map](uat/2026-09-09-workspace-engine-recovery-review.md) keeps this work
+inside PR7. The old `04b6e06` hosted success is not evidence for these changes.
+No operator harness, credential store, profile, bucket or live service was used.
+
+Next required work is foreground/daemon/shim wiring with activity and pending-
+recovery barriers, including active-session behavior; upload/no-op profile
+publication; historical restore coordination; full Git dependency retention;
+and all remaining fault, native-format, mixed-client, independent-host/live-cloud,
+deployment and independent-review gates. Normal command wiring still uses the
+older materialization path. This is internal engine qualification, not release.
 
 ## Complete prepared workspace/profile decision — 2026-09-08
 

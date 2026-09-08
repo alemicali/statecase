@@ -4,6 +4,13 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Couple the internal encrypted engine materialization handoff to the complete
+  workspace/profile coordinator. Prepare applied state and session bindings
+  before native writes; retain observed profile authority through scoped session
+  hydration, and restore in-memory proposals on rejection. Add whole-engine
+  SIGKILL/fresh-process recovery tests with sessions, Drops and changed-branch
+  workspaces. Normal command/activity integration and release gates remain open.
+
 - Join complete prepared workspaces to the internal profile decision, including
   HEAD/branch, packed references, native reflogs and temporary retained commits.
   Recover exact paired state across tested SIGKILL boundaries; refuse foreign
