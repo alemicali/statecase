@@ -29,7 +29,7 @@ try {
       if (["setup", "native-source", "encrypted-transfer", "native-resume", "return-publish", "return-pull", "native-preferences"].includes(record.phase)) phase = record.phase;
       if (["NATIVE_MODEL_MISMATCH", "NATIVE_EFFORT_MISMATCH", "NATIVE_INSTRUCTIONS_MISMATCH"].includes(record.preferenceFailure)) preferenceFailure = record.preferenceFailure;
       if (["synced", "override"].includes(record.preferenceProbe)) preferenceProbe = record.preferenceProbe;
-      if (["Error", "AssertionError"].includes(record.error)) nativeError = record.error;
+      if (["Error", "AssertionError", "MemoryReferenceError", "MemoryIdentityError", "SessionDependencyError", "SyncConflict"].includes(record.error)) nativeError = record.error;
       if (["NATIVE_SESSION_ID_INVALID", "NATIVE_SESSION_REUSED", "NATIVE_CONFIG_CHANGED", "NATIVE_TURN_INCOMPLETE"].includes(record.nativeFailure)) nativeFailure = record.nativeFailure;
       if (["unchanged", "formatting", "values", "invalid"].includes(record.configChange?.kind)) {
         const allowed = ["model", "model_reasoning_effort", "model_provider", "approval_policy", "sandbox_mode", "web_search", "model_providers", "notice", "projects", "permissions", "default_permissions", "features", "tui"];

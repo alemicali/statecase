@@ -705,3 +705,34 @@ rewriter remains 100% (141/141). A new native CI run is required to establish
 that this correction closes the observed hosted-runner failure. Historical,
 mixed-client and concurrent representation-changing append qualification remain
 open alongside the wider production requirements.
+
+The corrective candidate `7d130ab` passed native-claude job `102023418948` in CI
+`34214643016`. Its actual source history contains all three relative memory tool
+arguments; same-UUID target resume, localized history, old Read output, target
+native file operations, source return and both no-op pushes pass. All prior seven
+fresh-session/location/negative controls pass too. This establishes the selected
+pinned native relative-history case after the baseline correction; see the
+[executed report](uat/2026-09-08-native-claude-memory.md). The complete run
+subsequently finished successfully in all nine jobs. Remaining migration,
+concurrency, freeform and cross-host gates are not waived by that result.
+
+## Freeform memory patch implementation — 2026-09-08
+
+AD-MEM-011 now shares one reviewed patch parser between activity extraction and
+memory-header conversion. The parser validates the complete envelope before any
+mapping, rejects malformed/ambiguous headers, and preserves line endings, trailing
+whitespace and authored hunks exactly. Only actual Add/Update/Delete/Move header
+paths map to collection IDs; relative paths use native cwd and receiving paths
+require the same explicit binding/ownership checks as structured file tools.
+Tests cover streamed localization/restaging/activity and ordinary/legacy encrypted
+return. The pinned native Codex drill is extended to actually write selected
+memory with a relative patch, resume with localized history, update it on target
+and return it with no-op pushes. This new native execution is pending; it is not
+Codex automatic memory generation or an independent-host packaged/cloud pass.
+Workspace/Drop freeform header conversion, arbitrary tool syntaxes, historical
+migration and concurrent representation-changing append qualification remain open.
+
+The full local check passes 866 tests in 60 files, lint, typecheck, build and
+clean-installed package smoke. Global branch coverage is 92.50% (4446/4806);
+the memory rewriter is 100% (156/156), and the shared adapter module is 99.32%
+(148/149). These are local results, not the new native scenario's pass record.

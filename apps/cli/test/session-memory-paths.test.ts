@@ -10,6 +10,44 @@ describe("typed memory references (AD-MEM-011)", () => {
   };
   const native = () => createMemoryReferenceRewriter([{ ...roots[0]!, path: "/target/memory" }], "native", "ws_a");
   const call = (path: string) => ({ type: "tool_use", name: "Read", input: { file_path: path } });
+  it.each(["\n", "\r\n"])("round trips raw patch headers and never rewrites authored hunks (%j)", (eol) => {
+    const make = (root: string) => ["*** Begin Patch", `*** Update File: ${root}/topic.md`,
+      `*** Move to: ${root}/renamed.md`, "@@ /fixture/memory/context.md",
+      "-/fixture/memory/old.md", "+statecase://memory/recall/authored.md",
+      " *** Delete File: /fixture/memory/context.md", "*** End of File",
+      `*** Add File: ${root}/new.md`, "+*** Add File: /fixture/memory/literal.md",
+      `*** Delete File: ${root}/deleted.md`, "*** End Patch", ""].join(eol);
+    for (const path of ["/fixture/memory", "../memory"]) {
+      const source = { type: "custom_tool_call", name: "apply_patch", input: make(path) };
+      const transformed = portable()(source);
+      expect(transformed).toEqual({ ...source, input: make("statecase://memory/recall") });
+      expect(native()(transformed)).toEqual({ ...source, input: make("/target/memory") });
+      const sourceTarget = createMemoryReferenceRewriter([{ ...roots[0]!, path: "/target/memory" }], "portable", "ws_a");
+      expect(sourceTarget(native()(transformed))).toEqual(transformed);
+    }
+    const unrelated = { type: "custom_tool_call", name: "apply_patch", input: make("/outside") };
+    expect(portable()(unrelated)).toBe(unrelated);
+    expect(native()(unrelated)).toBe(unrelated);
+  });
+  it("refuses unresolved patch identity, missing cwd, unsafe paths and malformed relative patches", () => {
+    const patch = (path: string) => ({ type: "custom_tool_call", name: "apply_patch", input: `*** Begin Patch\n*** Delete File: ${path}\n*** End Patch` });
+    for (const path of ["statecase://memory/unknown/topic.md", "statecase://memory/recall/../topic.md"]) {
+      expect(() => native()(patch(path))).toThrow(MemoryReferenceError);
+    }
+    expect(() => createMemoryReferenceRewriter([], "native")(patch("statecase://memory/recall/topic.md"))).toThrow();
+    expect(() => createMemoryReferenceRewriter(roots, "native", "wrong")(patch("statecase://memory/recall/topic.md"))).toThrow();
+    expect(() => createMemoryReferenceRewriter(roots, "portable", "ws_a")(patch("../memory/topic.md"))).toThrow();
+    expect(() => portable()(patch("../memory/sub/../topic.md"))).toThrow();
+    const malformed = { ...patch("../memory/topic.md"), input: "*** Begin Patch\n*** Add File: ../memory/topic.md\ninvalid\n*** End Patch" };
+    expect(() => portable()(malformed)).toThrow(MemoryReferenceError);
+    expect(createMemoryReferenceRewriter([], "portable")(malformed)).toBe(malformed);
+    expect(native()(malformed)).toBe(malformed);
+    expect(() => native()({ ...malformed, input: malformed.input.replace("../memory", "statecase://memory/recall") })).toThrow();
+    expect(() => createMemoryReferenceRewriter([{ id: "recall", path: "/target\nunsafe" }], "native")(patch("statecase://memory/recall/topic.md"))).toThrow(MemoryReferenceError);
+    const nested = { type: "function_call", function: { name: "apply_patch", arguments: patch("../memory/topic.md").input } };
+    expect(portable()(nested)).toEqual({ ...nested, function: { ...nested.function, arguments: patch("statecase://memory/recall/topic.md").input } });
+    expect(native()(portable()(nested))).toEqual({ ...nested, function: { ...nested.function, arguments: patch("/target/memory/topic.md").input } });
+  });
   it("tracks only explicit native cwd observations and never guesses from process cwd or prose", () => {
     const rewrite = createMemoryReferenceRewriter(roots, "portable", "ws_a");
     expect(() => rewrite(call("../memory/topic.md"))).toThrow(MemoryReferenceError);
@@ -95,9 +133,9 @@ describe("typed memory references (AD-MEM-011)", () => {
     for (const name of ["unknown_tool", null]) {
       expect(() => portable()({ ...call("/fixture/memory/topic.md"), name })).toThrow();
     }
-    for (const input of ["malformed /fixture/memory/topic.md", "*** Begin Patch\n*** Update File: /fixture/memory/topic.md\n*** End Patch"])
+    for (const input of ["malformed /fixture/memory/topic.md", "*** Begin Patch\n*** Update File: /fixture/memory/topic.md\nunsupported\n*** End Patch"])
       expect(() => portable()({ type: "tool_call", name: "apply_patch", input })).toThrow();
-    expect(() => portable()({ type: "custom_tool_call", name: "apply_patch", input: "*** Begin Patch\n*** Update File: /fixture/memory/topic.md\n*** End Patch" })).toThrow();
+    expect(() => portable()({ type: "custom_tool_call", name: "unknown_patch", input: "*** Begin Patch\n*** Update File: /fixture/memory/topic.md\n*** End Patch" })).toThrow();
     expect(() => native()({ type: "function_call", name: "Read", arguments: "bad statecase://memory/recall/topic.md" })).toThrow();
     for (const input of [undefined, null, 1, "unrelated opaque input", "null", "[1,2]", { file_path: 1 }]) {
       const record = { type: "tool_call", name: "Read", input };

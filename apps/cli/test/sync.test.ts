@@ -26,15 +26,18 @@ afterEach(async () => {
 });
 
 describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, WS-003, WS-004)", () => {
-  it.each(["unchanged", "legacy", "post-scan-edit", "local-edit", "incomplete-tail", "initial-tail"])("returns relative-memory history without overwriting uncaptured native work: %s (AD-MEM-011)", async (mode) => {
+  it.each(["unchanged", "legacy", "patch", "legacy-patch", "post-scan-edit", "local-edit", "incomplete-tail", "initial-tail"])("returns relative-memory history without overwriting uncaptured native work: %s (AD-MEM-011)", async (mode) => {
     const root = await mkdtemp(join(tmpdir(), "statecase-relative-memory-return-")); temporary.push(root);
     const project = join(root, "project"), memory = join(root, "memory"), harness = join(root, "harness");
     await initializeRepository(project); await mkdir(memory, { mode: 0o700 }); await mkdir(join(harness, "sessions"), { recursive: true });
     const originalPath = join(harness, "sessions", "relative.jsonl");
+    const patch = (path: string) => `*** Begin Patch\n*** Update File: ${path}\n@@\n-old\n+Before return\n*** End Patch`;
+    const patchMode = mode.includes("patch");
     await writeFile(join(memory, "topic.md"), "Before return", { mode: 0o600 });
     await writeFile(originalPath, [
       { type: "session_meta", payload: { cwd: project } },
-      { type: "tool_call", name: "read_file", arguments: { path: "../memory/topic.md" } },
+      patchMode ? { type: "custom_tool_call", name: "apply_patch", input: patch("../memory/topic.md") }
+        : { type: "tool_call", name: "read_file", arguments: { path: "../memory/topic.md" } },
     ].map((record) => JSON.stringify(record)).join("\n") + "\n");
     const originalBytes = await readFile(originalPath, "utf8");
     const uncommitted = originalBytes + JSON.stringify({ type: "tool_call", name: "read_file", arguments: { path: join(memory, "local-only.md") } }) + "\n";
@@ -45,7 +48,7 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     a.memories = [{ id: "recall", kind: "codex-global", harnessNamespace: "harness:codex:default", path: memory, mode: "two-way" }];
     b.memories = [{ ...a.memories[0]!, path: join(root, "target-memory") }];
     const remote = new MemoryRemote(), key = await randomKey();
-    if (mode === "legacy") await seedLegacyFile(remote, key, "old.txt", new TextEncoder().encode("Unselected legacy data"));
+    if (mode.startsWith("legacy")) await seedLegacyFile(remote, key, "old.txt", new TextEncoder().encode("Unselected legacy data"));
     let editedAfterScan = false;
     const fetchRemote: typeof fetch = async (input, init) => {
       if (mode === "post-scan-edit" && !editedAfterScan && init?.method === "PUT") {
@@ -65,7 +68,7 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     await engine.push(b);
     if (mode === "local-edit") await writeFile(originalPath, uncommitted);
     if (mode === "incomplete-tail") await writeFile(originalPath, originalBytes + '{"pending":');
-    if (mode !== "unchanged" && mode !== "legacy") {
+    if (!["unchanged", "legacy", "patch", "legacy-patch"].includes(mode)) {
       const localBytes = await readFile(originalPath), applied = structuredClone(a.applied);
       await expect(engine.pull(a)).rejects.toBeInstanceOf(SyncConflict);
       expect(await readFile(originalPath)).toEqual(localBytes); expect(a.applied).toEqual(applied);
@@ -74,7 +77,9 @@ describe("two-device encrypted synchronization (SY-001, SY-010, DR-001, WS-001, 
     }
     await expect(engine.pull(a)).resolves.toMatchObject({ outcome: "pulled" });
     expect(await readFile(join(memory, "topic.md"), "utf8")).toBe("After return");
-    expect((await readFile(originalPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line))[1].arguments.path).toBe(join(memory, "topic.md"));
+    const history = (await readFile(originalPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line))[1];
+    if (patchMode) expect(history.input).toBe(patch(join(memory, "topic.md")));
+    else expect(history.arguments.path).toBe(join(memory, "topic.md"));
     expect((await engine.push(a)).outcome).toBe("unchanged");
   });
   it("transfers explicitly bound global memory between different native roots (AD-MEM-003)", async () => {

@@ -1,4 +1,5 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import { transformPatchPaths } from "@statecase/adapter-common";
 import { memoryNativePath } from "@statecase/adapter-common/memory";
 
 export interface SessionMemoryRoot { id: string; path: string; workspaceId?: string }
@@ -85,6 +86,15 @@ export function createMemoryReferenceRewriter(
         const name = value.name ?? value.tool ?? value.tool_name ?? nested?.name;
         const field = ["arguments", "input", "parameters"].find((key) => value[key] !== undefined);
         const raw = field ? value[field] : nested?.arguments;
+        if (name === "apply_patch" && typeof raw === "string") {
+          const mapped = transformPatchPaths(raw, mapPath);
+          if (mapped === undefined) {
+            if (mentionsReference(raw) || (direction === "portable" && roots.length > 0)) throw new MemoryReferenceError();
+            return value;
+          }
+          if (mapped === raw) return value;
+          return field ? { ...value, [field]: mapped } : { ...value, function: { ...nested, arguments: mapped } };
+        }
         let input = raw;
         if (typeof raw === "string") {
           try { input = JSON.parse(raw) as unknown; }

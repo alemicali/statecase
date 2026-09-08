@@ -1379,3 +1379,12 @@ after network activity. Portable content digests still address encrypted objects
 Incomplete tails and post-capture edits are not included as overwrite consent.
 This corrects false source conflicts on relative-to-absolute return hydration;
 it does not waive concurrent edits or qualify historical representation migration.
+
+Reviewed raw `apply_patch` inputs now share a whole-envelope validator with
+activity extraction. Convert only Add/Update/Delete/Move header paths, never
+hunks or surrounding content; preserve exact LF/CRLF and trailing whitespace.
+Memory headers use the same collection identity, cwd and ownership rules as
+structured tools. Malformed patches with selected source memory fail before
+publication, including relative-only input. The mapper does not execute patches
+or resolve filesystem aliases. Workspace/Drop raw patch conversion and native
+automatic memory consumption/generation require separate implementation/evidence.

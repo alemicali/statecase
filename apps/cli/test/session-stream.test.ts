@@ -14,6 +14,33 @@ afterEach(async () => {
 });
 
 describe("streamed session staging (AD-CX-008, PERF-003)", () => {
+  it("transfers freeform memory patch history with exact hunks and resolved dependency targets (AD-MEM-011)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "statecase-patch-memory-session-")); temporary.push(root);
+    const workspace = join(root, "project"), memory = join(root, "memory"), targetMemory = join(root, "other-memory");
+    const source = join(root, "source.jsonl"), destination = join(root, "target.jsonl");
+    const patch = (path: string) => ["*** Begin Patch", `*** Update File: ${path}/topic.md`,
+      `*** Move to: ${path}/renamed.md`, "@@", "-before", "+../memory/authored.md",
+      `*** Add File: ${path}/new.md`, "+*** Delete File: statecase://memory/recall/authored.md",
+      "*** End Patch", ""].join("\r\n");
+    await writeFile(source, [
+      { type: "session_meta", payload: { cwd: workspace } },
+      { type: "response_item", payload: { type: "custom_tool_call", name: "apply_patch", input: patch("../memory") } },
+    ].map((record) => JSON.stringify(record)).join("\n") + "\n");
+    const staged = await stagePortableSession(source, [{ id: "ws_a", path: workspace }], { memories: [{ id: "recall", path: memory }] });
+    try {
+      const bytes = await readFile(staged!.path, "utf8");
+      expect(JSON.parse(bytes.trim().split("\n")[1]!).payload.input).toBe(patch("statecase://memory/recall"));
+      for (const file of ["topic.md", "renamed.md", "new.md"]) expect(staged!.activity).toContainEqual({ path: join(memory, file), access: "write", source: "native-event" });
+      expect(staged!.activity.some((entry) => entry.path.includes("authored"))).toBe(false);
+      const options = { memories: [{ id: "recall", path: targetMemory }] };
+      await localizePortableSession(staged!.path, destination, "ws_a", workspace, options);
+      expect(JSON.parse((await readFile(destination, "utf8")).trim().split("\n")[1]!).payload.input).toBe(patch(targetMemory));
+      expect(await inspectPortableSessionActivity(staged!.path, "ws_a", workspace, options)).toHaveLength(3);
+      const restaged = await stagePortableSession(destination, [{ id: "ws_a", path: workspace }], options);
+      try { expect(await readFile(restaged!.path, "utf8")).toBe(bytes); } finally { await restaged?.dispose(); }
+      await expect(localizePortableSession(staged!.path, join(root, "missing.jsonl"), "ws_a", workspace)).rejects.toMatchObject({ code: "MEMORY_REFERENCE_UNRESOLVED" });
+    } finally { await staged?.dispose(); }
+  });
   it("resolves relative memory references using each native cwd and records their dependency activity (AD-MEM-011)", async () => {
     const root = await mkdtemp(join(tmpdir(), "statecase-memory-relative-session-")); temporary.push(root);
     const workspace = join(root, "project"), memory = join(root, "memory"), source = join(root, "source.jsonl");

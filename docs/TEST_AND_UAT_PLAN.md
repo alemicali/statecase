@@ -903,6 +903,17 @@ captured fixture bytes then permits return and a no-op push. The native driver
 reports separate return publish/pull/no-op phases and fixed error classes, never
 raw exceptions or transcript content. These diagnostics do not relax assertions.
 
+AD-MEM-011 freeform cases require all four header operations, LF/CRLF, exact hunk
+and trailing-whitespace retention, header lookalikes in content, source-relative
+and absolute paths, missing cwd/bindings, wrong ownership, unsafe mapped headers,
+late/repeated Move-to and malformed-envelope rejection before mapper invocation.
+Streamed activity, localization, restaging and encrypted ordinary/legacy returns
+must agree. The disposable native Codex drill must prove relative source patch
+history, actual same-UUID resume with target-local memory headers, native target
+patch execution, preview non-mutation, exact return and two no-op pushes. This
+does not imply automatic native memory generation or workspace/Drop raw patch
+conversion. Exact candidate CI evidence must be recorded separately.
+
 A release candidate is rejected when:
 
 - a critical/required test is skipped or flaky;

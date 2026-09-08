@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { gunzipSync } from "node:zlib";
 import { SyncEngine } from "../../apps/cli/src/sync.ts";
@@ -32,6 +32,8 @@ const instructionMarker = `instruction-${randomBytes(12).toString("hex")}`;
 const fallbackMarker = `fallback-${randomBytes(12).toString("hex")}`;
 const source = { home: join(root, "source-home"), project: join(root, "source-project") };
 const target = { home: join(root, "target-home"), project: join(root, "different", "target-project") };
+const memoryPath = (machine) => join(machine.home, "selected-memory", "topic.md");
+const sourcePatch = (memoryFile) => `*** Begin Patch\n*** Add File: artifact.txt\n+${marker}\n*** Add File: ${memoryFile}\n+${marker}\n*** End Patch`;
 let phase = "setup";
 let requests = 0;
 let stage = "source";
@@ -79,6 +81,8 @@ const provider = createServer(async (request, response) => {
       if (stage === "target") {
         assert.ok(JSON.stringify(body.input).includes(marker), "native resume lost the original prompt");
         assert.ok(JSON.stringify(outputs).includes(inputBytes.trim()), "native resume lost the original tool output");
+        const historicalPatch = body.input.find((entry) => entry.type === "custom_tool_call" && entry.call_id === "patch_source");
+        assert.equal(historicalPatch?.input, sourcePatch(memoryPath(target)), "native patch history did not localize the selected memory header");
       }
       item = { id: `fc_${stage}`, type: "function_call", name: "exec_command", call_id: `read_${stage}`,
         arguments: JSON.stringify({ cmd: stage === "source" ? "pwd && cat input.txt" : "pwd && cat artifact.txt", login: false }) };
@@ -90,10 +94,11 @@ const provider = createServer(async (request, response) => {
       assert.match(output, /exited with code 0/u, "native read command failed");
       item = { id: `ct_${stage}`, type: "custom_tool_call", name: "apply_patch", call_id: `patch_${stage}`,
         input: stage === "source"
-          ? `*** Begin Patch\n*** Add File: artifact.txt\n+${marker}\n*** End Patch`
-          : `*** Begin Patch\n*** Update File: artifact.txt\n@@\n ${marker}\n+continued on target\n*** End Patch` };
+          ? sourcePatch(relative(machine.project, memoryPath(machine)))
+          : `*** Begin Patch\n*** Update File: artifact.txt\n@@\n ${marker}\n+continued on target\n*** Update File: ${relative(machine.project, memoryPath(machine))}\n@@\n ${marker}\n+continued memory on target\n*** End Patch` };
     } else {
       assert.equal(await readFile(join(machine.project, "artifact.txt"), "utf8"), `${marker}\n${stage === "target" ? "continued on target\n" : ""}`);
+      assert.equal(await readFile(memoryPath(machine), "utf8"), `${marker}\n${stage === "target" ? "continued memory on target\n" : ""}`);
       item = { id: `msg_${stage}`, type: "message", role: "assistant", status: "completed",
         content: [{ type: "output_text", text: "Fixture turn completed.", annotations: [] }] };
     }
@@ -113,7 +118,7 @@ const provider = createServer(async (request, response) => {
 try {
   await mkdir(join(root, "tmp"), { mode: 0o700 });
   for (const machine of [source, target]) {
-    for (const path of [machine.project, join(machine.home, "codex"), join(machine.home, "sqlite")]) await mkdir(path, { recursive: true, mode: 0o700 });
+    for (const path of [machine.project, join(machine.home, "codex"), join(machine.home, "sqlite"), join(machine.home, "selected-memory")]) await mkdir(path, { recursive: true, mode: 0o700 });
     await execute("git", ["init", "-q", machine.project], { env: environment(machine), timeout: 15_000 });
   }
   const version = (await execute(executable, ["--version"], { env: environment(source), timeout: 15_000 })).stdout.trim();
@@ -129,6 +134,12 @@ try {
   sessionId = await harness(source, ["exec", "--skip-git-repo-check", "--json", "-C", source.project,
     `Read input.txt and create artifact.txt containing the synthetic marker ${marker}.`]);
   assert.match(sessionId, /^[a-f0-9-]{36}$/u);
+  const sourceSessions = join(source.home, "codex", "sessions");
+  const sourceNames = (await readdir(sourceSessions, { recursive: true })).filter((name) => name.endsWith(".jsonl"));
+  assert.equal(sourceNames.length, 1);
+  const sourceRecords = (await readFile(join(sourceSessions, sourceNames[0]), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  const recordedPatch = sourceRecords.find((record) => record.type === "response_item" && record.payload?.type === "custom_tool_call" && record.payload.call_id === "patch_source");
+  assert.equal(recordedPatch?.payload.input, sourcePatch(relative(source.project, memoryPath(source))));
 
   phase = "encrypted-transfer";
   const remote = referenceTransport(marker);
@@ -143,11 +154,14 @@ try {
   assert.equal(reports.length, 1);
   assert.ok(reports[0].dependencies.some((dependency) => dependency.logicalPath === "artifact.txt"
     && dependency.source === "workspace-overlay" && dependency.status === "resolved"), "native patch target missing from dependency closure");
+  assert.ok(reports[0].dependencies.some((dependency) => dependency.logicalPath === "recall/topic.md"
+    && dependency.source === "memory" && dependency.status === "resolved"), "native memory patch target missing from dependency closure");
   // An empty native database is deliberate: Statecase never transports SQLite.
   assert.deepEqual(await readdir(join(target.home, "sqlite")), []);
   const preview = await engine.hydrate(b, reports[0].sessionCapsuleId, { mode: "strict", dryRun: true });
   assert.equal(preview.warnings.length, 0);
   await assert.rejects(readFile(join(target.project, "artifact.txt")), { code: "ENOENT" });
+  await assert.rejects(readFile(memoryPath(target)), { code: "ENOENT" });
   assert.deepEqual(b.applied, {});
   assert.equal(await readFile(join(target.home, "codex", "config.toml"), "utf8"), targetLocalSettings);
   await assert.rejects(readFile(join(target.home, "codex", "AGENTS.override.md")), { code: "ENOENT" });
@@ -155,6 +169,7 @@ try {
   assert.equal(hydrated.warnings.length, 0);
   assert.equal(await readFile(join(target.project, "input.txt"), "utf8"), inputBytes);
   assert.equal(await readFile(join(target.project, "artifact.txt"), "utf8"), `${marker}\n`);
+  assert.equal(await readFile(memoryPath(target), "utf8"), `${marker}\n`);
   assert.deepEqual(await readdir(join(target.home, "sqlite")), []);
   const hydratedSettings = await readFile(join(target.home, "codex", "config.toml"), "utf8");
   assert.ok(hydratedSettings.endsWith(targetLocalSettings), "native local-only config changed");
@@ -163,6 +178,7 @@ try {
   for (const name of ["AGENTS.md", "AGENTS.override.md"]) {
     assert.deepEqual(await readFile(join(target.home, "codex", name)), await readFile(join(source.home, "codex", name)));
   }
+  assert.equal((await engine.push(b)).outcome, "unchanged");
 
   phase = "native-resume";
   stage = "target";
@@ -171,12 +187,15 @@ try {
   assert.equal(await harness(target, ["exec", "-C", target.project, "resume", "--skip-git-repo-check", "--json", sessionId,
     "Continue the earlier task: inspect its artifact and append the continuation line."]), sessionId);
   assert.equal(await readFile(join(source.project, "artifact.txt"), "utf8"), `${marker}\n`);
+  assert.equal(await readFile(memoryPath(source), "utf8"), `${marker}\n`);
   phase = "return-publish";
   assert.equal((await engine.push(b)).outcome, "pushed");
   phase = "return-pull";
   process.chdir(source.project);
   assert.equal((await engine.pull(a)).outcome, "pulled");
   assert.equal(await readFile(join(source.project, "artifact.txt"), "utf8"), `${marker}\ncontinued on target\n`);
+  assert.equal(await readFile(memoryPath(source), "utf8"), `${marker}\ncontinued memory on target\n`);
+  assert.equal((await engine.push(a)).outcome, "unchanged");
   assert.equal(Object.keys(a.sessionBindings).length, 1);
   assert.equal(Object.keys(b.sessionBindings).length, 1);
   phase = "native-preferences";
@@ -200,6 +219,8 @@ try {
     sourceUnchangedBeforeSync: true, returnSync: true, syncFromMappedCwd: true,
     nativeEffectivePreferences: true, freshPreferenceSession: true, localConfigPreserved: true, cliPreferenceOverride: true,
     nativeGlobalInstructions: true, nativeInstructionOverridePrecedence: true,
+    nativeMemoryPatchWrite: true, sourceRelativeMemoryPatchHistory: true, localizedMemoryPatchHistory: true,
+    memoryPatchDependency: true, exactMemoryPatchReturn: true, canonicalNoOpRoundTrip: true,
     encryptedObjects: remote.objectCount() }));
 } catch (error) {
   const conflictKinds = Array.isArray(error.paths) ? [...new Set(error.paths.map((path) =>
@@ -255,6 +276,8 @@ function config(machine) {
   return { version: 1, apiUrl: "https://native-fixture.invalid", deviceId: "device_fixture",
     mappings: [{ id: "codex-default", kind: "codex", mode: "two-way", name: "Native fixture",
       namespace: "harness:codex:default", path: join(machine.home, "codex") }],
+    memories: [{ id: "recall", kind: "codex-global", harnessNamespace: "harness:codex:default",
+      path: join(machine.home, "selected-memory"), mode: "two-way" }],
     workspaces: [{ id: "ws_native", path: machine.project, sync: "git", gitFetch: "never" }], applied: {} };
 }
 

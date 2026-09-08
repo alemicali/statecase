@@ -196,6 +196,33 @@ present before or after capture. Real uncaptured changes still refuse pull and
 preserve native bytes, memory and applied state. Historical/mixed-client and
 concurrent representation-changing append qualification remain required.
 
+The corrective candidate `7d130ab` subsequently passed the native memory step in
+job `102023418948` of CI `34214643016`, including actual relative source history,
+original-UUID target resume and source return/no-op checks. The executed report
+preserves the earlier failed candidate and the limited reference topology; the
+remaining freeform/concurrency/migration/cross-host requirements are not waived.
+
+### Freeform patch implementation checkpoint
+
+Reviewed raw `apply_patch` tool inputs now transform only Add/Update/Delete File
+and Move-to header paths. A shared parser validates the whole envelope before
+calling a path mapper, so malformed later lines cannot produce partial activity
+or conversion. It rejects repeated/late move headers, invalid bodies, controls
+and overlong paths. Original line endings, trailing whitespace, hunk context and
+added/deleted text remain exact, including strings resembling headers or URIs.
+Canonical relative memory headers use explicit native cwd; missing/unsafe/wrong-
+owner bindings fail with the existing redacted integrity error. With selected
+source memory, malformed raw patches fail closed even when relative filenames
+do not spell the absolute binding. Streamed and buffered engine paths share it.
+
+Tests cover header round trips, rejected formats, untouched content, dependency
+activity and encrypted ordinary/legacy return. The native Codex scenario now
+requires a relative memory patch in source history, localized historical input
+on actual resume, target patch execution and exact/no-op return. Its execution
+must be recorded separately; this is not native automatic-memory qualification.
+Workspace/Drop raw patch paths, arbitrary tool formats, old-history migration,
+mixed clients and concurrent representation-changing appends remain open.
+
 ## Sources
 
 Fetched 2026-09-08: [Codex memories](https://learn.chatgpt.com/docs/customization/memories)

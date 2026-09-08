@@ -435,3 +435,12 @@ never uploaded. Tests mutate the source during upload and add complete edits or
 incomplete tails before/after capture; return pull must preserve those bytes and
 refuse the conflicting transaction. A native representation change alone is not
 an edit when the original captured native prefix is still exactly present.
+
+Raw memory patches use a whole-envelope parser shared with activity extraction.
+Only actual validated file/move headers can authorize logical reference mapping;
+added/deleted/context text cannot. Reject controls/overlong paths, malformed
+bodies and ambiguous move placement; validate before invoking any mapper.
+Preserve authored hunks and line endings exactly. With a selected source memory
+collection, an unsupported raw patch cannot silently omit relative dependencies.
+This reviewed grammar does not establish arbitrary freeform/shell closure,
+physical alias identity or historical/mixed-client compatibility.

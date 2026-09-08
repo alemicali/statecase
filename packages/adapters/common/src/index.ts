@@ -138,30 +138,53 @@ function visitToolEvents(value: unknown, accept: (name: string, input: unknown) 
 
 /** Recognize the native freeform patch envelope, never headings inside added text. */
 function patchPathArguments(input: string): { paths: Array<{ path: string }> } | undefined {
+  const paths: Array<{ path: string }> = [];
+  const transformed = transformPatchPaths(input, (path) => { paths.push({ path }); return path; });
+  return transformed === undefined ? undefined : { paths };
+}
+
+/** Validate the entire reviewed envelope before mapping any path. Reconstruct
+ * only headers: line endings, trailing whitespace and authored hunks stay exact. */
+export function transformPatchPaths(input: string, mapPath: (path: string) => string): string | undefined {
   const lines = input.replaceAll("\r\n", "\n").trimEnd().split("\n");
   if (lines[0] !== "*** Begin Patch" || lines.at(-1) !== "*** End Patch") return undefined;
-  const paths: Array<{ path: string }> = [];
+  const headers: Array<{ index: number; prefix: string; path: string }> = [];
   let operation: string | undefined;
-  for (const line of lines.slice(1, -1)) {
+  let moved = false, body = false, eof = false;
+  const safePath = (path: string) => path.length > 0 && path.length <= 4096 &&
+    ![...path].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127);
+  for (let index = 1; index < lines.length - 1; index++) {
+    const line = lines[index]!;
     const header = /^\*\*\* (Add|Update|Delete) File: (.+)$/u.exec(line);
     if (header) {
       operation = header[1];
-      paths.push({ path: header[2] });
+      moved = body = eof = false;
+      if (!safePath(header[2]!)) return undefined;
+      headers.push({ index, prefix: `*** ${operation} File: `, path: header[2]! });
       continue;
     }
     const move = /^\*\*\* Move to: (.+)$/u.exec(line);
     if (move) {
-      if (operation !== "Update") return undefined;
-      paths.push({ path: move[1] });
+      if (operation !== "Update" || moved || body || !safePath(move[1]!)) return undefined;
+      moved = true;
+      headers.push({ index, prefix: "*** Move to: ", path: move[1]! });
       continue;
     }
-    if (!operation || operation === "Delete") return undefined;
+    if (!operation || operation === "Delete" || eof) return undefined;
     if (operation === "Add" ? !line.startsWith("+")
       : !/^[ +-]/u.test(line) && line !== "@@" && !line.startsWith("@@ ") && line !== "*** End of File") {
       return undefined;
     }
+    body = true;
+    eof = line === "*** End of File";
   }
-  return { paths };
+  const original = input.split("\n");
+  for (const header of headers) {
+    const mapped = mapPath(header.path);
+    if (!safePath(mapped)) return undefined;
+    original[header.index] = header.prefix + mapped + (original[header.index]!.endsWith("\r") ? "\r" : "");
+  }
+  return original.join("\n");
 }
 
 function pathArguments(value: unknown): string[] {

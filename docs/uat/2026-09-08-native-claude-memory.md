@@ -101,6 +101,38 @@ absolute-history migration, mixed versions or independent-host packaged/cloud
 execution. Prose, tool outputs and authored content are deliberately not path
 rewriting inputs.
 
+### Relative history and native-baseline follow-up
+
+The first relative-history candidate `5c127a8482ab1d0eb8a980fd4bb927c3cc20a8b8`
+failed [CI 34213273513](https://github.com/alemicali/statecase/actions/runs/34213273513):
+eight jobs passed, but native-claude job `102019015625` failed in `memory-return`.
+Earlier source/target/relative-history assertions had completed; there was no
+relative-memory success claim. A local failing-first regression reproduced a
+false source conflict because the applied-file baseline used portable rather
+than native complete-prefix bytes. Six regressions now preserve post-capture
+edits and incomplete tails while allowing unchanged-source return, including
+the buffered legacy publication path.
+
+The correction candidate `7d130ab3ec0eee6b3c801c548bc334f3b7feb052` passed the
+native memory step in job `102023418948` of
+[CI 34214643016](https://github.com/alemicali/statecase/actions/runs/34214643016).
+The executable, Node, Git and Ubuntu image versions are unchanged. The executed
+fixture verifies all three relative source Read/Edit/Write arguments in the
+actual native history before transfer. It then verifies the original-UUID target
+resume, localized historical arguments, preserved original Read result, native
+target reads/writes, source return and both canonical no-op pushes. The seven
+fresh-session, worktree/subdirectory, unrelated-project and disabled-memory
+controls also pass. The redacted record reports both
+`sourceRelativeMemoryHistory` and `nativeRelativeMemoryTools` true and 16 encrypted
+objects. The complete run subsequently finished successfully in all nine jobs,
+including native Codex, macOS, background synchronization and quality checks.
+
+Native tests cover canonical relative paths for the pinned Claude fixture.
+Changing cwd between records is additionally covered locally; noncanonical
+alias-sensitive spellings fail explicitly. Freeform patch headers, concurrent
+representation-changing appends, old-history/mixed-client migration and the
+independent-host packaged/cloud workflow remain requirements, not inferred passes.
+
 ## Boundaries
 
 This proves native index loading, on-demand topic reads, explicit native writes

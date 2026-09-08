@@ -4,6 +4,12 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Localize reviewed raw memory patch headers by collection identity, including
+  native-cwd-relative paths and renames, while preserving authored hunks and
+  LF/CRLF bytes. Share whole-envelope validation with dependency extraction;
+  add streamed/encrypted legacy regressions and extend the native Codex drill
+  to selected-memory patch history, target execution and return transfer.
+
 - Fix false return conflicts for sessions whose native relative memory arguments
   are localized to absolute paths: applied guards now hash the captured native
   complete prefix, separately from portable object content. Preserve concurrent
