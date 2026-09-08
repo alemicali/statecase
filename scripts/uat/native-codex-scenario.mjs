@@ -9,6 +9,7 @@ import { gunzipSync } from "node:zlib";
 import { SyncEngine } from "../../apps/cli/src/sync.ts";
 import { StatecaseClient } from "../../apps/cli/src/client.ts";
 import { randomKey } from "../../packages/crypto/src/index.ts";
+import { assertNativePreferences } from "./native-preferences.mjs";
 
 // AD-CX-007, WS-022, UAT-02 subset. Real harness + actual encryption/engine,
 // deterministic loopback Responses provider, in-memory reference transport.
@@ -33,6 +34,7 @@ let stage = "source";
 let fixtureError;
 let sessionId;
 let key;
+let expectedEffort = "low";
 const inputBytes = "synthetic input continuity\n";
 const environment = (machine) => ({
   PATH: process.env.PATH, HOME: machine.home,
@@ -54,12 +56,16 @@ const provider = createServer(async (request, response) => {
     let bytes = Buffer.concat(chunks);
     if (request.headers["content-encoding"] === "gzip") bytes = gunzipSync(bytes, { maxOutputLength: 8 * 1024 * 1024 });
     const body = JSON.parse(bytes.toString());
+    assertNativePreferences("codex", body, { model: "gpt-5.6-terra", effort: expectedEffort });
     requests++;
     assert.ok(requests <= 3, "unexpected provider retry or extra tool turn");
     const machine = stage === "source" ? source : target;
     const outputs = body.input.filter((item) => ["function_call_output", "custom_tool_call_output"].includes(item.type));
     let item;
-    if (requests === 1) {
+    if (phase === "native-preferences") {
+      item = { id: "msg_preferences", type: "message", role: "assistant", status: "completed",
+        content: [{ type: "output_text", text: "Fixture preferences confirmed.", annotations: [] }] };
+    } else if (requests === 1) {
       if (stage === "target") {
         assert.ok(JSON.stringify(body.input).includes(marker), "native resume lost the original prompt");
         assert.ok(JSON.stringify(outputs).includes(inputBytes.trim()), "native resume lost the original tool output");
@@ -108,6 +114,8 @@ try {
   assert.equal(version, "codex-cli 0.153.4", "new harness versions require explicit compatibility qualification");
   await new Promise((accept, reject) => { provider.once("error", reject); provider.listen(0, "127.0.0.1", accept); });
   await configure(source);
+  await configure(target);
+  const targetLocalSettings = await readFile(join(target.home, "codex", "config.toml"), "utf8");
   await writeFile(join(source.project, "input.txt"), inputBytes);
   phase = "native-source";
   sessionId = await harness(source, ["exec", "--skip-git-repo-check", "--json", "-C", source.project,
@@ -133,17 +141,20 @@ try {
   assert.equal(preview.warnings.length, 0);
   await assert.rejects(readFile(join(target.project, "artifact.txt")), { code: "ENOENT" });
   assert.deepEqual(b.applied, {});
+  assert.equal(await readFile(join(target.home, "codex", "config.toml"), "utf8"), targetLocalSettings);
   const hydrated = await engine.hydrate(b, reports[0].sessionCapsuleId, { mode: "strict" });
   assert.equal(hydrated.warnings.length, 0);
   assert.equal(await readFile(join(target.project, "input.txt"), "utf8"), inputBytes);
   assert.equal(await readFile(join(target.project, "artifact.txt"), "utf8"), `${marker}\n`);
   assert.deepEqual(await readdir(join(target.home, "sqlite")), []);
+  const hydratedSettings = await readFile(join(target.home, "codex", "config.toml"), "utf8");
+  assert.ok(hydratedSettings.endsWith(targetLocalSettings), "native local-only config changed");
+  assert.ok(!hydratedSettings.includes("statecase_fixture_source"), "source provider configuration crossed devices");
 
   phase = "native-resume";
   stage = "target";
   requests = 0;
-  // The fixture provider is configured locally, never reused from a copied key.
-  await configure(target);
+  // Keep the hydrated file intact: a local rewrite here would mask sync defects.
   assert.equal(await harness(target, ["exec", "-C", target.project, "resume", "--skip-git-repo-check", "--json", sessionId,
     "Continue the earlier task: inspect its artifact and append the continuation line."]), sessionId);
   assert.equal(await readFile(join(source.project, "artifact.txt"), "utf8"), `${marker}\n`);
@@ -155,15 +166,27 @@ try {
   assert.equal(await readFile(join(source.project, "artifact.txt"), "utf8"), `${marker}\ncontinued on target\n`);
   assert.equal(Object.keys(a.sessionBindings).length, 1);
   assert.equal(Object.keys(b.sessionBindings).length, 1);
+  phase = "native-preferences";
+  for (const override of [false, true]) {
+    requests = 0; expectedEffort = override ? "high" : "low";
+    const fresh = await harness(target, [...(override ? ["-c", 'model_reasoning_effort="high"'] : []),
+      "exec", "--skip-git-repo-check", "--json", "-C", target.project, "Reply with fixture completion text."]);
+    assert.match(fresh, /^[a-f0-9-]{36}$/u);
+    assert.notEqual(fresh, sessionId, "preference qualification reused session metadata");
+    assert.equal(await readFile(join(target.home, "codex", "config.toml"), "utf8"), hydratedSettings);
+  }
   console.log(JSON.stringify({ result: "pass", harness: version, node: process.version,
     backend: "in-memory-reference", topology: "two-homes-one-host", inference: "deterministic-loopback",
     sameSessionId: true, originalHistory: true, nativeReadWrite: true, mappedCwd: true,
     nativeDatabaseNotCopied: true, patchDependency: true, hydrationPreviewNonMutating: true,
-    sourceUnchangedBeforeSync: true, returnSync: true, syncFromMappedCwd: true, encryptedObjects: remote.objectCount() }));
+    sourceUnchangedBeforeSync: true, returnSync: true, syncFromMappedCwd: true,
+    nativeEffectivePreferences: true, freshPreferenceSession: true, localConfigPreserved: true, cliPreferenceOverride: true,
+    encryptedObjects: remote.objectCount() }));
 } catch (error) {
   const conflictKinds = Array.isArray(error.paths) ? [...new Set(error.paths.map((path) =>
     path.startsWith("harness:codex:default:") ? "codex" : path.startsWith("workspace:ws_native:") ? "workspace" : "other"))] : undefined;
-  console.error(JSON.stringify({ result: "fail", phase, error: error.name, fixtureError: fixtureError?.name, conflictKinds }));
+  console.error(JSON.stringify({ result: "fail", phase, error: error.name, fixtureError: fixtureError?.name,
+    preferenceFailure: fixtureError?.code, conflictKinds }));
   process.exitCode = 1;
 } finally {
   key?.fill(0);
@@ -174,8 +197,9 @@ try {
 }
 
 async function configure(machine) {
+  const providerId = machine === source ? "statecase_fixture_source" : "statecase_fixture_target";
   await writeFile(join(machine.home, "codex", "config.toml"),
-    `model = "gpt-5.6-terra"\nmodel_provider = "statecase_fixture"\napproval_policy = "never"\nsandbox_mode = "${externalIsolation ? "danger-full-access" : "workspace-write"}"\nweb_search = "disabled"\n[model_providers.statecase_fixture]\nname = "Statecase deterministic fixture"\nbase_url = "http://127.0.0.1:${provider.address().port}/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nrequest_max_retries = 0\nstream_max_retries = 0\n`, { mode: 0o600 });
+    `${machine === source ? 'model = "gpt-5.6-terra"\nmodel_reasoning_effort = "low"\n' : ""}# device-local provider\nmodel_provider = "${providerId}"\napproval_policy = "never"\nsandbox_mode = "${externalIsolation ? "danger-full-access" : "workspace-write"}"\nweb_search = "disabled"\n[model_providers.${providerId}]\nname = "Statecase deterministic fixture"\nbase_url = "http://127.0.0.1:${provider.address().port}/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nrequest_max_retries = 0\nstream_max_retries = 0\n`, { mode: 0o600 });
 }
 
 async function harness(machine, args) {
@@ -194,7 +218,7 @@ async function harness(machine, args) {
     }
   }
   if (cleanupError) throw cleanupError;
-  assert.equal(requests, 3);
+  assert.equal(requests, phase === "native-preferences" ? 1 : 3);
   assert.equal(fixtureError, undefined);
   const events = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
   assert.ok(events.some((event) => event.type === "turn.completed"));

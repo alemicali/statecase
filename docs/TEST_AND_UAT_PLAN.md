@@ -152,8 +152,14 @@ regression ID.
   authenticated payloads fail without native-file mutation.
 - `AD-CFG-011`: historical restore across key epochs, one physical recovery
   target, current secret preservation and failed-commit emergency rollback.
+- `AD-CFG-012`: actual pinned Codex/Claude provider requests use the synced
+  model and effort. Fresh destination sessions exclude restored-session metadata
+  as an alternative explanation; an explicit CLI effort override changes the
+  request without mutating the synced native file. The validator has deliberate
+  wrong/missing-model and wrong/missing-effort negative controls.
 
-These IDs cover local implementation, not executed native/cloud settings UAT.
+AD-CFG-001 through 011 cover local implementation. AD-CFG-012 is a native
+qualification driver whose exact execution evidence is recorded separately.
 Before release, repeat effective-preference checks with the exact packed CLI on
 two independent hosts, native precedence, background writes, revocation/scopes,
 mixed-client upgrade/downgrade refusal, SIGKILL/sleep/reboot and the remaining

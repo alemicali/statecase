@@ -70,3 +70,13 @@ fencing, background/native convergence, cross-host/live Cloudflare execution,
 process death during replacement, reboot/sleep, and independent security review.
 Instructions, memories and additional configuration documents remain missing
 implementation, not merely unexecuted tests. The product is not production-ready.
+
+## Existing CI regression baseline
+
+The feature commit `53f5db32b29fb9660c1ccd812ee57ca53eb91206` passed all nine
+jobs in [CI run 34193418225](https://github.com/alemicali/statecase/actions/runs/34193418225):
+quality, Node 22/24 compatibility, background sync, Linux/macOS credentials,
+launchd and the existing native Codex/Claude session scenarios. Those original
+native scenarios did not assert effective synced preferences: Codex rewrote
+its target fixture config and Claude selected its model through a CLI flag.
+AD-CFG-012 removes those alternative explanations and requires new evidence.

@@ -2,7 +2,7 @@
 
 Status: implemented locally; native/package/cloud qualification in progress
 Date: 2026-09-08
-Test IDs: AD-CFG-001 through AD-CFG-011, SY-011
+Test IDs: AD-CFG-001 through AD-CFG-012, SY-011
 
 ## Decision and scope
 
@@ -134,3 +134,10 @@ No changes were applied to the operator's harness homes or credentials. Current
 tests use synthetic roots and reference storage. Parser tests, package startup
 and prior native session UAT do not establish complete configuration or memory
 portability.
+
+AD-CFG-012 extends the pinned native drivers with effective model/effort checks,
+fresh destination sessions and CLI-override precedence. Target configuration is
+prepared locally before hydration and is not rewritten afterward. Only those
+two preferences are observed in requests: this driver does not qualify the
+whole allowlist, UI settings, provider model availability or all precedence
+layers. Its execution is recorded separately from the local engine tests.

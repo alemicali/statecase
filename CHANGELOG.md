@@ -4,6 +4,12 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Extended native Codex/Claude qualification to check effective synchronized
+  model/effort in provider requests, fresh target sessions and CLI-override
+  precedence. Removed fixture config rewrites/model arguments that could mask
+  a broken preference transfer. Added negative controls and redacted mismatch
+  categories; native execution evidence is tracked separately (AD-CFG-012).
+
 - Added filtered Codex/Claude user preference sync with canonical per-field
   encrypted objects, independent-field merge, field-only deletion and guarded
   native JSON/TOML edits. Preserve local-only secrets/comments and detect

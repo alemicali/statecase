@@ -25,14 +25,15 @@ try {
 } catch (error) {
   // Raw native output can contain prompts, paths or tool results. Emit only a
   // phase from our fixed vocabulary; never forward the child command/stderr.
-  let phase;
+  let phase, preferenceFailure;
   for (const line of String(error.stderr ?? "").split("\n")) {
     try {
       const record = JSON.parse(line);
-      if (["setup", "native-source", "encrypted-transfer", "native-resume", "return-publish", "return-pull"].includes(record.phase)) phase = record.phase;
+      if (["setup", "native-source", "encrypted-transfer", "native-resume", "return-publish", "return-pull", "native-preferences"].includes(record.phase)) phase = record.phase;
+      if (["NATIVE_MODEL_MISMATCH", "NATIVE_EFFORT_MISMATCH"].includes(record.preferenceFailure)) preferenceFailure = record.preferenceFailure;
     } catch { /* Ignore non-metadata output. */ }
   }
-  process.stderr.write(`${JSON.stringify({ result: "fail", phase, error: "NativeQualificationFailed" })}\n`);
+  process.stderr.write(`${JSON.stringify({ result: "fail", phase, preferenceFailure, error: "NativeQualificationFailed" })}\n`);
   process.exitCode = 1;
 } finally {
   await rm(directory, { recursive: true, force: true });
