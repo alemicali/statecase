@@ -115,8 +115,10 @@ The first pinned Claude native memory drill passed on `cd73673`: four fresh
 sessions with default/custom-root startup recall, native topic Read/Edit and
 index Write, exact encrypted transfer/return and a disabled-memory control.
 See [executed evidence](../uat/2026-09-08-native-claude-memory.md) for its
-reference-backend boundaries and the pending worktree/subdirectory/unrelated
-startup extension. This is an AD-MEM-008 subset, not all native-memory support.
+reference-backend boundaries. The seven-session extension on `66f4e1f` also
+passed native worktree/subdirectory shared recall and unrelated-project startup
+isolation. This is selected AD-MEM-008 evidence, not all native-memory support or
+automatic effective-root discovery.
 
 ## Sources
 

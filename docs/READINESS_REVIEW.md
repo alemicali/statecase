@@ -610,3 +610,13 @@ local settings and the disabled-memory/unselected-project controls. See
 worktree, subdirectory and actual unrelated-project startup cases; those cases
 require a new native run and are not covered by the first pass.
 The entire `34209586836` run also completed successfully in all nine jobs.
+
+The expanded native-claude job `102008351039` in CI `34209964941` on `66f4e1f`
+then passed with seven fresh session IDs. Worktree and subdirectory sessions load
+the original repository index; a separate repository loads only its own index.
+The earlier encrypted round trip, native tools, preview and negative controls
+also pass again. This qualifies selected native location behavior, not Statecase
+worktree capsule transfer, automatic effective-root discovery or full settings
+precedence. The report records the exact versions and topology; wider production
+and Codex memory gates remain open.
+The complete `34209964941` run then finished successfully in all nine jobs.

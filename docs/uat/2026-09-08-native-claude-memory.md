@@ -50,7 +50,28 @@ native tool transcripts were published as logs/artifacts. Local evidence-guard
 tests reject assistant history, tool results, prompt canaries, metadata-only
 markers, forbidden project/topic markers and malformed requests.
 
-## Boundaries and next candidate
+## Executed location extension
+
+Candidate `66f4e1fdd45a93f7f5bea782ee229d12f6261716`,
+[CI run 34209964941](https://github.com/alemicali/statecase/actions/runs/34209964941),
+native-claude job `102008351039`: completed successfully, including both the
+existing native session drill and the expanded memory step. The exact memory
+step pass record reports seven fresh sessions and these additional assertions:
+
+- A detached linked Git worktree loads the original repository's returned index.
+- A nested subdirectory of the repository loads that same returned index.
+- A newly initialized unrelated repository loads its own index and excludes all
+  selected-project index/topic markers.
+
+All original transfer, edit/write, preview, local-setting preservation and
+disabled-memory controls pass again. The executable, Node, Git and runner image
+versions match the first checkpoint; the encrypted object count is still 15.
+The three added location sessions perform no memory writes. They qualify native
+location selection, not Statecase workspace-capsule transfer from worktrees or
+automatic effective-location discovery by the CLI. The complete run subsequently
+finished successfully in all nine jobs, including background synchronization.
+
+## Boundaries
 
 This proves native index loading, on-demand topic reads, explicit native writes
 and bidirectional engine transport for this pinned version and selected
@@ -60,10 +81,9 @@ path localization, independent-host/cloud/package parity, or Codex memory.
 Statecase does not silently enable native memory during normal enrollment; the
 test explicitly enables it only in synthetic fixture settings.
 
-The next candidate adds fresh sessions from a linked Git worktree, a repository
-subdirectory and an unrelated repository. Those cases are pending execution and
-must not be inferred from the four-session pass above. Full AD-MEM-008..010 and
-the overall public-release requirements remain open.
+Full native location/precedence and generation coverage, AD-MEM-009..010 and the
+overall public-release requirements remain open. Neither the four-session nor
+seven-session reference drill is a substitute for the independent-host workflow.
 
 Native behavior reference checked 2026-09-08:
 [Claude memory documentation](https://code.claude.com/docs/en/memory). The

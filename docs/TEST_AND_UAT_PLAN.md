@@ -869,8 +869,9 @@ markers, malformed requests and prompt/history contamination. CI execution and
 its result must be recorded separately; this reference-backend test does not
 qualify autonomous model generation, full precedence, subagents,
 history-path localization or the independent-host packaged/cloud workflow.
-The first four-session execution and the status of the subsequent location
-extension are recorded in [the native report](uat/2026-09-08-native-claude-memory.md).
+Both the first four-session pass and the seven-session location-extension pass
+are recorded in [the native report](uat/2026-09-08-native-claude-memory.md), with
+candidate/job IDs and the reference-backend/native-location evidence boundaries.
 
 A release candidate is rejected when:
 
