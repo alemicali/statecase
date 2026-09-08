@@ -35,7 +35,7 @@ try {
   // not create the profile, inspect native harnesses or request credentials.
   for (const option of ["--dry-run", "--yes"]) {
     const recovery = JSON.parse((await run(executable, ["--json", "profile", "recover", option], { env: environment, encoding: "utf8" })).stdout);
-    assert.deepEqual(recovery, { pending: false, outcome: "none", targets: 0, dryRun: option === "--dry-run" });
+    assert.deepEqual(recovery, { pending: false, recovered: false, outcome: "none", targets: 0, dryRun: option === "--dry-run" });
     await assert.rejects(access(environment.STATECASE_HOME), { code: "ENOENT" });
   }
 

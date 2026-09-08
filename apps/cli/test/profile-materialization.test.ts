@@ -57,20 +57,20 @@ describe("one durable native/profile checkpoint (RT-006, BK-009)",()=>{
     await writeFile(join(f.home,"credentials.json"),"unreadable synthetic credential canary",{mode:0o600});
     expect(await command()).toBe(2);expect(await command("--dry-run","--yes")).toBe(2);
     expect(await command("--dry-run")).toBe(0);
-    expect(JSON.parse(output.at(-1)!)).toMatchObject({pending:true,outcome,dryRun:true});
+    expect(JSON.parse(output.at(-1)!)).toMatchObject({pending:true,recovered:false,outcome,dryRun:true});
     expect(processTable).not.toHaveBeenCalled();expect(network).not.toHaveBeenCalled();
     expect(await readFile(join(f.home,"profile-materialization.json"))).toEqual(checkpoint);
     expect(await readFile(join(f.home,"materialization","active.jsonl"))).toEqual(journal);
     expect(await readFile(join(f.files,"note"))).toEqual(note);
     if(phase==="backup")await expect(lstat(join(f.home,"config.json"))).rejects.toMatchObject({code:"ENOENT"});
     expect(await command("--yes")).toBe(0);
-    expect(JSON.parse(output.at(-1)!)).toMatchObject({pending:true,outcome,dryRun:false});
+    expect(JSON.parse(output.at(-1)!)).toMatchObject({pending:false,recovered:true,outcome,dryRun:false});
     expect(processTable).toHaveBeenCalled();expect(network).not.toHaveBeenCalled();
     expect(await readFile(join(f.files,"note"),"utf8")).toBe(outcome==="rollback"?"original note":"incoming note");
     if(outcome==="rollback")expect(await readFile(join(f.home,"config.json"),"utf8")).toBe(f.original);
     else expect((await f.store.loadConfig()).applied["drop:notes"].revisionId).toBe("new-revision");
     expect(await command("--yes")).toBe(0);
-    expect(JSON.parse(output.at(-1)!)).toEqual({pending:false,outcome:"none",targets:0,dryRun:false});
+    expect(JSON.parse(output.at(-1)!)).toEqual({pending:false,recovered:false,outcome:"none",targets:0,dryRun:false});
   });
   it.each(["daemon","config","codex","claude","untracked-codex","untracked-claude","process-error"])("refuses operator recovery while %s exclusion cannot be established",async kind=>{
     const f=await fixture();expect(await child(applyScript(f.home,f.files,"install",0),f.root)).toEqual({code:null,signal:"SIGKILL"});
@@ -103,7 +103,7 @@ describe("one durable native/profile checkpoint (RT-006, BK-009)",()=>{
       expect(await runCli(["node","statecase","--json","profile","recover",option],{
         stdout:value=>output.push(value),stderr:()=>{},fetch:network,harnessProcessTable:processTable,
       })).toBe(0);
-      expect(JSON.parse(output.at(-1)!)).toEqual({pending:false,outcome:"none",targets:0,dryRun:option==="--dry-run"});
+      expect(JSON.parse(output.at(-1)!)).toEqual({pending:false,recovered:false,outcome:"none",targets:0,dryRun:option==="--dry-run"});
       await expect(lstat(home)).rejects.toMatchObject({code:"ENOENT"});
     }
     expect(processTable).not.toHaveBeenCalled();expect(network).not.toHaveBeenCalled();
@@ -115,7 +115,7 @@ describe("one durable native/profile checkpoint (RT-006, BK-009)",()=>{
       await expect(registry.enter("codex")).rejects.toThrow();await expect(registry.enter("claude")).rejects.toThrow();
       await expect(ProfileLock.acquire(join(f.home,"daemon.lock"))).rejects.toThrow();
       checked++;return "";
-    }})).resolves.toMatchObject({pending:true,outcome:"rollback",dryRun:false});
+    }})).resolves.toMatchObject({pending:false,recovered:true,outcome:"rollback",dryRun:false});
     expect(checked).toBe(2);
     for(const kind of ["codex","claude"] as const){const handle=await registry.enter(kind);await handle.release();}
     const daemon=await ProfileLock.acquire(join(f.home,"daemon.lock"));await daemon.release();
