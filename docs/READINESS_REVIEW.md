@@ -4,6 +4,28 @@ Status: foreground sync implemented and deployed; release qualification in progr
 production launch
 Last updated: 2026-09-08
 
+## Recoverable native Git lock ownership — 2026-09-08
+
+Workspace-preparation candidate `54836ec` passed all nine jobs in
+[CI 34235938708](https://github.com/alemicali/statecase/actions/runs/34235938708);
+exact logs and hashes are attached to PR7. ADR-0033 now implements internal
+native lock preparation/publication/release with recorded inode ownership,
+exclusive hard links, foreign-lock refusal and idempotent directory-durability
+replay. Actual SIGKILL/fresh-process tests cover publication and interrupted
+release; a real Git writer is blocked until the verified lock is released.
+
+The complete local check passed 1,159 tests in 68 files, lint, types, build and
+clean-installed package smoke. Native-lock branches are 95.69% with 100% lines
+and functions; global branches 92.79% (5111/5508). The suite is also required on
+the disposable macOS CI runner; exact-candidate hosted results remain pending.
+
+Descriptors are currently persisted only by isolated test coordinators, not the
+production profile checkpoint. Repository-derived metadata authority, outer
+descriptor persistence, HEAD/ref/index intents/decisions, retained Git objects,
+normal runtime integration and all broader release gates remain required. The
+ordinary native index-lock helper and live services were not changed. No real
+profile, harness, credentials, keychain or cloud bucket was used by these tests.
+
 ## Git preparation before durable admission — 2026-09-08
 
 The preceding native/profile candidate `8840bcc` passed all nine jobs in

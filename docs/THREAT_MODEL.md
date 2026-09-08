@@ -348,6 +348,15 @@ index lock is held across handoff. The consumer must persist intent and acquire
 native exclusion before mutation; the descriptions and guards are not durable
 authority, a global snapshot or protection against arbitrary same-user races.
 
+ADR-0033 binds native lock ownership before publication via a private durable
+anchor inode and an exclusive hard link, not PID/age heuristics. Exact separately
+derived grants, BigInt inode identities, no-follow fixed-marker reads, known link
+counts and empty-artifact cleanup refuse foreign/recreated/altered locks. Caller
+serialization and durable descriptor publication are mandatory; the primitive
+does not authenticate a journal or decide transaction outcome. Production
+repository authority/outer-checkpoint integration, pre-publication orphan cleanup,
+all power-loss boundaries and arbitrary same-user filesystem races remain open.
+
 ### Workspace dependency incompleteness
 
 Threats: transcript restores without modified code; missed watcher event;

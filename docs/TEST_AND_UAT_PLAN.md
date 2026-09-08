@@ -511,6 +511,12 @@ unit assertion for historical executable evidence.
   refusal and repeated guards. Full/shallow/multi-batch fallback acquisition must
   preserve local refs and FETCH_HEAD even with conflicting configured refspecs.
   This proves safe preparation, not persistent applied-Git recovery.
+  ADR-0033 adds internal native lock ownership tests: fsynced descriptors before
+  hard-link publication, real Git writer exclusion, actual process death before
+  and after publication, repeated interrupted release, directory-durability replay,
+  foreign/recreated lock refusal, exact grants, descriptor/parent/anchor integrity
+  and non-mutating preview. This suite is also required on the disposable macOS
+  runner; production outer-journal integration remains open.
 - `RT-007`: two daemons for one profile cannot run concurrently.
 - `RT-008`: sleep/wake and network change trigger reconcile without a storm.
 - `RT-009`: rapid file events debounce but the maximum publish deadline holds.

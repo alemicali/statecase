@@ -777,6 +777,15 @@ changes, but the handoff does not itself acquire mutation authority, persist Git
 intent or replay Git. Durable native-lock/reference participation and ordinary
 runtime integration remain open; the new callback is not a public preview API.
 
+ADR-0033 adds an internal native lock ownership primitive. Prepare/fsync a private
+same-filesystem anchor, persist its identity in the outer journal, then hard-link
+it exclusively to the native lock name. Recovery removes only proven matching
+inodes and replays directory durability even when an earlier unlink is visible.
+Exact grants, complete parent/artifact observations, bounded private marker reads
+and unknown-child/foreign-lock refusal are required. The production checkpoint
+does not yet persist these descriptors; ordinary Git locking remains unchanged
+until native lock and reference/index decisions join that transaction.
+
 Baseline blobs that conform to the Git LFS pointer format MUST NOT be treated as
 the referenced content. Capture and hydration report
 `GIT_LFS_CONTENT_UNAVAILABLE` with logical paths while the worktree still holds

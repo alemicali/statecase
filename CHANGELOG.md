@@ -4,6 +4,13 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Add an internal recoverable native Git lock ownership primitive: persist an
+  exclusively prepared anchor identity before native hard-link publication,
+  refuse foreign/recreated locks and replay guarded release after actual SIGKILL.
+  Repeat directory synchronization when a prior link/unlink is already visible.
+  Require its synthetic real-Git suite on macOS CI as well as Linux. Outer
+  Git/file/profile integration and ordinary runtime enablement remain open.
+
 - Add an internal pre-mutation Git preparation handoff with separately staged
   index/files, original/desired reference descriptions and repeated concurrency
   guards. Preserve operational refs and FETCH_HEAD during preparation-specific

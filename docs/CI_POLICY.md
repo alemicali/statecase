@@ -25,6 +25,9 @@ Branch protection should require these logical checks on pull requests:
 5. `native-macos` — real launchd start/stop, private IPC, duplicate-writer denial,
    profile isolation, filesystem notification, SIGKILL restart, and cleanup on
    a disposable hosted macOS runner with synthetic unauthenticated state only.
+   Also run the ADR-0033 native Git lock suite on that runner: persisted inode
+   ownership before native publication, real Git writer exclusion, actual
+   SIGKILL/recovery and refusal to remove foreign or changed lock evidence.
 6. `background-sync` — two authenticated daemon processes with local
    workerd/D1/R2, interrupted object upload, durable journal replay, offline
    restart, disjoint updates, deletion, and idle no-op verification. All account
