@@ -86,6 +86,7 @@ describe("one durable native/profile checkpoint (RT-006, BK-009)",()=>{
     try {
       expect(await runCli(["node","statecase","--json","profile","recover","--yes"],io)).toBe(5);
       expect(errors.join("")).not.toContain("canary");
+      expect(JSON.parse(errors.at(-1)!)).toMatchObject({error:{code:5,message:expect.stringContaining("stop daemon and harnesses")}});
       expect(await readFile(join(f.home,"profile-materialization.json"))).toEqual(checkpoint);
       expect(await readFile(join(f.home,"materialization","active.jsonl"))).toEqual(journal);
       expect(await readFile(join(f.files,"note"),"utf8")).toBe("incoming note");
@@ -93,6 +94,54 @@ describe("one durable native/profile checkpoint (RT-006, BK-009)",()=>{
     // All partially acquired barriers are released after refusal.
     const active=await registry.enter("codex");await active.release();
     expect(await runCli(["node","statecase","--json","profile","recover","--yes"],{...io,harnessProcessTable:async()=>""})).toBe(0);
+  });
+  it("keeps an absent installation absent during operator recovery and preview",async()=>{
+    const root=await mkdtemp(join(tmpdir(),"statecase-recovery-absent-"));temporary.push(root);
+    const home=join(root,"absent");vi.stubEnv("STATECASE_HOME",home);
+    const output:string[]=[],processTable=vi.fn(async()=>""),network=vi.fn(async()=>{throw new Error("network forbidden");});
+    for(const option of ["--dry-run","--yes"]){
+      expect(await runCli(["node","statecase","--json","profile","recover",option],{
+        stdout:value=>output.push(value),stderr:()=>{},fetch:network,harnessProcessTable:processTable,
+      })).toBe(0);
+      expect(JSON.parse(output.at(-1)!)).toEqual({pending:false,outcome:"none",targets:0,dryRun:option==="--dry-run"});
+      await expect(lstat(home)).rejects.toMatchObject({code:"ENOENT"});
+    }
+    expect(processTable).not.toHaveBeenCalled();expect(network).not.toHaveBeenCalled();
+  });
+  it("holds launch and daemon barriers before revalidating recovery state",async()=>{
+    const f=await fixture();expect(await child(applyScript(f.home,f.files,"install",0),f.root)).toEqual({code:null,signal:"SIGKILL"});
+    const registry=new HarnessActivityRegistry(join(f.home,"locks","harnesses"));let checked=0;
+    await expect(f.store.recoverProfile({dryRun:false,processTable:async()=>{
+      await expect(registry.enter("codex")).rejects.toThrow();await expect(registry.enter("claude")).rejects.toThrow();
+      await expect(ProfileLock.acquire(join(f.home,"daemon.lock"))).rejects.toThrow();
+      checked++;return "";
+    }})).resolves.toMatchObject({pending:true,outcome:"rollback",dryRun:false});
+    expect(checked).toBe(2);
+    for(const kind of ["codex","claude"] as const){const handle=await registry.enter(kind);await handle.release();}
+    const daemon=await ProfileLock.acquire(join(f.home,"daemon.lock"));await daemon.release();
+  });
+  it("does not reuse a stale preview after an independent edit during operator admission",async()=>{
+    const f=await fixture();expect(await child(applyScript(f.home,f.files,"install",0),f.root)).toEqual({code:null,signal:"SIGKILL"});
+    const checkpoint=await readFile(join(f.home,"profile-materialization.json"));
+    await expect(f.store.recoverProfile({dryRun:false,processTable:async()=>{
+      await writeFile(join(f.files,"note"),"independent edit after preview");return "";
+    }})).rejects.toMatchObject({code:"PROFILE_RECOVERY_REQUIRED"});
+    expect(await readFile(join(f.files,"note"),"utf8")).toBe("independent edit after preview");
+    expect(await readFile(join(f.home,"profile-materialization.json"))).toEqual(checkpoint);
+    const active=await new HarnessActivityRegistry(join(f.home,"locks","harnesses")).enter("claude");await active.release();
+  });
+  it("refuses malformed recovery authority through the CLI before any process or network access",async()=>{
+    const f=await fixture();vi.stubEnv("STATECASE_HOME",f.home);
+    const path=join(f.home,"profile-materialization.json");await writeFile(path,"private-corrupt-checkpoint-canary",{mode:0o600});
+    const errors:string[]=[],processTable=vi.fn(async()=>""),network=vi.fn(async()=>{throw new Error("network forbidden");});
+    for(const option of ["--dry-run","--yes"]){
+      expect(await runCli(["node","statecase","--json","profile","recover",option],{
+        stdout:()=>{},stderr:value=>errors.push(value),fetch:network,harnessProcessTable:processTable,
+      })).toBe(6);
+    }
+    expect(errors.join("")).not.toContain("canary");expect(errors.join("")).toContain("profile recover --dry-run");
+    expect(await readFile(path,"utf8")).toBe("private-corrupt-checkpoint-canary");
+    expect(processTable).not.toHaveBeenCalled();expect(network).not.toHaveBeenCalled();
   });
   it.each([["install",0],["backup",2],["install",2]] as const)("restores native files and exact profile after kill at %s/%s",async(phase,index)=>{
     const {root,home,files,store,original}=await fixture();

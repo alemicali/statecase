@@ -31,6 +31,14 @@ try {
   const parsed = JSON.parse(status.stdout);
   if (parsed.authenticated !== false || parsed.accessMode !== "none") throw new Error("packed CLI returned an invalid fresh status");
 
+  // RT-006: the installed command is usable without enrollment. A no-op must
+  // not create the profile, inspect native harnesses or request credentials.
+  for (const option of ["--dry-run", "--yes"]) {
+    const recovery = JSON.parse((await run(executable, ["--json", "profile", "recover", option], { env: environment, encoding: "utf8" })).stdout);
+    assert.deepEqual(recovery, { pending: false, outcome: "none", targets: 0, dryRun: option === "--dry-run" });
+    await assert.rejects(access(environment.STATECASE_HOME), { code: "ENOENT" });
+  }
+
   const skill = join(installation, "installed-skill");
   await run(executable, ["--json", "skills", "install", "--target", skill], { env: environment });
   await Promise.all([access(join(skill, "SKILL.md")), access(join(skill, "agents", "openai.yaml"))]);
