@@ -10,6 +10,7 @@ import { SyncEngine } from "../../apps/cli/src/sync.ts";
 import { StatecaseClient } from "../../apps/cli/src/client.ts";
 import { randomKey } from "../../packages/crypto/src/index.ts";
 import { assertNativePreferences } from "./native-preferences.mjs";
+import { nativeResponseEvents } from "./native-responses-events.mjs";
 
 // AD-CX-007, WS-022, UAT-02 subset. Real harness + actual encryption/engine,
 // deterministic loopback Responses provider, in-memory reference transport.
@@ -88,14 +89,10 @@ const provider = createServer(async (request, response) => {
       item = { id: `msg_${stage}`, type: "message", role: "assistant", status: "completed",
         content: [{ type: "output_text", text: "Fixture turn completed.", annotations: [] }] };
     }
-    const completed = { id: `resp_${stage}_${requests}`, object: "response", created_at: Math.floor(Date.now() / 1000),
+    const responseScope = phase === "native-preferences" ? `preferences_${preferenceProbe}` : stage;
+    const completed = { id: `resp_${responseScope}_${requests}`, object: "response", created_at: Math.floor(Date.now() / 1000),
       model: body.model, status: "completed", output: [item], usage: { input_tokens: 30, output_tokens: 10, total_tokens: 40 } };
-    const events = [
-      { type: "response.created", response: { ...completed, status: "in_progress", output: [] } },
-      { type: "response.output_item.added", output_index: 0, item },
-      { type: "response.output_item.done", output_index: 0, item },
-      { type: "response.completed", response: completed },
-    ];
+    const events = nativeResponseEvents(completed);
     response.writeHead(200, { "content-type": "text/event-stream" });
     for (const [sequence_number, event] of events.entries()) response.write(`event: ${event.type}\ndata: ${JSON.stringify({ ...event, sequence_number })}\n\n`);
     response.end();
@@ -174,9 +171,9 @@ try {
     const beforeProbeSettings = await readFile(join(target.home, "codex", "config.toml"), "utf8");
     const fresh = await harness(target, [...(override ? ["-c", 'model_reasoning_effort="high"'] : []),
       "exec", "--skip-git-repo-check", "--json", "-C", target.project, "Reply with fixture completion text."]);
-    assert.match(fresh, /^[a-f0-9-]{36}$/u);
-    assert.notEqual(fresh, sessionId, "preference qualification reused session metadata");
-    assert.equal(await readFile(join(target.home, "codex", "config.toml"), "utf8"), beforeProbeSettings);
+    requireNative(typeof fresh === "string" && /^[a-f0-9-]{36}$/u.test(fresh), "NATIVE_SESSION_ID_INVALID");
+    requireNative(fresh !== sessionId, "NATIVE_SESSION_REUSED");
+    requireNative(await readFile(join(target.home, "codex", "config.toml"), "utf8") === beforeProbeSettings, "NATIVE_CONFIG_CHANGED");
   }
   console.log(JSON.stringify({ result: "pass", harness: version, node: process.version,
     backend: "in-memory-reference", topology: "two-homes-one-host", inference: "deterministic-loopback",
@@ -189,7 +186,7 @@ try {
   const conflictKinds = Array.isArray(error.paths) ? [...new Set(error.paths.map((path) =>
     path.startsWith("harness:codex:default:") ? "codex" : path.startsWith("workspace:ws_native:") ? "workspace" : "other"))] : undefined;
   console.error(JSON.stringify({ result: "fail", phase, error: error.name, fixtureError: fixtureError?.name,
-    preferenceFailure: fixtureError?.code, preferenceProbe, requests, conflictKinds }));
+    preferenceFailure: fixtureError?.code, nativeFailure: error.code, preferenceProbe, requests, conflictKinds }));
   process.exitCode = 1;
 } finally {
   key?.fill(0);
@@ -224,8 +221,12 @@ async function harness(machine, args) {
   assert.equal(requests, phase === "native-preferences" ? 1 : 3);
   assert.equal(fixtureError, undefined);
   const events = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
-  assert.ok(events.some((event) => event.type === "turn.completed"));
+  requireNative(events.some((event) => event.type === "turn.completed"), "NATIVE_TURN_INCOMPLETE");
   return events.find((event) => event.type === "thread.started")?.thread_id;
+}
+
+function requireNative(condition, code) {
+  if (!condition) { const error = new Error("native qualification assertion failed"); error.code = code; throw error; }
 }
 
 function config(machine) {

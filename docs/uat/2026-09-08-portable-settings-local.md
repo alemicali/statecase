@@ -91,3 +91,13 @@ retaining explicit Read/Write/Edit tools, no browser and empty MCP configuration
 The operator's harness configuration and permissions are not changed. Codex's
 probe compares file stability around each fresh invocation and reports only
 bounded diagnostic categories; subsequent execution remains required.
+
+Commit `64a79e9` / CI `34194750824` passed the strengthened native Claude job:
+Claude 2.1.263 / Node 24.20.0 reported effective preferences, fresh destination
+sessions, preserved local config and CLI override checks all true. Codex still
+failed its first fresh preference probe after one request whose model/effort
+checks passed; the failure was a later assertion, not a reported preference
+mismatch. The next simulator revision emits text content/delta/done events
+according to the [Responses streaming reference](https://developers.openai.com/api/reference/resources/responses/streaming-events),
+uses distinct probe response identities and distinguishes fixed assertion
+categories. Its outcome must be verified; this is not recorded as a Codex pass.

@@ -22,7 +22,7 @@ try {
   process.stdout.write(result.stdout);
 } catch (error) {
   // Do not expose native diagnostics, command arguments, or fixture transcripts.
-  let phase, preferenceFailure, preferenceProbe, nativeError, requests;
+  let phase, preferenceFailure, preferenceProbe, nativeError, nativeFailure, requests;
   for (const line of String(error.stderr ?? "").split("\n")) {
     try {
       const record = JSON.parse(line);
@@ -30,10 +30,11 @@ try {
       if (["NATIVE_MODEL_MISMATCH", "NATIVE_EFFORT_MISMATCH"].includes(record.preferenceFailure)) preferenceFailure = record.preferenceFailure;
       if (["synced", "override"].includes(record.preferenceProbe)) preferenceProbe = record.preferenceProbe;
       if (["Error", "AssertionError"].includes(record.error)) nativeError = record.error;
+      if (["NATIVE_SESSION_ID_INVALID", "NATIVE_SESSION_REUSED", "NATIVE_CONFIG_CHANGED", "NATIVE_TURN_INCOMPLETE"].includes(record.nativeFailure)) nativeFailure = record.nativeFailure;
       if (Number.isInteger(record.requests) && record.requests >= 0 && record.requests <= 4) requests = record.requests;
     } catch { /* Only explicitly allowlisted phase metadata may leave the child. */ }
   }
-  process.stderr.write(`${JSON.stringify({ result: "fail", phase, preferenceFailure, preferenceProbe, nativeError, requests, error: error.name, code: error.code })}\n`);
+  process.stderr.write(`${JSON.stringify({ result: "fail", phase, preferenceFailure, preferenceProbe, nativeError, nativeFailure, requests, error: error.name, code: error.code })}\n`);
   process.exitCode = 1;
 } finally {
   await rm(directory, { recursive: true, force: true });
