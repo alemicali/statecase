@@ -736,3 +736,13 @@ The full local check passes 866 tests in 60 files, lint, typecheck, build and
 clean-installed package smoke. Global branch coverage is 92.50% (4446/4806);
 the memory rewriter is 100% (156/156), and the shared adapter module is 99.32%
 (148/149). These are local results, not the new native scenario's pass record.
+
+Candidate `7adee1b` subsequently passed native-codex job `102027686367` in CI
+`34215976635`. The actual pinned harness created memory through a relative patch,
+resumed the original UUID with a localized historical header, updated the target
+memory and returned exact bytes with both no-op pushes. Prior native assertions
+also passed. See the [executed native report](uat/2026-09-08-native-memory-patches.md)
+for versions, topology and limits. This does not qualify Codex automatic memory,
+arbitrary workspace/Drop patch paths or the independent-host packaged workflow.
+The whole `34215976635` run subsequently finished successfully in all nine jobs,
+including background synchronization and the quality/workerd/audit gate.

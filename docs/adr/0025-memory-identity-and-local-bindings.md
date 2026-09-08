@@ -223,6 +223,12 @@ must be recorded separately; this is not native automatic-memory qualification.
 Workspace/Drop raw patch paths, arbitrary tool formats, old-history migration,
 mixed clients and concurrent representation-changing appends remain open.
 
+The pinned native patch extension passed on `7adee1b` in job `102027686367`
+of CI `34215976635`, including relative source history, original-UUID resume,
+localized memory header, actual target patch writes and exact/no-op return.
+See [executed evidence](../uat/2026-09-08-native-memory-patches.md); it is not
+Codex automatic-memory or independent-host packaged/live-cloud qualification.
+
 ## Sources
 
 Fetched 2026-09-08: [Codex memories](https://learn.chatgpt.com/docs/customization/memories)
