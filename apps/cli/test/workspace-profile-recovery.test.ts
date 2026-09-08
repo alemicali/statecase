@@ -42,9 +42,9 @@ async function fixture(kind: "branch" | "packed" | "detached" | "unborn" = "bran
     await writeFile(join(source, "note"), "incoming staged"); await git(source, "add", "note"); await writeFile(join(source, "note"), "incoming worktree");
   }
   await writeFile(join(source, "untracked"), "untracked work");
-  const captured = await captureWorkspace(source), store = new ConfigStore(home), config = await store.loadConfig();
+  const captured = await captureWorkspace(source), expectedCurrent = await captureWorkspace(target), store = new ConfigStore(home), config = await store.loadConfig();
   config.workspaces = [{ id: "project", path: target, sync: "git", gitFetch: "auto" }]; await store.saveConfig(config);
-  return { root, source, target, home, beforeCommit, beforeHead, beforeIndex, captured, store, original: await readFile(join(home, "config.json"), "utf8") };
+  return { root, source, target, home, beforeCommit, beforeHead, beforeIndex, captured, expectedCurrent, store, original: await readFile(join(home, "config.json"), "utf8") };
 }
 async function child(f: Awaited<ReturnType<typeof fixture>>, script: string) {
   const code = `import {ConfigStore} from ${JSON.stringify(pathToFileURL(configBundle).href)}; import {captureWorkspace} from ${JSON.stringify(pathToFileURL(workspaceBundle).href)}; import {readFile} from "node:fs/promises"; ${script}`;
@@ -58,13 +58,13 @@ function applyScript(f: Awaited<ReturnType<typeof fixture>>, phase: string, nati
     config.applied.project={revisionId:"incoming",digests:{}};
     await store.materializeWorkspaceConfig(config,[{root:${JSON.stringify(f.target)},captured,gitFetch:"auto"}],{writes:[],deletes:[]},{afterBoundary:async(phase,index)=>{
       if(phase!==${JSON.stringify(phase)})return;
-      ${nativePath ? `const plan=JSON.parse((await readFile(${JSON.stringify(join(f.home, "materialization", "active.jsonl"))},"utf8")).split("\n")[0]);if(plan.targets[index]?.path!==${JSON.stringify(nativePath)})return;` : ""}
+      ${nativePath ? `const plan=JSON.parse((await readFile(${JSON.stringify(join(f.home, "materialization", "active.jsonl"))},"utf8")).split(String.fromCharCode(10))[0]);if(plan.targets[index]?.path!==${JSON.stringify(nativePath)})return;` : ""}
       process.kill(process.pid,"SIGKILL");}});`;
 }
 describe("prepared workspace and profile share one durable decision (RT-006, WS-034)", () => {
   it.each(["branch", "packed", "detached", "unborn"] as const)("publishes the complete %s workspace with its profile", async kind => {
     const f = await fixture(kind), config = await f.store.loadConfig(); config.applied.project = { revisionId: "incoming", digests: {} };
-    await f.store.materializeWorkspaceConfig(config, [{ root: f.target, captured: f.captured, gitFetch: "auto" }], { writes: [], deletes: [] });
+    await f.store.materializeWorkspaceConfig(config, [{ root: f.target, captured: f.captured, gitFetch: "auto", expectedCurrent: f.expectedCurrent }], { writes: [], deletes: [] });
     const current = await captureWorkspace(f.target);
     expect(current.capsule).toEqual(f.captured.capsule);
     expect((await f.store.loadConfig()).applied.project.revisionId).toBe("incoming");
@@ -90,5 +90,28 @@ describe("prepared workspace and profile share one durable decision (RT-006, WS-
     await f.store.recoverMaterialization();
     expect((await captureWorkspace(f.target)).capsule).toEqual(f.captured.capsule);
     expect((await f.store.loadConfig()).applied.project.revisionId).toBe("incoming");
+  });
+  it("retains old/new commit roots before operational mutation and releases owned pins after commit", async () => {
+    const f = await fixture(), config = await f.store.loadConfig(); let checked = false;
+    config.applied.project = { revisionId: "incoming", digests: {} };
+    await f.store.materializeWorkspaceConfig(config, [{ root: f.target, captured: f.captured, gitFetch: "auto" }], { writes: [], deletes: [] }, {
+      afterBoundary: async (phase, index) => {
+        if (phase !== "backup") return;
+        const plan = JSON.parse((await readFile(join(f.home, "materialization", "active.jsonl"), "utf8")).split("\n")[0]);
+        if (plan.targets[index].path !== join(f.target, "note")) return;
+        const pins = await git(f.target, "for-each-ref", "--format=%(objectname)", "refs/statecase/transactions/");
+        expect(pins.split("\n")).toEqual(expect.arrayContaining([f.beforeCommit, f.captured.capsule.baseCommit]));
+        await expect(git(f.target, "gc", "--prune=now")).rejects.toThrow(); checked = true;
+      },
+    });
+    expect(checked).toBe(true); expect(await git(f.target, "for-each-ref", "refs/statecase/transactions/")).toBe("");
+  });
+  it("records native HEAD and branch reflog transitions in the same decision", async () => {
+    const f = await fixture(), config = await f.store.loadConfig(), oldLog = await readFile(join(f.target, ".git", "logs", "HEAD"), "utf8");
+    await f.store.materializeWorkspaceConfig(config, [{ root: f.target, captured: f.captured, gitFetch: "auto" }], { writes: [], deletes: [] });
+    const log = await readFile(join(f.target, ".git", "logs", "HEAD"), "utf8");
+    expect(log.startsWith(oldLog)).toBe(true);
+    expect(log.slice(oldLog.length)).toContain(`${f.beforeCommit} ${f.captured.capsule.baseCommit}`);
+    expect(await git(f.target, "reflog", "show", "--format=%H", "incoming")).toBe(f.captured.capsule.baseCommit);
   });
 });
