@@ -9,6 +9,38 @@ Test IDs: RT-006, WS-034, BK-009, SY-011, SY-012, AD-MEM-005
 This intentionally remains one integrated PR. Its size requires the following
 review order; intermediate test/source commits are not separate product releases.
 
+Current operator-recovery addition: review ADR-0038, `ConfigStore.recoverProfile`,
+the `profile recover` CLI/JSON contract, profile error guidance, the canonical
+skill and installed-command smoke. Test-first commits `1b240cd`, `ae59e21` and
+`2544063` cover actual process death, exclusion, preview freshness and explicit
+pending/recovered output. Whole-engine recovery now uses that operator wrapper;
+the public CLI suite joins macOS qualification. Exact-candidate hosted evidence
+is pending. This adds a public local command, not ordinary runtime enablement.
+
+Current complete local `npm run check`: 1,363 tests/73 files, lint/types/build and
+clean-installed package smoke pass. Operator recovery branches are 4/4 covered,
+ConfigStore 95.19%, global 93.05% (5454/5861); the canonical skill validator passes.
+Background root-cause and exact-candidate hosted qualification remain open.
+The separate local background UAT passed with two authenticated CLI daemons and
+emulated workerd/D1/R2: bidirectional transfer, interrupted upload replay, offline
+crash recovery, disjoint convergence, deletion, 45-second idle no-op and verified
+cleanup. Its boundary is two synthetic installations on one host, not independent
+machines, native harnesses, a machine reboot or a live-cloud backend. It does not
+waive the prior hosted backend exit.
+
+Exact prior candidate `392f71d` completed CI 34286892946 with eight successes and
+one failure: the background backend exited unexpectedly (code 1) after the
+interrupted-upload phase, with no classified stderr cause. Keep that background
+and local timing gate open; the passing Git/quality matrix does not waive it.
+Test-first `d96ad2a` adds redacted stdout classification because the fixture
+supervisor previously discarded that stream. Review `fixture-process.mjs` and
+its canary/chunk tests; no raw diagnostic output or additional live access is
+introduced, and this is not yet a background-failure root-cause fix.
+Coverage orchestration now uses one worker and emits full JSON in its main run.
+Review `package.json`, `vitest.config.ts` and CI policy alongside the retained
+timeout history: no per-test deadline, threshold or explicit concurrency test
+changed. Non-coverage compatibility/macOS retain the existing worker cap.
+
 1. ADR-0035, ADR-0036 and ADR-0037: authority, durable ordering, reference
    retention, scoped hydration identity, incremental selection, required native
    discovery, rollback and explicit remaining requirements.
@@ -65,7 +97,8 @@ passed all 1,347 cases with unchanged thresholds: new selection/admission branch
 regions are each 4/4, reference participant 96.13%, global 93.03%. Local timing
 robustness remains open; do not infer hosted success from these local runs.
 
-No new dependency, public command, cloud schema, harness patch, live deployment,
+The earlier ADR-0035–0037 addition introduced no public command. ADR-0038 above
+now adds explicit operator recovery. No new dependency, cloud schema, harness patch, live deployment,
 merge or release. No real profile, keychain, credentials or bucket was used.
 Version-three internal checkpoints reject downgrade/missing reference metadata;
 recover them with the matching current implementation rather than changing their

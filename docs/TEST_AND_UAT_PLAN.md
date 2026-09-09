@@ -493,6 +493,12 @@ unit assertion for historical executable evidence.
 - `RT-005`: final flush timeout does not alter the harness exit code or discard
   the journal.
 - `RT-006`: crash/kill at every journal transition replays idempotently.
+  ADR-0038 exercises CLI operator preview/confirmation after actual SIGKILL,
+  absent-profile and committed/rollback outcomes, daemon/config/harness exclusion,
+  untracked-process refusal, late edits, corrupt authority, redacted diagnostics,
+  no credentials/network, barrier release and explicit pending/recovered JSON.
+  The whole-engine session/Drop/Git suite uses operator recovery in a fresh
+  process. Installed-package no-op coverage is not full packaged pending replay.
   Prerequisite artifact tests now cover failed exclusive reservations, legacy
   backup preservation, directory substitution, unknown-child preservation and
   actual SIGKILL between file installations. That kill test verifies exact

@@ -4,6 +4,56 @@ Status: foreground sync implemented and deployed; release qualification in progr
 production launch
 Last updated: 2026-09-09
 
+## Explicit operator recovery and remaining background failure — 2026-09-09
+
+Candidate `392f71d` completed [CI 34286892946](https://github.com/alemicali/statecase/actions/runs/34286892946)
+with eight passing jobs, including quality, Node 22/24 and native macOS. Thus the
+prior Git admission failure is fixed on that matrix. `background-sync` failed:
+the backend process exited unexpectedly with code 1 after the interrupted-upload
+journal phase; available redacted stderr categories were empty. This is not a
+daemon success, known root cause, or waived background gate. No rerun was used
+to replace the failure. Local timing sensitivity from the previous section
+remains open despite hosted quality passing.
+
+The fixture supervisor previously drained/discarded stdout. Two new regression
+tests require bounded, separate stdout/stderr classification, split-chunk codes
+and no raw canary leakage. It now retains only allowlisted categories/codes for
+both streams. This improves evidence for the next background drill; it is not
+a root-cause fix or a claim that the failing drill now passes.
+
+The first current full check failed nine cases: one new diagnostic classifier
+boundary (since corrected and its five focused tests pass), plus eight more
+workspace recovery timeouts; 1,354 cases passed. Complete coverage now uses one
+worker to bound suite-level native I/O/instrumentation contention, following the
+previous controlled single-worker success. Ordinary non-coverage runs retain the
+existing cap, explicit concurrency tests are unchanged, and no test/timeout/
+threshold was weakened. Full checks now emit detailed JSON branch maps in the
+same run, eliminating duplicate whole-suite coverage collection. These changes
+do not close the background root-cause or performance-under-load release gates.
+
+ADR-0038 adds an explicit stopped-process operator recovery command, tested first
+with ten failing SIGKILL/CLI/admission cases. Boundary tests cover missing profile,
+no-op absence, corrupt authority, late edits and held/released barriers. JSON
+distinguishes `pending` from `recovered`; the canonical skill explains preview,
+approval and external-shell handoff. Complete current-candidate verification and
+hosted qualification are pending. Normal runtime wiring, launch/final-flush
+ordering and every broader product/release gate remain open. No operator harness,
+profile, credential store or live service was changed.
+
+After the classifier correction and bounded coverage orchestration, the complete
+`npm run check` passed **1,363 tests in 73 files**, lint, strict types, build and
+clean-installed package smoke. New operator recovery branches are 4/4 covered;
+ConfigStore branches are 95.19%, activity 94.64%, global 93.05% (5454/5861).
+Whole SyncEngine 86.75% and workspace 89.67% remain below their full critical-
+module targets. Skill-creator's validator passed on the updated canonical skill.
+The separate local background drill also passed through two authenticated CLI
+daemons and emulated workerd/D1/R2: bidirectional transfer, interrupted upload
+journal replay, offline crash recovery, disjoint convergence, deletion propagation,
+45-second idle no-op and verified fixture cleanup. This used two isolated
+installations on one host, no real harness, no physical second peer or machine
+reboot, and no external backend. Exact-candidate hosted qualification remains
+pending; this local pass does not close the prior unexplained hosted backend exit.
+
 ## Hosted failure diagnosis and independent namespace pull — 2026-09-09
 
 Candidate `199d495` completed [CI 34284910251](https://github.com/alemicali/statecase/actions/runs/34284910251)

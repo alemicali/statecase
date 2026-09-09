@@ -1,5 +1,22 @@
 # Statecase threat model
 
+## Explicit local recovery admission (ADR-0038)
+
+Public operator recovery bypasses normal pending-profile loading but not retained
+authority validation. Preview is non-mutating and independent of credentials or
+cloud. Confirmed replay requires daemon and both harness activity barriers,
+native stopped-process inspection and the existing config mutex/revalidation.
+Late independent edits and invalid authority retain evidence; no force/unlock
+path is added. Results contain aggregate counts/outcomes, not native paths or
+process arguments. A trusted injected process table exists only at the local
+embedding/test API, never as a CLI flag or profile option.
+
+These are cooperative exclusion checks, not a guarantee against untracked
+processes starting after inspection, old clients or arbitrary same-user mutation.
+An active agent must hand confirmed recovery to an external operator/provisioner.
+Ordinary background materialization and launch/final-flush integration remain
+open; the command does not authorize rewriting a currently active session.
+
 ## Incremental admission corrections (ADR-0037)
 
 Unchanged namespace heads do not authorize rewriting their locally growing

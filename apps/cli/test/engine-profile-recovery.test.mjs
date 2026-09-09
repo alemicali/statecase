@@ -86,8 +86,9 @@ describe("encrypted engine pull survives actual process death with a paired nati
     const f = await fixture();
     expect(await child(f, operation(f, phase, target))).toEqual({ code: null, signal: "SIGKILL" });
     await expect(f.store.loadConfig()).rejects.toMatchObject({ code: "PROFILE_RECOVERY_REQUIRED" });
-    expect(await f.store.recoverMaterialization({ dryRun: true })).toMatchObject({ outcome });
-    expect(await child(f, `await new ConfigStore(${JSON.stringify(f.home)}).recoverMaterialization();`)).toEqual({ code: 0, signal: null });
+    expect(await f.store.recoverProfile({ dryRun: true })).toMatchObject({ pending: true, recovered: false, outcome });
+    expect(await child(f, `const result=await new ConfigStore(${JSON.stringify(f.home)}).recoverProfile({dryRun:false,processTable:async()=>""});
+      if(result.pending||!result.recovered)throw new Error("operator recovery did not complete");`)).toEqual({ code: 0, signal: null });
     const config = await f.store.loadConfig();
     if (outcome === "rollback") {
       expect(await readFile(join(f.home, "config.json"))).toEqual(f.before);

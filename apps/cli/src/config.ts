@@ -8,7 +8,7 @@ import { CredentialFile, type CredentialFileOptions } from "./credentials.js";
 import { memoryMappings } from "./memory-bindings.js";
 import { decodeProfile, encodeProfile, MAX_PROFILE_BYTES, ProfileFormatError } from "./profile-format.js";
 import { captureFileGuard } from "./file-guard.js";
-import { HarnessActivityRegistry, type ActivityHandle } from "./activity.js";
+import { assertNoHarnessProcess, HarnessActivityRegistry, type ActivityHandle } from "./activity.js";
 import { applyProfileCheckpoint, assertNoProfileCheckpoint, recoverProfileCheckpoint, serviceControlProfile, validateCheckpointTransition, type ProfileCheckpointOptions } from "./profile-checkpoint.js";
 import { validateWorkspaceSelection } from "./git-index-participant.js";
 import type { FileTransaction } from "./materialize.js";
@@ -217,6 +217,28 @@ export class ConfigStore {
       return result;
     } catch (error) { this.#observed = new WeakMap(); throw error; }
     finally { await lock.release(); }
+  }
+
+  /** Explicit operator recovery. Preview never acquires locks, inspects processes
+   * or reads credentials; mutation requires stopped runtime/harness exclusion. */
+  async recoverProfile(options: { dryRun: boolean; processTable?: () => Promise<string> }) {
+    const preview = await this.recoverMaterialization({ dryRun: true });
+    if (options.dryRun || !preview.pending) return { ...preview, recovered: false, dryRun: options.dryRun };
+    const locks: Array<ProfileLock | ActivityHandle> = [];
+    try {
+      try {
+        locks.push(await ProfileLock.acquire(join(this.home, "daemon.lock")));
+        const activity = new HarnessActivityRegistry(join(this.home, "locks", "harnesses"));
+        locks.push(await activity.beginRestore("codex"));
+        locks.push(await activity.beginRestore("claude"));
+        await assertNoHarnessProcess("codex", { processTable: options.processTable });
+        await assertNoHarnessProcess("claude", { processTable: options.processTable });
+      } catch { throw new ConfigStateChanged(); }
+      // Re-read and validate the retained authority under the config mutex.
+      // The preview is not a reusable mutation plan, nor proof of lock ownership.
+      const result = await this.recoverMaterialization();
+      return { ...result, pending: false, recovered: result.pending, dryRun: false };
+    } finally { await releaseProfileLocks(locks); }
   }
 
   /** Prepare complete workspace participants before the shared durable decision. */

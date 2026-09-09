@@ -20,7 +20,7 @@
     "pack:cli": "npm pack --workspace @statecase/cli",
     "test": "vitest run",
     "test:package": "node scripts/smoke-package.mjs",
-    "test:coverage": "vitest run --coverage",
+    "test:coverage": "vitest run --coverage --maxWorkers=1",
     "uat:remote": "node scripts/uat/daytona-product.mjs",
     "uat:background": "node scripts/uat/background-sync.mjs",
     "uat:profile": "node scripts/uat/profile-downgrade.mjs",

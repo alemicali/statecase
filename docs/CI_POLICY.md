@@ -34,6 +34,9 @@ Branch protection should require these logical checks on pull requests:
    reference observation suites; these use synthetic Git repositories only.
    ADR-0036 also runs actual encrypted-engine SIGKILL/fresh-process recovery with
    the test-only reference transport, synthetic sessions, Drops and Git roots.
+   ADR-0038 adds the public recovery command/preview/refusal suite and routes the
+   whole-engine fresh-process replay through the operator coordinator. Process
+   tables are synthetic; tests do not inspect an operator harness installation.
 6. `background-sync` — two authenticated daemon processes with local
    workerd/D1/R2, interrupted object upload, durable journal replay, offline
    restart, disjoint updates, deletion, and idle no-op verification. All account
@@ -60,11 +63,19 @@ Jobs use `npm ci`, minimum permissions, dependency caching, concurrency
 cancellation, timeouts, and no production credentials. CI forks receive no
 secrets.
 
-The portable Vitest suite caps concurrent workers at half the available CPU
+The ordinary portable Vitest suite caps concurrent workers at half the available CPU
 parallelism, at least one and at most four. Recovery suites also spawn real Git,
 esbuild and independent Node processes; worker scheduling must leave capacity for
 those children. This does not increase per-test timeouts, skip correctness tests
 or retry failures. Preserve failing-run evidence when adjusting orchestration.
+
+The complete coverage command uses one worker: coverage-instrumented native
+recovery suites repeatedly exceeded their existing five-second deadlines when
+run together on the shared development filesystem, while controlled sequential
+execution passed. This bounds suite-level resource contention, not the explicit
+parallel processes exercised inside race/concurrency tests. Non-coverage Node
+compatibility and macOS tests retain their usual worker cap. No timeout, required
+test or threshold changes; performance-under-load qualification remains separate.
 
 On a shared local machine, do not overlap complete portable coverage runs with
 workerd integration/UAT suites. Their independent worker pools do not share this
@@ -126,6 +137,10 @@ and never destructive shared fixtures. A separate staging/production promotion
 flow is required before public launch.
 
 ## Test artifacts and retention
+
+The main portable coverage run emits full JSON branch maps alongside its summary
+and HTML report. Use that same run for changed-critical-region review instead of
+starting a duplicate complete suite solely to obtain machine-readable coverage.
 
 Failed integration/fault jobs upload only redacted logs, seeds, synthetic
 manifests, and reports. Artifacts must pass a canary/secret scan. Never upload

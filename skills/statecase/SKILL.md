@@ -108,6 +108,22 @@ Treat the capsule as the authority even when its harness, workspace, Drops and m
 
 ## Restore safely
 
+If a diagnostic specifically requests **local materialization recovery**, first
+run `statecase --json profile recover --dry-run`. This inspects the retained
+local transaction, not a cloud revision or an emergency restore snapshot.
+With `pending: true`, explain the proposed `outcome` (`rollback` or committed
+`cleanup`) and ask the operator to stop the Statecase daemon and both harnesses.
+After explicit approval, use `statecase --json profile recover --yes` from an
+external shell or provisioning process. An agent running inside Codex or Claude
+must hand this step to the operator, not terminate its own harness or bypass the
+active-process refusal. Recovery needs no login, vault key or network access.
+Successful replay returns `recovered: true` and `pending: false`; a no-op returns
+both false. Neither result implies a successful cloud sync.
+On exit `5`, establish stopped-process conditions and obtain a fresh preview;
+on exit `6`, preserve all evidence and stop. Never edit journals, delete locks,
+restore an old profile over them. Resume normal status checks only after recovery
+finishes.
+
 Prefer staging inspection with `statecase --json restore --revision <id> --mapping <id> --target <staging-dir> --dry-run`. Never use a configured live mapping path as a staging target.
 
 For a two-way Drop, Codex/Claude mapping, or `git-overlay` workspace, in-place restore is allowed only on a full-key device and only after explicit operator approval. Run `statecase --json restore --revision <id> --mapping <id> --in-place --dry-run`, report creates/replaces/deletes, and ask the operator to stop the Statecase daemon and every process using the affected harness or workspace. After approval, run the same command with `--yes` instead of `--dry-run`. Do not launch or mutate the affected harness/workspace from the same agent turn while restoring it. Metadata-only workspaces have no Git state to restore.

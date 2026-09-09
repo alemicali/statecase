@@ -11,7 +11,7 @@ export class ProfileFormatError extends Error {
     super(code === "PROFILE_UPGRADE_REQUIRED" ? "local profile requires explicit migration; stop Statecase processes and run statecase profile upgrade --dry-run"
       : code === "PROFILE_UNSUPPORTED" ? "local profile requires a compatible Statecase release; do not downgrade or rewrite it"
       : code === "PROFILE_WRITE_FAILED" ? "local profile update could not be confirmed; inspect profile status before retrying"
-      : code === "PROFILE_RECOVERY_REQUIRED" ? "local materialization recovery is required; existing state was preserved"
+      : code === "PROFILE_RECOVERY_REQUIRED" ? "local materialization recovery is required; existing state was preserved; inspect with statecase profile recover --dry-run"
       : "local profile is invalid or cannot be observed safely; existing state was preserved");
     this.name = "ProfileFormatError";
   }

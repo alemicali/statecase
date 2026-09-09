@@ -8,6 +8,13 @@ Related: [Product strategy](./PRODUCT_STRATEGY.md),
 
 ## 1. Normative language and current-state warning
 
+ADR-0038 adds explicit `profile recover --dry-run|--yes`: inspect locally without
+mutation or confirm stopped-process replay under daemon/harness/config barriers.
+It uses retained original authority even if the profile is temporarily missing,
+requires no credentials/cloud, and distinguishes `pending` from `recovered`.
+This operator recovery command does not enable the still-pending ordinary
+activity-aware engine/CLI/daemon/shim coordinator integration.
+
 ADR-0037 narrows ordinary pull to advanced namespace revisions after validating
 the configured authority/head selection. Unchanged local scopes are not replayed
 as a side effect of another namespace changing. Explicit pinned hydration still

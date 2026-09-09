@@ -19,7 +19,7 @@ import { Command, CommanderError } from "commander";
 import { RemoteError, StatecaseClient } from "./client.js";
 import { assertNoHarnessProcess, HarnessActivityRegistry, type ActivityHandle } from "./activity.js";
 import { createBootstrapCapability, openBootstrapCapability, type ScopedVaultKeys } from "./capability.js";
-import { ConfigStore, configuredSyncRoots, type LocalConfig, type LocalSecrets, type RootMapping } from "./config.js";
+import { ConfigStore, ConfigStateChanged, configuredSyncRoots, type LocalConfig, type LocalSecrets, type RootMapping } from "./config.js";
 import type { CredentialKeyProtector } from "./credentials.js";
 import { PersistentRuntime, readRuntimeStatus, type DaemonTrigger } from "./daemon.js";
 import { readRecoveryKeyringKit, writeRecoveryKeyringKit } from "./recovery.js";
@@ -41,6 +41,8 @@ export interface CliIO {
   fetch: typeof fetch;
   serviceRunner?: ServiceCommandRunner;
   credentialProtector?: CredentialKeyProtector;
+  /** Trusted embedding/test seam; normal CLI uses native process inspection. */
+  harnessProcessTable?: () => Promise<string>;
 }
 
 const defaultIo: CliIO = {
@@ -66,7 +68,7 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
     // Also guard actions that otherwise only touch credentials or global skills.
     await store.loadConfig();
   });
-  const profile = program.command("profile").description("inspect and explicitly upgrade the local profile format");
+  const profile = program.command("profile").description("inspect, upgrade and recover the local profile");
   profile.command("status").action(async () => {
     const result = await store.profileStatus();
     emit(io, program, result, result.migrationRequired ? "Local profile requires explicit upgrade." : "Local profile format is current.");
@@ -77,6 +79,19 @@ export async function runCli(argv = process.argv, io: CliIO = defaultIo): Promis
       const result = await store.upgradeProfile({ dryRun: Boolean(options.dryRun) });
       emit(io, program, result, result.dryRun ? "Profile upgrade preview; no files changed." : result.changed
         ? `Profile upgraded; previous document retained at ${result.backupPath}.` : "Local profile format is already current.");
+    });
+  profile.command("recover").description("recover interrupted local materialization after stopping daemon and harnesses")
+    .option("--dry-run", "inspect retained recovery state without changing files")
+    .option("--yes", "confirm recovery after stopping daemon and harnesses")
+    .action(async (options: { dryRun?: boolean; yes?: boolean }) => {
+      if (Boolean(options.dryRun) === Boolean(options.yes)) throw new StatecaseUsageError("choose --dry-run or confirm profile recovery with --yes after stopping daemon and harnesses", 2);
+      const result = await store.recoverProfile({ dryRun: Boolean(options.dryRun), processTable: io.harnessProcessTable }).catch(error => {
+        if (error instanceof ConfigStateChanged) throw new StatecaseUsageError("local recovery exclusion could not be confirmed; stop daemon and harnesses, preserve recovery evidence and inspect a fresh preview", 5);
+        throw error;
+      });
+      emit(io, program, result, result.recovered ? `Local materialization recovered: ${result.outcome}.`
+        : result.pending ? `Recovery preview: ${result.outcome}, ${result.targets} targets; no files changed.`
+        : "No interrupted local materialization to recover.");
     });
 
   const credentials = program.command("credentials").description("inspect and protect this installation's local credentials");

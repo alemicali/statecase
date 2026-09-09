@@ -4,6 +4,12 @@ All notable changes to Statecase will be documented here.
 
 ## Unreleased
 
+- Add `profile recover --dry-run|--yes` for interrupted local materialization.
+  Recovery works without credentials/cloud and with a temporarily absent profile;
+  confirmation requires daemon/harness exclusion and revalidates retained state.
+  Report pending versus recovered state explicitly and teach operator handoff in
+  the canonical skill. Normal activity-aware runtime wiring remains pending.
+
 - Pull only advanced namespaces: an independent Drop update no longer rewrites
   or conflicts with an unchanged remotely tracked local session. Preserve
   unrelated profile state and avoid unchanged-scope object downloads. Require

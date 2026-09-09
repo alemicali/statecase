@@ -20,7 +20,7 @@ export default defineConfig({
         "apps/cloud/src/bindings.ts",
         "apps/cloud/src/index.ts",
       ],
-      reporter: ["text", "json-summary", "html"],
+      reporter: ["text", "json", "json-summary", "html"],
       thresholds: {
         branches: 90,
         functions: 90,

@@ -107,7 +107,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       - name: Qualify recoverable native Git lock ownership
-        run: npx vitest run apps/cli/test/native-lock.test.ts apps/cli/test/git-index-participant.test.ts apps/cli/test/git-profile-checkpoint.test.ts apps/cli/test/git-reference-participant.test.ts apps/cli/test/workspace-profile-recovery.test.ts apps/cli/test/engine-profile-recovery.test.mjs
+        run: npx vitest run apps/cli/test/native-lock.test.ts apps/cli/test/git-index-participant.test.ts apps/cli/test/git-profile-checkpoint.test.ts apps/cli/test/git-reference-participant.test.ts apps/cli/test/workspace-profile-recovery.test.ts apps/cli/test/engine-profile-recovery.test.mjs apps/cli/test/profile-materialization.test.ts
       - name: Qualify isolated launchd lifecycle
         shell: bash
         run: |
