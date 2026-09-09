@@ -24,7 +24,7 @@ release history.
 
 Existing tools may be studied as prior art. Any future code adoption requires
 license and provenance review; any future data importer requires a separate ADR
-and is outside the MVP.
+and is outside the initial release.
 
 ## Alternatives considered
 
@@ -40,7 +40,7 @@ and is outside the MVP.
 
 The architecture and version line begin cleanly, with no compatibility burden.
 We must establish new distribution and product recognition. AgentStash users
-do not receive an automatic migration path in the MVP.
+do not receive an automatic migration path in the initial release.
 
 ## Security and privacy impact
 
@@ -50,7 +50,7 @@ modify unrelated backup repositories.
 
 ## Compatibility and migration
 
-There is no product migration in the MVP. Protocol and schema evolution begin
+There is no product migration in the initial release. Protocol and schema evolution begin
 at Statecase version 1. A future one-way importer must be previewed, copy-only,
 and separately reviewed.
 

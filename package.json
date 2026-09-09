@@ -6,14 +6,26 @@
   "type": "module",
   "workspaces": [
     "apps/*",
-    "packages/*"
+    "packages/*",
+    "packages/adapters/*"
   ],
   "scripts": {
-    "build": "tsc --noEmit",
-    "check": "npm run lint && npm run typecheck && npm run test:coverage && npm run build",
-    "lint": "oxlint --deny-warnings packages apps test vitest.config.ts",
+    "build": "npm run build --workspace @statecase/cli",
+    "check": "npm run lint && npm run typecheck && npm run test:coverage && npm run build && npm run test:package",
+    "cloud:test": "vitest run --config apps/cloud/vitest.config.ts",
+    "cloud:dev": "wrangler dev --config apps/cloud/wrangler.jsonc",
+    "cloud:deploy": "wrangler deploy --config apps/cloud/wrangler.jsonc",
+    "cloud:types": "wrangler types --config apps/cloud/wrangler.jsonc apps/cloud/worker-configuration.d.ts",
+    "lint": "oxlint --deny-warnings packages apps scripts test vitest.config.ts",
+    "pack:cli": "npm pack --workspace @statecase/cli",
     "test": "vitest run",
-    "test:coverage": "vitest run --coverage",
+    "test:package": "node scripts/smoke-package.mjs",
+    "test:coverage": "vitest run --coverage --maxWorkers=1",
+    "uat:remote": "node scripts/uat/daytona-product.mjs",
+    "uat:background": "node scripts/uat/background-sync.mjs",
+    "uat:profile": "node scripts/uat/profile-downgrade.mjs",
+    "uat:native-codex": "node scripts/uat/native-codex.mjs",
+    "uat:native-claude": "node scripts/uat/native-claude.mjs",
     "typecheck": "tsc --noEmit"
   },
   "engines": {
@@ -22,9 +34,13 @@
   "packageManager": "npm@10.9.8",
   "devDependencies": {
     "@types/node": "^22.18.1",
-    "@vitest/coverage-v8": "^5.0.0",
+    "@vitest/coverage-v8": "^4.1.11",
+    "@cloudflare/vitest-plugin": "^1.1.4",
+    "esbuild": "^0.28.1",
+    "fast-check": "^4.9.0",
     "oxlint": "^1.81.0",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.0"
+    "vitest": "^4.1.11",
+    "wrangler": "^4.129.0"
   }
 }

@@ -5,9 +5,9 @@ These instructions apply to the entire repository.
 ## Product state
 
 - Statecase is a standalone greenfield product. It has no AgentStash,
-  ClawStash, or Restic compatibility requirement in the MVP.
-- The repository is a pre-alpha TDD scaffold. Never claim target features are
-  implemented unless linked tests demonstrate them.
+  ClawStash, or Restic compatibility requirement in the initial release.
+- The repository is a TDD product under release qualification. Never claim a
+  feature is implemented unless linked tests demonstrate it.
 - Read the product strategy, implementation specification, test/UAT plan,
   threat model, readiness review, and accepted ADRs before implementation.
 - External copy says "agents," not "coding agents." Codex and Claude are the

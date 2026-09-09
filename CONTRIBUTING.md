@@ -1,6 +1,6 @@
 # Contributing
 
-Statecase is pre-alpha and handles security- and data-integrity-sensitive
+Statecase handles security- and data-integrity-sensitive
 state. Read `AGENTS.md`, `docs/PRODUCT_STRATEGY.md`,
 `docs/IMPLEMENTATION_SPEC.md`, `docs/TEST_AND_UAT_PLAN.md`, and
 `docs/THREAT_MODEL.md` before implementation work.

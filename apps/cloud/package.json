@@ -1,0 +1,14 @@
+{
+  "name": "@statecase/cloud",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@statecase/protocol": "*",
+    "@statecase/sync-core": "*",
+    "better-auth": "^1.7.3",
+    "hono": "^4.13.7",
+    "zod": "^4.5.4"
+  }
+}

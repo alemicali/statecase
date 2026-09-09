@@ -1,0 +1,41 @@
+name: Release CLI
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  github-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run cloud:test
+      - name: Verify tag matches package version
+        run: node -e 'const p=require("./apps/cli/package.json"); if (`v${p.version}` !== process.env.GITHUB_REF_NAME) throw new Error(`tag ${process.env.GITHUB_REF_NAME} does not match v${p.version}`)'
+      - name: Pack CLI and checksums
+        run: |
+          mkdir artifacts
+          npm pack --workspace @statecase/cli --pack-destination artifacts
+          cd artifacts
+          sha256sum *.tgz > SHA256SUMS
+      - name: Publish immutable release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release_flags=()
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            release_flags+=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" artifacts/*.tgz artifacts/SHA256SUMS \
+            --verify-tag --generate-notes --title "Statecase ${GITHUB_REF_NAME}" "${release_flags[@]}"

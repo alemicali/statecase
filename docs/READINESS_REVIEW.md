@@ -1,8 +1,405 @@
 # Statecase design readiness review
 
-Status: ready to begin architecture/TDD implementation; not ready for public
-data or production launch
-Last updated: 2026-09-05
+Status: foreground sync implemented and deployed; release qualification in progress; not ready for public
+production launch
+Last updated: 2026-09-09
+
+## Explicit operator recovery and remaining background failure — 2026-09-09
+
+Candidate `392f71d` completed [CI 34286892946](https://github.com/alemicali/statecase/actions/runs/34286892946)
+with eight passing jobs, including quality, Node 22/24 and native macOS. Thus the
+prior Git admission failure is fixed on that matrix. `background-sync` failed:
+the backend process exited unexpectedly with code 1 after the interrupted-upload
+journal phase; available redacted stderr categories were empty. This is not a
+daemon success, known root cause, or waived background gate. No rerun was used
+to replace the failure. Local timing sensitivity from the previous section
+remains open despite hosted quality passing.
+
+The fixture supervisor previously drained/discarded stdout. Two new regression
+tests require bounded, separate stdout/stderr classification, split-chunk codes
+and no raw canary leakage. It now retains only allowlisted categories/codes for
+both streams. This improves evidence for the next background drill; it is not
+a root-cause fix or a claim that the failing drill now passes.
+
+The first current full check failed nine cases: one new diagnostic classifier
+boundary (since corrected and its five focused tests pass), plus eight more
+workspace recovery timeouts; 1,354 cases passed. Complete coverage now uses one
+worker to bound suite-level native I/O/instrumentation contention, following the
+previous controlled single-worker success. Ordinary non-coverage runs retain the
+existing cap, explicit concurrency tests are unchanged, and no test/timeout/
+threshold was weakened. Full checks now emit detailed JSON branch maps in the
+same run, eliminating duplicate whole-suite coverage collection. These changes
+do not close the background root-cause or performance-under-load release gates.
+
+ADR-0038 adds an explicit stopped-process operator recovery command, tested first
+with ten failing SIGKILL/CLI/admission cases. Boundary tests cover missing profile,
+no-op absence, corrupt authority, late edits and held/released barriers. JSON
+distinguishes `pending` from `recovered`; the canonical skill explains preview,
+approval and external-shell handoff. Complete current-candidate verification and
+hosted qualification are pending. Normal runtime wiring, launch/final-flush
+ordering and every broader product/release gate remain open. No operator harness,
+profile, credential store or live service was changed.
+
+After the classifier correction and bounded coverage orchestration, the complete
+`npm run check` passed **1,363 tests in 73 files**, lint, strict types, build and
+clean-installed package smoke. New operator recovery branches are 4/4 covered;
+ConfigStore branches are 95.19%, activity 94.64%, global 93.05% (5454/5861).
+Whole SyncEngine 86.75% and workspace 89.67% remain below their full critical-
+module targets. Skill-creator's validator passed on the updated canonical skill.
+The separate local background drill also passed through two authenticated CLI
+daemons and emulated workerd/D1/R2: bidirectional transfer, interrupted upload
+journal replay, offline crash recovery, disjoint convergence, deletion propagation,
+45-second idle no-op and verified fixture cleanup. This used two isolated
+installations on one host, no real harness, no physical second peer or machine
+reboot, and no external backend. Exact-candidate hosted qualification remains
+pending; this local pass does not close the prior unexplained hosted backend exit.
+
+## Hosted failure diagnosis and independent namespace pull — 2026-09-09
+
+Candidate `199d495` completed [CI 34284910251](https://github.com/alemicali/statecase/actions/runs/34284910251)
+with four failures: quality, both compatibility jobs and native macOS failed
+the same reftable admission test. The other five jobs passed. This supersedes
+the pending-CI statement in the historical section below; its local success was
+not cross-platform qualification. No retry, timeout change or skipped test was
+used to hide the failure.
+
+A disposable upstream Git 2.55.0 build reproduced rejected repository discovery
+being misread as an absent backend setting (exit 1). Requiring `--local` returns
+a discovery error instead. Two new regressions fail on old Git 2.43.0 too.
+ADR-0037 documents the correction and preserves reftable refusal coverage.
+
+The engine now selects only advanced remote namespaces after configured-scope
+validation. The new independent-Drop regression first failed with a false local
+session conflict; it now passes through the real profile coordinator without
+changing the growing session's bytes/inode. Dry-run preserves the profile bytes;
+downloads exclude unchanged context; repeated pull invokes neither downloads
+nor the coordinator. The first complete `npm run check` passed **1,347 tests in
+73 files**, lint, types, build and package smoke; global branches were 93.03%
+(5449/5857). All 71 reference tests also passed with disposable Git 2.55.0.
+
+An additional JSON coverage measurement was mistakenly overlapped locally with
+the separate workerd suite. That measurement failed eight five-second tests:
+one changed-branch engine handoff and seven workspace-profile tests; 1,339 tests
+passed. Wall time rose from 46.66 to 82.61 seconds, and summed test time from
+120.90 to 296.22 seconds. The separate workerd suite passed all 12 tests. This
+is evidence of sensitivity to concurrent load, not proof of the sole root cause
+or a waived flaky-test gate. Controlled single-worker diagnosis passed all 172
+tests in the two affected suites; the seven workspace cases completed in
+416–838 ms. Local orchestration policy now forbids overlapping complete
+coverage/workerd runs (hosted isolated runners can still run concurrently).
+The subsequent default-worker JSON coverage run, with no workerd overlap, still
+failed five different workspace-profile timeout cases (1,342 passing). This
+disproves overlap as a sufficient explanation. Host `/proc/pressure/io` then
+reported 80.92% some/69.51% full stall averages over 60 seconds, versus zero
+memory pressure. Full single-worker JSON coverage then passed **1,347 tests in
+73 files** in 117.91 seconds, with unchanged thresholds. New selection branches
+at lines 1613/1623 are 4/4 covered; backend admission at lines 48/49 is 4/4.
+Reference participant branches remain 96.13%, global 93.03%; whole SyncEngine
+86.75% and workspace 89.67% remain below their full critical-module targets.
+The first default-worker full check and the later serialized coverage are
+separate evidence. Hosted qualification and local timing robustness remain open;
+no timeout, gate or test has been reduced. All product/release gates remain.
+
+## Encrypted engine joins the profile decision — 2026-09-09
+
+ADR-0036 now passes the engine's verified applied/binding proposal, guarded files
+and complete workspace applications to the internal ConfigStore coordinator.
+Scoped hydration retains original observed profile authority and unrelated
+mappings/markers. Caught failures restore original JavaScript marker identities
+without restoring invalidated save authority. Six whole-engine tests publish
+encrypted synthetic session/Drop/changed-branch state, require actual SIGKILL
+at native/profile/commit/retirement boundaries and recover in another process.
+Exact old or complete new state is verified alongside unrelated-file preservation.
+
+The full `npm run check` passed 1,340 tests. Two further proposal/source-guard
+cases then passed all the same gates (lint, types, full coverage, build and clean
+package smoke): **1,342 tests in 73 files**. JSON coverage for the changed engine
+hydration/handoff region (lines 880–890 and 1500–1557 at this candidate) records
+27/30 branches, **90%**; the three uncovered branches are existing in-place-restore
+guards included in that conservative region. Whole SyncEngine branches remain
+86.77% and whole workspace branches 89.67%; these module-wide targets remain open.
+New reference participant branches are 96.13%, profile checkpoint 94.89%; global
+branches are 93.03% (5451/5859). No threshold, existing timeout or test was reduced.
+
+Exact-candidate hosted qualification is pending. The combined ADR-0035/0036
+[review map](uat/2026-09-09-workspace-engine-recovery-review.md) keeps this work
+inside PR7. The old `04b6e06` hosted success is not evidence for these changes.
+No operator harness, credential store, profile, bucket or live service was used.
+
+Next required work is foreground/daemon/shim wiring with activity and pending-
+recovery barriers, including active-session behavior; upload/no-op profile
+publication; historical restore coordination; full Git dependency retention;
+and all remaining fault, native-format, mixed-client, independent-host/live-cloud,
+deployment and independent-review gates. Normal command wiring still uses the
+older materialization path. This is internal engine qualification, not release.
+
+## Complete prepared workspace/profile decision — 2026-09-08
+
+ADR-0035 composes the real prepared workspace with a version-three ConfigStore
+checkpoint: HEAD, branch, packed refs, native reflogs, retained commit pins,
+index, worktree and applied profile state share a durable decision. Original
+profile freshness and selected-root authority precede approved object acquisition.
+Actual SIGKILL/fresh-process tests cover reference/pin installation and retirement,
+every native release boundary, packed/detached/unborn/linked-worktree states,
+foreign-pin preservation and edits before admission or after staging. Native
+reference tests exercise descriptor substitution, malformed control text,
+Git boolean semantics, authority tampering, shared common directories and I/O
+refusal. No operator profile, harness, credentials or cloud bucket was used.
+
+The first complete local check passed 1,292 tests, lint/types/build and package
+smoke, but new reference branches were only 79.22%. Additional adversarial tests
+were added without changing thresholds. The final check passed **1,327 tests in
+72 files**, lint/types/build and clean-installed package smoke. New reference
+branches are **96.13%**, with 100% lines/functions; profile checkpoint branches
+94.89%, index participant 93.75%, native locks 94.73%, file replay 92.30% and
+materializer 95.72%. Global branches are 92.98% (5438/5848).
+
+The earlier index candidate `04b6e06bf46b9e91fe21644708e32792bde16e3f` passed all
+nine hosted jobs in [CI 34242219691](https://github.com/alemicali/statecase/actions/runs/34242219691).
+This is not hosted evidence for the newer reference integration. Its extended
+macOS/native/quality checks remain pending. All work stays in PR7; no new PR,
+merge, release or live cutover is implied by the local checkpoint.
+
+**Next required integration:** prepare the SyncEngine's authenticated applied and
+session-binding proposal before coordinated publication; pass the full workspace
+plan and source guards into ConfigStore; preserve in-memory proposal rollback;
+wire foreground/daemon/shim/hydration activity barriers and explicit recovery.
+Normal runtime remains on the older path until these are qualified. Full retained
+object/shared-index dependency closure, ambient workspace Git routing, reftable,
+LFS/submodules, native-directory transitions, all syscall/power-loss/prepublication
+orphan cases and all broader cross-host, live-service, migration and independent
+review gates remain open. This is not a same-HEAD restriction or a production-ready
+claim. The deployed Worker and real profiles remain unchanged.
+
+## Git index joins the real profile checkpoint — 2026-09-08
+
+Native-lock candidate `9c8130c` completed all nine jobs successfully in
+[CI 34238860108](https://github.com/alemicali/statecase/actions/runs/34238860108).
+ADR-0034 now joins repository-derived exact index grants and owned native locks
+to the actual internal ConfigStore checkpoint. Persist every descriptor before
+native publication, hold exclusion through index/file/profile decisions and
+retain the outer receipt until directory-durable native release. Linked-worktree
+indices outside the checkout, actual SIGKILL/fresh-process replay, interrupted
+release and lost-ownership refusal are tested. Git directory grants exclude
+unrelated native metadata; the new path uses no real operator profile or bucket.
+
+The final complete local check passed 1,228 tests in 70 files, lint/types/build
+and clean-installed package smoke. New Git index participant branches are 93.75%
+with 100% lines/functions; profile checkpoint branches are 92.85%, native locks
+94.73%, file replay 92.30% and materializer 95.72%. Global branches are 92.81%
+(5193/5595). The first full check passed 1,225 tests; a subsequent run with three
+extra cases exposed a pre-existing WS-034 five-second timeout. A focused diagnostic
+passed, then bounding concurrent Vitest workers left capacity for real child
+processes. The final full check above passed without raising any timeout, reducing
+coverage or skipping tests. This is not a waiver of future timing failures.
+
+The exact-candidate hosted checks, including the newly extended macOS suite,
+remain pending. Full HEAD/ref/object/shared-index retention and replay, prepared-
+workspace and normal runtime integration, native activity barriers, all low-level
+faults/power loss/orphans, mixed clients and latest packaged independent-host
+live-cloud UAT remain required. The index participant is not a same-HEAD-only
+replacement scope for the requested product. The live Worker and real profiles
+are unchanged; release readiness and every broader gate below remain open.
+
+## Recoverable native Git lock ownership — 2026-09-08
+
+Workspace-preparation candidate `54836ec` passed all nine jobs in
+[CI 34235938708](https://github.com/alemicali/statecase/actions/runs/34235938708);
+exact logs and hashes are attached to PR7. ADR-0033 now implements internal
+native lock preparation/publication/release with recorded inode ownership,
+exclusive hard links, foreign-lock refusal and idempotent directory-durability
+replay. Actual SIGKILL/fresh-process tests cover publication and interrupted
+release; a real Git writer is blocked until the verified lock is released.
+
+The complete local check passed 1,159 tests in 68 files, lint, types, build and
+clean-installed package smoke. Native-lock branches are 95.69% with 100% lines
+and functions; global branches 92.79% (5111/5508). The suite is also required on
+the disposable macOS CI runner; exact-candidate hosted results remain pending.
+
+Descriptors are currently persisted only by isolated test coordinators, not the
+production profile checkpoint. Repository-derived metadata authority, outer
+descriptor persistence, HEAD/ref/index intents/decisions, retained Git objects,
+normal runtime integration and all broader release gates remain required. The
+ordinary native index-lock helper and live services were not changed. No real
+profile, harness, credentials, keychain or cloud bucket was used by these tests.
+
+## Git preparation before durable admission — 2026-09-08
+
+The preceding native/profile candidate `8840bcc` passed all nine jobs in
+[CI 34232723982](https://github.com/alemicali/statecase/actions/runs/34232723982);
+exact logs and package hashes are attached to PR7. ADR-0032 now separates complete
+workspace/index/reference preparation from native mutation. A real SIGKILL at
+handoff preserves original HEAD, branch, exact index bytes and worktree, with no
+stranded native index lock. Repeated source guards remain usable after the
+consumer acquires its own exclusion. Preparation-only fallback acquisition
+preserves local refs and FETCH_HEAD even under conflicting configured refspecs,
+including shallow and multi-batch acquisition. A missing target baseline is
+rechecked for initialized submodules after acquisition and before admission.
+
+The complete local check passed 1,104 tests in 67 files, including 36 new workspace
+preparation cases, lint, types, build and clean-installed package smoke. Global
+branch coverage is 92.74% (5022/5415); the whole workspace module is 89.67%, still
+below its critical-module target. A second full coverage run also passed all
+1,104 tests. Its JSON evidence covers 45/46 V8 branches starting on added source
+lines (97.82%); this does not waive the module-wide or release gates.
+Earlier local timeout/fault-fixture failures
+were inspected and corrected; unrelated integration timeouts were not increased.
+Exact-candidate hosted CI remains required.
+
+This proves preparation, not applied-Git restart recovery. Persistent reference
+intent/decisions, repository authority, owned native locks, object retention,
+Git CAS/HEAD replay, native activity barriers and normal runtime integration
+remain open. All broader compatibility, co-location, low-level/power-loss/orphan,
+LFS/directory/submodule, cross-host/live-cloud and security/release gates remain
+requirements. No real profile, harness, credentials or cloud resource was changed.
+
+## Native/profile recovery checkpoint — 2026-09-08
+
+The preceding internal file-replay candidate `00e2f97` passed all nine jobs in
+CI `34228346060`, including 1,022 tests plus 12 workerd tests; exact job-log
+evidence is attached to PR7. ADR-0031 now adds internal paired native/profile
+publication and recovery. Actual SIGKILL tests restore the exact profile with
+native files even while `config.json` is absent, retain matching committed
+bindings/files, and resume recovery after restoring the profile first.
+Current profile operations are fenced during pending work; daemon stop uses the
+validated original metadata, without turning it into a save observation.
+
+The complete local check passes 1,068 tests in 66 files, lint, types, build and
+clean-installed package smoke. Branch coverage: profile checkpoint 91.35%, config
+94.62%, file replay 92.15%, materializer 95.72%, global 92.67% (4963/5355).
+Hosted exact-candidate qualification remains required. Git HEAD/refs/index and
+native activity participants, normal runtime enablement, capability fencing,
+profile/journal co-location, full low-level faults/power loss, orphan cleanup,
+cross-host/live-cloud UAT and the other release gates remain open. No real user
+profile, credentials, harness data, native service or cloud resource was changed.
+
+## Internal persistent file replay checkpoint — 2026-09-08
+
+Artifact-ownership candidate `d5b7199` passed all nine jobs in CI `34225382601`;
+the exact source and job-log evidence is attached to PR7. ADR-0030 now adds an
+internal persistent file replay primitive using a private append journal and
+the existing kernel-backed mutex. Actual SIGKILL tests recover in independent
+processes at selected preparation/intent/backup/install/commit boundaries, repeat
+after interruption of recovery, restore create/delete/symlink operations and
+two roots, preserve independent edits and detect a write through a real already-
+open original descriptor. Corrupt journals and invalid authority fail closed.
+
+The complete local check passes 1,022 tests in 65 files, lint, types, build and
+clean-installed package smoke. Recovery branches are 91.87%, materializer 95.49%
+and global 92.67% (4860/5244). Hosted exact-candidate qualification remains required.
+The new primitive is not yet connected to normal CLI/daemon/shim paths. Ordinary
+materialization does gain bounded no-follow descriptor fingerprint reads.
+
+Full RT-006 remains open: outer Git HEAD/refs/index and applied-profile/session-
+binding coordination, native activity barriers, normal runtime integration,
+all low-level interruption/failure boundaries, power loss, pre-publication orphan
+cleanup, uncooperative local races, packaged cross-host and largest-file tests
+are still required. No operator profile, real harness state, credentials or live
+Cloudflare resource was read or changed by these tests.
+
+## Materialization artifact ownership checkpoint — 2026-09-08
+
+The preceding profile candidate `5214917` passed all nine jobs in CI
+`34224065282`. Three failing-first materializer regressions then reproduced
+deletion of foreign staging files/symlinks and overwrite/removal of a foreign
+backup on name collision. ADR-0029 replaces unowned sibling targets with an
+exclusively reserved private same-filesystem directory, observes directory
+identity before mutation/cleanup, preserves unknown children and avoids
+recursive deletion. A bundled real-materializer child is terminated by actual
+SIGKILL at the second installation boundary; exact first-target originals remain
+inside the private directory and the untouched second target retains its bytes.
+Nested recovery material is excluded from encrypted Drop transfer.
+
+The complete local check passed 962 tests in 64 files, lint, types, build and
+clean-installed package smoke. Materializer branches are 95.71%; global branches
+are 92.68% (4640/5006). Hosted exact-candidate qualification is still required.
+This is a recovery ownership prerequisite, not completed RT-006: the killed
+fixture remains partially installed. Durable intent, restart replay, coordinated
+HEAD/refs/index and applied-profile markers, multi-root crash transitions,
+power-loss durability and open-descriptor writers remain release gates. No real
+operator profile, harness, credentials or live cloud deployment was modified.
+
+## Local profile compatibility checkpoint — 2026-09-08
+
+The prior contract documentation candidate `96ffdf1` passed CI `34221429749`.
+RT-017 now implements explicit local profile status/preview/upgrade with framed
+format 2, structural/capability validation, bounded no-follow reads, exact prior
+document backups, existing daemon/config/supervisor barriers, source rechecks,
+fsynced publication and stale-writer refusal. New CLI entrypoints guard legacy
+profiles before credential-only/global-skill work; daemon stop and the explicit
+profile commands retain migration access. Unknown optional config payload data
+is preserved. The packaged skill was updated with skill-creator and validated.
+
+The complete local check passed 951 tests in 64 files, lint, types, build and
+clean-installed package smoke; global branch coverage is 92.67% (4621/4986),
+configuration is 94.87% and profile framing is 100%. The local historical-package
+UAT already passed before the final staging-cleanup/error-classification and
+native-directory inventory refinements: locked `5907829`
+and the current package were separately built/packed/clean-installed, old usage
+succeeded before migration, preview preserved bytes, and seven old config-dependent
+commands refused the migrated profile without changing config/credentials/native
+fixtures. Exact backups and owned fixture cleanup were verified.
+
+ADR-0028 records the important boundary: no real user profile was migrated, no
+cloud deployment changed, and a format header cannot stop already-running old
+writers or arbitrary old commands that never read configuration. The historical
+test is not full historical/native-format compatibility, power-loss durability,
+malicious same-user race protection or live cross-host qualification. Exact-
+candidate native/platform CI is required before promoting this implementation.
+
+Candidate `20728d3` subsequently passed all nine jobs in
+[CI 34223473210](https://github.com/alemicali/statecase/actions/runs/34223473210).
+Quality passed 951 tests, 12 workerd tests and the exact clean-installed
+historical/current package drill, including the final native-directory inventory.
+Both native harness jobs, macOS lifecycle/credential jobs, both Node versions and
+the complete background drill also passed. See the
+[executed profile report](uat/2026-09-08-profile-migration.md) for artifact hashes,
+job IDs and preserved boundaries. Live deployment and operator profiles are unchanged.
+
+## Required client/service contract checkpoint — 2026-09-08
+
+The previous committed candidate `5907829` passed all nine jobs in CI
+`34218349868`. PR-014 now adds explicit contract/capability negotiation rather
+than inferring compatibility from transport generation 1.1. Missing/unsupported
+clients are refused before protected domain work or bootstrap consumption;
+browser auth stays available. The CLI performs a bounded credential-free public
+handshake, shares successful negotiation per instance and invalidates on HTTP
+426. A failing-first disconnected-stream test corrected network errors wrongly
+reported as incompatibility. CLI JSON compatibility failures use exit 6.
+
+The initial complete local check passes 920 tests in 62 files, lint, types, build and
+clean-installed package checks. Global branches are 92.60% (4533/4895); the new
+protocol compatibility module and HTTP client are both 100% (16/16 and 43/43).
+The separate 12-test workerd suite preserves D1 bootstrap grants on refusal,
+then redeems once, and rejects device/capability object/commit requests without
+R2/head changes. Hono tests inventory all protected routes before domain calls.
+The packaged agent skill was narrowly updated with skill-creator and validated.
+The background drill also passed automatic bidirectional transfer, interrupted
+upload/journal replay, offline crash recovery, disjoint convergence, deletion
+and idle no-op with cleanup verified. This uses two synthetic authenticated
+daemons on one host and local workerd/D1/R2, not independent hosts or native
+harnesses. A subsequent real-loopback failing test reproduced API redirects
+forwarding a synthetic bootstrap body; the client now refuses all API redirects.
+The final local check with redirect refusal passes 921 tests in 62 files,
+lint/types/build and clean-package smoke; coverage totals above are unchanged.
+Exact-candidate hosted CI is still required for this follow-up.
+
+Candidate `4b7d93eb2925b32b4c805ff0f402417a92bf0646` subsequently passed all
+nine jobs of [CI 34221032462](https://github.com/alemicali/statecase/actions/runs/34221032462).
+Native Codex job `102043932379` retains the original UUID, selected-memory patch
+history, both concurrent native contributions and both no-op peers (78 encrypted
+objects). Claude job `102043932226` passes ordinary continuity and the seven-fresh-
+session memory drill, including same-UUID relative-history resume/return. Both
+use pinned harnesses, deterministic loopback inference and reference storage on
+one disposable host. Background job `102043932116` passes all transfer/replay/
+offline/convergence/deletion/no-op phases on local workerd with cleanup verified.
+These exact-candidate passes include redirect refusal; no live service changed.
+
+ADR-0027 explicitly requires a coordinated matched-pair CLI/Worker cutover.
+The live Worker is unchanged and lacks this contract: the new CLI refuses it.
+This is not local offline old-binary fencing, full historical/profile migration,
+safe mixed-Worker rollout, unsupported-Worker rollback or complete native-format
+qualification. Those and independent-host/live-cloud UAT remain release gates.
 
 ## Decisions now clear
 
@@ -26,13 +423,23 @@ Last updated: 2026-09-05
 - Activity: parse harness/session events and reconcile filesystem/Git; OS-level
   read interception is optional and non-authoritative.
 - Identity: logical workspace/drop/session IDs with device-local path mappings.
-- Cloud: for the MVP, deploy one remote Cloudflare stack in the existing
+- Cloud: for the initial release, deploy one remote Cloudflare stack in the existing
   account: one Hono Worker, one R2 bucket, one D1 database, and one Durable
   Objects namespace (with one logical coordinator instance per vault). Local
   development is the only separate environment; there is no remote staging
   stack yet. Accepted in ADR-0002.
 - Security: local E2EE, device identity, separately wrapped scope keys, scoped
   single-use bootstrap capability, secrets excluded by default.
+- Crypto: libsodium XChaCha20-Poly1305-IETF envelopes, Argon2id recovery-key
+  derivation, and keyed scope-local object IDs. Accepted in ADR-0003.
+- Auth: Better Auth on Hono/D1 with RFC 8628 device authorization plus
+  Statecase-owned scoped bootstrap capabilities. Accepted in ADR-0004.
+- Local database: `better-sqlite3` behind a Statecase storage interface.
+  Accepted in ADR-0005.
+- Chunking: complete-record JSONL, FastCDC-style ordinary files, and fixed
+  chunks for compressed/encrypted formats. Accepted in ADR-0006.
+- Credentials: system Git with explicit fetch policy; harness, model-provider,
+  and Git credentials are never synchronized in v1. Accepted in ADR-0007.
 - Sync: local durable journal, incremental chunks, optimistic commits, safe
   merges, preserved conflicts, offline retry.
 - Recovery: every sync is a revision; retention and protected snapshots prevent
@@ -40,7 +447,7 @@ Last updated: 2026-09-05
 - Agent-native behavior: skills invoke stable JSON CLI operations but are not
   the persistence mechanism.
 - Delivery: TDD, contract tests, fault injection, paranoid UAT, staged beta.
-- Repository security availability: the private MVP repository's current
+- Repository security availability: the private repository's current
   GitHub plan does not expose branch protection, CodeQL/code scanning,
   dependency review, secret scanning, or push protection. These controls are a
   mandatory pre-public-release gate, not silently waived.
@@ -71,19 +478,14 @@ Last updated: 2026-09-05
 These do not block starting implementation, but each blocks the indicated
 milestone and must become an ADR:
 
-1. **Cryptographic library and exact AEAD** — blocks accepting production data.
-2. **Hosted identity provider/device-code implementation** — blocks hosted beta;
-   local development can use a test issuer.
-3. **Git credential/fetch integration boundaries** — blocks automatic baseline
-   acquisition; manual/pre-provisioned baselines can be built first.
-4. **Supported Codex/Claude version window and fixture acquisition process** —
+1. **Supported Codex/Claude version window and fixture acquisition process** —
    blocks compatibility claims.
-5. **Native Windows semantics** — deferred; WSL smoke support only for MVP.
-6. **Hosted pricing, data-region, metadata retention, and legal terms** — blocks
+2. **Native Windows semantics** — deferred; WSL smoke support only for the initial release.
+3. **Hosted pricing, data-region, metadata retention, and legal terms** — blocks
    commercial launch, not OSS implementation.
-7. **Trademark/domain clearance for Statecase** — blocks brand investment, not
+4. **Trademark/domain clearance for Statecase** — blocks brand investment, not
    technical work.
-8. **Control-panel decryption UX** — deferred; CLI is the MVP control plane.
+5. **Control-panel decryption UX** — deferred; CLI is the initial control plane.
 
 ## Scope completeness verdict
 
@@ -92,9 +494,698 @@ workspace continuity, arbitrary file synchronization, concurrency, recovery,
 automation, schema evolution, and major operating environments are sufficiently clear
 to begin TDD implementation.
 
-The design is intentionally not called production-complete. Crypto selection,
-identity provider, exact compatibility matrix, and legal/commercial decisions
+## Native preferences and mutex checkpoint — 2026-09-08
+
+CI `34195140316` exposed two issues: suspended mutex ownership could be lost
+to native GC, and the Codex fixture confused first-use project-trust creation
+with a sync mutation. Explicit mutex rooting now passes forced-GC/SIGKILL
+regressions; fixture trust is prepared device-locally before transfer, retaining
+byte-preservation checks. On `239a21b`, both pinned native harness jobs in
+CI `34196810044` pass fresh-session model/effort, CLI override, native resume
+and workspace-return assertions. The local check passes 671 tests. See the
+[bounded qualification report](uat/2026-09-08-native-effective-preferences.md).
+This is not whole-allowlist, cross-host/live-cloud, memory or release readiness.
+
+## Implementation checkpoint — 2026-09-06
+
+The first usable vertical slice is complete: manual first-device and
+second-device enrollment, encrypted recovery kit, account-scoped vaults,
+client-side encrypted/chunked object transfer, atomic optimistic commits,
+Codex/Claude complete-record handling, skill transfer, arbitrary Drops,
+logical workspace path rewriting, and exact Git index/worktree overlay transfer.
+The single Cloudflare release stack is provisioned and signup allowlisted.
+
+The CLI also packs as a self-contained `@statecase/cli` tarball. Its
+runtime manifest contains only the external native SQLite dependency; bundled
+workspace code and the canonical agent skill are verified by a clean-prefix
+installation smoke test in the normal quality gate.
+
+The next foreground slice is implemented locally: `statecase run` supervises
+unmodified Codex/Claude processes with inherited terminal and signals, bounded
+preflight and final synchronization, periodic publishing, exact exit-code
+preservation, and durable queued retry. Statecase-owned transparent shims are
+atomically installed/verified/removed without overwriting unrelated binaries.
+Remote deletions now use manifest tombstones, unhydrated namespace pushes fail
+closed, and pull materialization rolls back as one transaction after injected
+mid-apply failure. This slice is deployed on the definitive Cloudflare resource
+names and has passed remote compatibility verification.
+
+The packaged `@statecase/cli@0.1.0` artifact also passed a credential-isolated
+Daytona/Cloudflare product UAT with real Codex and Claude binaries, two
+independently authorized devices, encrypted binary/UTF-8/hidden-file round
+trips, deletion propagation, stale-base conflict detection, protected conflict
+resolution, and named snapshots. See the
+[executed UAT report](uat/2026-09-06-daytona-cloud.md).
+
+The persistent daemon core is also implemented locally with a single-profile
+crash-recoverable lock, recursive filesystem hints, periodic source-of-truth
+reconciliation, remote polling, serialized execution, bounded exponential
+retry, no-op revision suppression, and owner-only Unix-socket status. Native
+systemd-user and launchd installers are implemented with safe ownership and
+uninstall semantics. The [native Linux lifecycle UAT](uat/2026-09-08-native-systemd.md)
+passed real systemd-user start/stop, private IPC, filesystem notifications,
+duplicate-writer denial, and SIGKILL restart with an isolated unauthenticated
+profile. The [macOS launchd drill](uat/2026-09-08-native-launchd.md) also passed
+on macOS 26.6.2 arm64 with Node 24.20.0, including idempotent CLI start/stop and
+profile isolation. Definitions pin the installing Node interpreter.
+Sleep/reboot integration and separate-host/native-harness background convergence
+are still required before full background steady state is claimed.
+
+The [local authenticated background drill](uat/2026-09-08-background-sync.md)
+now exercises two real daemon processes against workerd/D1/R2: bidirectional
+transfer without manual sync, an interrupted encrypted upload, durable journal
+replay across SIGKILL/offline restart, disjoint writes, deletion, and idle no-op
+behavior. The subsequent [packaged native/live drill](uat/2026-09-08-native-cloud-background.md)
+passed the same interrupted-upload/replay/convergence sequence with real
+systemd automatic restarts against live Cloudflare. Its two device installations
+were on one host; separate-host and real harness resume evidence is not implied.
+
+Exact workspace capsules now reproduce staged and unstaged bytes separately,
+deletions, additions, modes, safe symlinks, detached and unborn repositories,
+and uninitialized gitlinks. They reject malformed/corrupt input and dirty or
+mismatched destinations before apply, and roll back both the Git index and
+working tree on failure. A per-workspace `ask|auto|never` policy now controls
+missing-baseline acquisition through device-local system Git. Auto mode uses
+only the checkout's existing `origin`, disables interactive credential prompts,
+redacts Git failures, supports shallow clones, and rolls every earlier checkout
+back if a later workspace cannot be prepared. Initialized submodule hydration
+remains an explicit follow-on gate. The packaged path passed
+the
+[Daytona Git-baseline acquisition UAT](uat/2026-09-07-git-baseline-daytona.md)
+against the live Cloudflare service.
+
+Git LFS pointer detection is now fail-closed on both capture and hydration.
+Statecase identifies baseline pointer blobs through Git plumbing, reports the
+affected logical paths as `GIT_LFS_CONTENT_UNAVAILABLE`, and accepts a path only
+when device-local Git LFS has materialized it or the encrypted overlay replaces
+or deletes it. With explicit `auto` policy it now attempts the local LFS cache,
+then performs a bounded non-interactive exact-baseline fetch from the existing
+origin, and verifies the pointer's declared size and SHA-256. Partial or corrupt
+materialization rolls back and raw Git LFS diagnostics remain hidden. Statecase
+does not acquire or synchronize LFS credentials. The packaged candidate passed
+the [Daytona Git LFS acquisition UAT](uat/2026-09-07-git-lfs-daytona.md) with
+system Git LFS 3.6.1 against the live Cloudflare service.
+
+Persistent installations now keep a stable device ID independent of absolute
+paths and Better Auth session rotation. D1 binds each service session to that
+installation. Device listing and explicit revocation atomically revoke vault
+memberships and all bound sessions; attempts to re-register through a revoked
+session fail. Post-revocation cryptographic rotation is implemented and deployed:
+each rotation creates a fresh root at the next epoch, commits sealed envelopes
+for the exact active-device set in one D1 transaction, revokes existing scoped
+capabilities, rejects stale writes, and lets active devices ingest contiguous
+envelope history. Encrypted version-two recovery kits retain the historical
+keyring and reject stale replacement enrollment. Lost mutation responses are
+accepted only after the rotating device decrypts and matches its own envelope;
+an unprovable outcome preserves the candidate kit. Already-decrypted data and
+historical ciphertext copied by a revoked device cannot be remotely withdrawn.
+The packaged [live Cloudflare/Daytona rotation UAT](uat/2026-09-08-key-rotation-daytona.md)
+passed multi-epoch offline catch-up, revoked device/scoped-session denial,
+non-mutating stale enrollment, current-kit recovery, scoped reissuance, and
+cross-epoch historical Drop restore. Actual process-reset fault injection and
+independent security review remain unqualified.
+The [2026-09-08 local key-epoch qualification](uat/2026-09-08-key-epochs-local.md)
+records passing offline/restore variants, final coordinator fencing,
+transactional capability/enrollment checks, immutable exchange identities,
+and injected D1 failure recovery. It explicitly separates this evidence from
+live deployment, real process-reset fault injection, and outstanding
+release gates. Additional local CLI tests now cover multi-epoch offline
+catch-up, unchanged credentials/files on incomplete or forged history, and
+lost-response reconciliation after a newer rotation. Download and cleanup
+faults verify derived-key release, discarded temporary merged sessions, and
+unchanged remote revisions; these complement the packaged live drill.
+
+Full-key devices now merge concurrent appends to the same recognized Codex or
+Claude JSONL session when both branches retain one byte-identical complete
+base. Canonical record occurrences deduplicate shared events, a deterministic
+topological merge preserves each branch order, and malformed, incomplete,
+rewritten, or order-incompatible histories fail closed without advancing the
+remote head. The merged Session Capsule re-extracts activity from both branches.
+The publisher keeps its old applied marker until a verified record-supersequence
+pull materializes the result. Scoped capability clients are excluded from this
+trusted same-path merge. Unit and in-memory two-device integration evidence is
+green. Device-local native session bindings now route the merged result back to
+the file each harness already owns, persist through supervised final flush and
+hydration, use a canonical fallback on fresh devices, and fail closed on unsafe
+or colliding destinations. The packaged four-device Daytona run passed against
+the live Cloudflare service, including rejected rewrite, deterministic merge,
+dependency retention, native origin-path writeback, and absence of a duplicate
+canonical file. See the
+[same-session append merge UAT](uat/2026-09-07-session-append-merge-daytona.md).
+Session hydration now also resolves harness, workspace, and Drop namespaces
+from independently pinned vault checkpoints and applies their authenticated
+state in one filesystem/Git transaction. Multi-revision dry-run and a missing
+pinned object are verified non-mutating.
+Automatic retention now selects deterministic UTC hourly/daily/monthly
+checkpoints and runs a daily owner-policy collector. Opaque reachability keeps
+the current head, protected snapshots, Session Capsule pins, append parents,
+and grace-period uploads. A Durable Object lease excludes concurrent commits;
+unknown pre-tracking/legacy history is retained conservatively. Core, Hono, and
+real workerd R2/DO tests cover preview, deletion, contention, expiry, and
+crash-recovery metadata finalization. Live-service destructive UAT remains.
+Bounded-memory push/pull is now implemented for both workspace-bound and
+unbound harness JSONL. It stages records securely, hashes incrementally,
+encrypts/decrypts one 4 MiB object at a time, installs from a verified staged
+file, and skips remote content-addressed chunks during append. Automated
+multi-chunk transfer and paranoid integrity cases are green. The literal 2-GiB
+acceptance run passed on Daytona with 514 initial objects, bounded two-object
+tail uploads, and convergence on both native paths. Concurrent append merge now
+validates and copies common history as a stream, retains only bounded branch
+suffixes, emits file-backed staging, and verifies the accepting pull record by
+record. All new
+plaintext staging paths preflight available temporary-disk capacity with a
+safety reserve and retain fail-clean semantics if capacity later changes. A
+Daytona object-backed temporary mount exposed and now has regression coverage
+for an empty temporary root disappearing between sync commands.
+
+Full-key, two-way Drop, stopped Codex/Claude mappings, and Git workspaces now
+support explicit in-place historical restore. The flow creates both a protected
+cloud snapshot and a persistent local emergency snapshot, excludes
+daemon/harness writers, rejects unsafe targets, validates materialized state,
+rolls back failed commits, and publishes a new forward revision rather than
+rewinding the shared head. Workspace recovery preserves HEAD/ref identity, the
+raw index, and affected worktree paths; it handles dirty, detached, unborn, and
+missing-baseline repositories while refusing initialized submodules and source
+races before mutation. The packaged Drop flow passed a two-device
+Daytona run against the live Cloudflare stack, including offline emergency
+rollback and complete cleanup; see the
+[in-place restore UAT](uat/2026-09-07-in-place-restore-daytona.md).
+The packaged Git workspace flow also passed with exact symbolic branch, HEAD,
+index, worktree, untracked-file, and symlink recovery; a differently mapped
+independent clone converged and the source then rolled back offline to its raw
+pre-restore Git state. The drill exposed and fixed detached-HEAD convergence in
+ordinary baseline acquisition. See the
+[workspace restore UAT](uat/2026-09-07-workspace-in-place-restore-daytona.md).
+
+Full automated background steady state is not yet claimed. Separate-host/native-harness
+convergence, sleep/reboot qualification,
+real-version harness restore UAT, and real harness-version compatibility remain
+blocking work for a public or unattended release.
+
+The design is intentionally not called production-complete. Independent security
+review, the exact harness compatibility matrix, and legal/commercial decisions
 remain explicit gates rather than hidden assumptions. Any new requirement that
 changes trust boundaries, plaintext exposure, conflict semantics, or deletion
 must update the strategy, implementation specification, threat model, and test
 traceability before code merges.
+
+### Native Codex continuity checkpoint — 2026-09-08
+
+The [native Codex drill](uat/2026-09-08-native-codex-resume.md) passed actual
+Codex 0.153.4 `exec resume` by the original UUID after engine-level encrypted
+transfer and strict Session Capsule hydration into a different home/checkout.
+The target began with an empty native SQLite directory. Its restored model
+input included the original prompt and tool outputs, and native tools read and
+modified the transferred file in the mapped target while leaving the source
+unchanged. Responses came from a deterministic loopback fixture; storage was
+an in-memory reference transport inside one Daytona sandbox, not live Cloudflare.
+
+This drill exposed and fixed missing freeform `apply_patch` activity references.
+It does not establish that arbitrary shell/code executions disclose all reads:
+`exec_command` command strings are not currently parsed or traced. A clean
+`strict` report validates the extracted dependency set, not universal read
+coverage. Complete coverage reporting for opaque tool execution remains required
+before an unconditional complete-context claim. Packaged/live-cloud cross-host
+resume, interactive pickers, the full compatibility matrix, and
+sleep/reboot remain open qualification work.
+
+An extended native return-sync drill subsequently reproduced a release-blocking
+false conflict: a Git-dirty source workspace is rejected even when it still
+equals the work already published/applied through Statecase. The target's
+continued session and files publish, but normal pull back to the source stops
+at `inspectWorkspaceDestination`'s unconditional dirty check. No overwrite or
+data loss was observed. A local WS-034 candidate now passes the initial return
+regression, preview, new-local-edit/history refusal, index-lock ownership,
+selected editor races, and injected materialization rollback. It authenticates
+the prior capsule and stages the index separately (ADR-0020). A valid encrypted
+substitute revision is rejected if it is not the exact prior revision requested.
+The latest complete `npm run check` passed 500 tests with 90.39% global branch
+coverage, build, and clean-prefix package smoke. Workspace-package branch
+coverage is still 88.88%, below its critical-code target; file materialization
+is at 96%. New tests reproduced and fixed rollback clobbering independent Git
+branch advances and post-install editor writes. Available original backups are
+retained when exact rollback is unsafe and excluded from ordinary sync.
+The fresh Daytona native drill now also passed the mapped-CWD return sync
+with 67 encrypted objects; it remains a two-home, one-host, reference-backend,
+deterministic-provider test of the preceding candidate. The branch/rollback
+candidate `a92a244` subsequently passed the complete
+[CI run](https://github.com/alemicali/statecase/actions/runs/34182284800), including
+native Codex return-sync and background synchronization. A later reserved-path
+guard passed its own [complete CI run](https://github.com/alemicali/statecase/actions/runs/34182534166),
+including native Codex return-sync. Persistent
+interrupted recovery, atomic HEAD and check-to-mutation races,
+managed LFS acquisition, packaged/live cross-host UAT, and broader qualification
+remain unresolved. Do not describe ordinary workspace round-trip sync as fully
+release-qualified yet.
+
+The subsequent artifact case-variant follow-up reproduced and fixed uppercase
+Drop backup publication and upper/mixed-case workspace artifact destinations,
+including parent components. It has the 500-test local check above; its CI must
+qualify that specific candidate independently. Unicode/filesystem alias and
+crash-recovery gates are not waived by this narrow refusal test.
+
+### Native Claude continuity checkpoint — 2026-09-08
+
+The [native Claude drill](uat/2026-09-08-native-claude-resume.md) passed with
+Claude Code 2.1.263 in a dedicated Daytona sandbox. Real Read/Edit/Write tools
+read tracked input, edit a tracked artifact, and create an untracked note.
+Strict engine hydration transfers the session and overlay onto the identical
+Git baseline in a fresh home and differently mapped project; `--resume` reopens
+the same UUID with original history, and native target edits synchronize back.
+The storage backend is an in-memory reference implementation and model replies
+come from a deterministic loopback Messages fixture. This is not packaged CLI
+enrollment, live Cloudflare, hosted inference, or physical cross-host evidence.
+The first provider runs failed closed on a native HEAD health probe; recognizing
+that exact probe allowed the drill to finish without changes to product code.
+A dedicated pinned-harness CI job now repeats this scope. Interactive listing,
+pre-apply runtime compatibility checks, other harness versions, and the combined
+packaged/live-cloud cross-host path remain release gates.
+
+### Packaged Claude/live-cloud checkpoint — 2026-09-08
+
+The [cross-peer foreground drill](uat/2026-09-08-cloud-native-claude.md) now passes
+on the package built from `8f33128`: independently authorized installations in
+two Daytona instances, real transparent Claude shims, live Cloudflare storage,
+strict non-mutating preview and hydration, original UUID/prompt/tool history,
+native Read/Edit/Write, final-flush publication, and source file/history return.
+The model provider is deterministic loopback; underlying physical host placement
+is not asserted. This closes that recorded Claude foreground topology's missing
+evidence, not Codex parity, daemon/sleep/reboot, interactive listing, complete
+read observation, or full product UAT. All fixture R2/account/sandbox and local
+credential cleanup was verified; opaque DO metadata was not explicitly purged.
+
+The drill also exposed a real installer mismatch: `CLAUDE_CONFIG_DIR` affected
+the adapter but not default skill placement. A separate correction now resolves
+install/verify/uninstall through the same adapter. Failing-first root tests,
+isolated-HOME lifecycle, and clean-prefix package setup/verify/uninstall pass;
+the complete check reports 503 tests and 90.39% global branches. CI run
+`34185025156` passed commit `e908cd0`. That later fix was not in the live tarball
+above and still requires fresh combined live qualification.
+
+### Implementation gaps confirmed by source audit
+
+Release work includes missing implementation, not only additional testing:
+
+- ADR-0021 reconciles ADR-0004 native persistence with the later specification's
+  permitted owner-only file mode. An explicit Linux Secret Service migration
+  is now implemented in `ConfigStore` and the CLI, preserving file-mode/headless
+  profiles. Local tests and an isolated native/package drill cover encrypted
+  update/logout, unavailable keys and keyring process restart. This is not
+  complete platform qualification: default-keychain UI, OS reboot/unlock,
+  recovery/downgrade, orphan handling and independent review remain gates.
+- ADR-0023 now implements filtered user preferences for Codex and Claude,
+  per-field synchronization, guarded native patching and historical recovery.
+  Raw `config-filtered` files remain excluded; only reviewed fields enter the
+  encrypted namespace. The wider configuration/memory scope is still missing:
+  instruction files, project memories, additional profile/role/model documents,
+  native compatibility and effective-value checks, cross-host qualification and
+  mixed-client fencing. Session continuity does not establish config parity.
+
+Neither gap is waived by successful round-trip UAT or overall coverage.
+
+The [portable-settings local qualification](uat/2026-09-08-portable-settings-local.md)
+records 663 passing tests, clean package startup, parser license checks,
+per-field encrypted two-device convergence, local-secret preservation and
+cross-epoch historical rollback. It does not qualify effective native settings,
+cross-host/live-cloud use, mixed-client fencing or memory portability.
+
+### Profile exclusion and crash checkpoint — 2026-09-08
+
+CI `34186898197` passed commit `064ad2a`, including the isolated packaged native
+credential job and existing Linux/Node22/Node24/macOS/native-harness jobs.
+
+A subsequent failing-first audit reproduced two owners during stale-lock
+reclamation. ADR-0022 adds a dedicated SQLite/kernel mutex, atomic v2 owner
+metadata, legacy-live-owner refusal and reserved local guard files. Real-process
+tests now prove one winner among eight simultaneous restart contenders after
+SIGKILL and recovery from pre-reclaim/pre-publication crashes. That is progress
+on local crash exclusion, not proof of workspace rollback, OS reboot, complete
+background/native parity or full production readiness. The complete check now
+passes 556 tests (90.55% global branches; runtime 95.45%, mutex 95.65%), and the
+clean-installed native credential drill passes with the new lock implementation.
+The local authenticated two-daemon/workerd drill also passes bidirectional
+transfer, interrupted-upload replay, offline crash recovery, disjoint writes,
+deletion and idle no-op. See the [recorded evidence](uat/2026-09-08-profile-mutex.md).
+Exact-candidate platform CI and remaining broader release gates still apply.
+
+CI `34188250327` on `e05a4e9` passed quality, Node 22/24, background sync,
+native credential packaging and the native macOS lifecycle. It failed the
+Codex/Claude native jobs during temporary-driver startup. A new failing-first
+load test reproduced the missing external SQLite module; the test-only builder
+now resolves that installed dependency explicitly outside the repository.
+Follow-up CI `34188511917` on `a942d6e` passed all eight jobs, including both
+native harnesses. This verifies the correction without retroactively turning
+the earlier failed run green. The macOS job here qualifies launchd, not Keychain.
+
+### macOS credential implementation — 2026-09-08
+
+The local credential adapter now supports macOS Keychain, preserves Linux
+protected-file compatibility, rejects foreign backends before native access,
+and authenticates backend identity. Failing-first tests cover native command
+construction, bounded stdin/output, explicit-path isolation, update and failure
+semantics. CI `34189667851` on `ad0dec8` passed all nine jobs, including the new
+clean-package native macOS keychain drill and verified fixture cleanup. See the
+[recorded credential evidence](uat/2026-09-08-macos-credentials.md).
+A subsequent launchd-selection fix now pins the chosen keychain path for the
+background service. It passes the local 574-test check (90.66% global branches)
+and all nine jobs in CI `34189968387` on `e23475c`, including the manager's
+effective selected-keychain environment. These checks do not close default-keychain
+UI/reboot, harness configuration, workspace crash recovery or wider release gates.
+
+### Global instruction checkpoint — 2026-09-08
+
+Global instruction transport and server-attested write authority are under
+qualification (ADR-0024). The local check passed 722 tests across
+52 files, 91.48% global branch coverage and clean-installed package checks;
+new instruction scan/plan code reached 95.89% branches, descriptor code 96.36%
+and instruction policy 96.87%. The separate workerd suite passed 12 tests,
+including scoped replace denial and immutable commit provenance. Tests include
+concurrent absence/tree guards and historical instruction recovery;
+the exact committed candidate still requires native CI evidence.
+
+Native instruction fixtures now require fresh-session global context, Codex
+override precedence and Claude imports/rules. Both pinned native jobs pass on
+`5dbecea` in CI `34201242162`, which completed with all nine jobs successful;
+see the [exact evidence](uat/2026-09-08-global-instructions.md).
+The live Worker has not been updated by this change; instruction
+publication intentionally refuses a server without the new provenance feature.
+Project memory, full native precedence/import/version coverage, mixed-client
+fencing, packaged independent-host UAT and all existing release gates remain
+open. This checkpoint does not claim production readiness.
+
+### Follow-up CI and memory foundation — 2026-09-08
+
+CI `34201611557` on `db67125` finished with eight successful jobs and a failed
+background-sync job. Both native instruction jobs still passed. Background UAT
+passed startup, bidirectional transfer, interrupted-upload journal retention
+and offline-crash/disjoint convergence, then received ECONNREFUSED from its
+local Worker during the idle phase. The earlier all-nine success on `5dbecea`
+does not make this later run green. The original fixture discarded process
+diagnostics, so server/supervisor cause is not established.
+
+A local repeat of the original drill passed with synthetic workerd/D1/R2 and
+verified fixture cleanup. That does not waive the CI failure. RT-017 adds bounded,
+redacted process/exit/signal diagnostics and preserves failure without retry or
+backend restart; follow-up execution and cause resolution remain required.
+
+ADR-0025 and initial memory binding/Markdown validators are implemented and
+unit-tested, not connected product functionality. CLI enrollment, authenticated
+collection descriptors, encrypted transport, capsule pins/retention, native
+effective location/recall, daemon parity and independent-host UAT remain open.
+Ordinary harness setup still does not select or scan memory.
+
+The complete local check for these foundations/diagnostics passed 752 tests
+across 55 files, build, type/lint and clean-installed package checks; global
+branches are 91.61% (4001/4367). The new memory binding and Markdown policy
+modules each have 100% branch coverage (46/46 and 21/21). Both the original
+background drill and its instrumented follow-up passed locally with verified
+cleanup. Exact-candidate CI is still required; these passes do not establish
+why the earlier hosted-runner service disappeared.
+
+Follow-up CI `34203126879` on `e2a8ceb` completed successfully in all nine jobs,
+including background synchronization. This verifies that candidate, not the
+cause of the preceding service loss; root-cause resolution remains open.
+
+### Memory engine and checkpoint integration — 2026-09-08
+
+Memory collections now participate in encrypted engine push/pull through their
+own scope keys, bounded native Markdown policy and authenticated canonical
+category/harness/workspace descriptors. Internal descriptors are never written
+as native files. Tests cover different device paths, preview, no-op/edit/delete,
+conflicts, ungranted-key and read-only denial, scoped append updates, malformed
+remote metadata, changed/disappearing files/trees and scanner resource bounds.
+
+Session Capsules pin selected memory checkpoints and expose structured memory
+references plus descriptor completeness. Hydration combines independent pins
+and filters unrelated configured collections before validation/materialization.
+Missing mappings/namespaces/objects and wrong project ownership preserve local
+state. Explicit selection changes refresh a capsule without transcript changes;
+memory-only updates preserve the unchanged session's historical context. Pins
+also enter the existing opaque retention root contract.
+
+Historical memory restore tests cover key epochs 1 and 2, physical-file-only
+emergency capture, failed publication rollback, successful restoration/deletion
+and post-restore no-op. A failing-first regression fixed generic-restore policy
+marker stripping; another fixed descriptor digest bookkeeping after restore.
+
+This is engine integration, not complete native memory portability. CLI memory
+enrollment/rebind/removal, native recall/generation and effective root discovery,
+custom/subagent coverage, localization of memory references in native history,
+daemon watches, mixed-client fencing, live capability/GC drills and packaged
+independent-host UAT remain open. No operator native state or live cloud resources
+were accessed by these local tests. Exact-candidate CI remains required.
+
+The complete local `npm run check` passes 788 tests across 56 files, lint,
+type checking, build and clean-installed package smoke. Global branch coverage
+is 91.83% (4171/4542); the new memory scanner/planner is 96.42% and the shared
+native-text planner is 96.87%. The separate local workerd suite passes 12 tests
+(including its deliberate ambiguous-rotation fault); no live deployment changed.
+
+### Memory CLI, service roots and configuration concurrency — 2026-09-08
+
+CI `34206344550` on `39fa0f7` completed with six successful jobs (including both
+native harnesses, native credential/service jobs and background synchronization)
+and three failed unit-test jobs. The same unsafe-directory fixture failed under
+both Node versions and quality: creation requested 0777 but the runner's umask
+removed write permissions, so the resulting directory was legitimately safe.
+The failure was reproduced locally under umask 022. The fixture now applies
+explicit chmod before exercising the unchanged safety guard; a fresh complete
+CI result is still required, and this does not resolve the earlier unrelated
+background-service disappearance.
+
+Memory map/list/rebind/remove is now available through the CLI and its packaged
+skill, with metadata/count-only previews, explicit confirmation, immutable
+logical ownership and no native-file movement/deletion. Staging restore and
+conflict selection recognize memory mapping IDs and exclude unrelated memory.
+Configuration saves validate inverse ownership collisions and use a kernel
+mutex with observed-state comparison; stale CLI/daemon writes fail instead of
+losing bindings or applied revisions. This does not make configuration/remote/
+credential mutations one atomic transaction or fence older clients.
+
+Selected memory roots participate in daemon filesystem notifications and service
+write permissions. A running service must be stopped and reinstalled after root
+changes. The new local and clean-package tests do not prove native memory recall,
+custom/subagent format coverage, missing-root service startup, hot service reload,
+sleep/reboot or independent-host/live-cloud behavior. These remain release work.
+
+The local check with explicit umask 022 passes 798 tests in 57 files, lint,
+type checking, build and the expanded clean-installed package smoke. Global
+branches are 91.90% (4222/4594); memory management is 100% (44/44), and config
+persistence is 94.11% (16/17). The packaged skill was updated using skill-creator
+and its validator passed. This local result requires exact-candidate CI evidence.
+
+Follow-up CI `34208471408` on `32fb75b` completed successfully in all nine jobs.
+This closes the candidate's umask-fixture recheck, not native memory qualification
+or the unrelated earlier background-service root cause.
+
+### Native memory qualification fixture — 2026-09-08
+
+AD-MEM-008 now has an executable Claude 2.1.263 drill, selected with
+`npm run uat:native-claude -- --memory` in the disposable GitHub runner. It uses
+four fresh session IDs, a repository-derived source memory root and a different
+explicit target `autoMemoryDirectory`, synthetic Markdown, deterministic native
+Read/Edit/Write calls, encrypted reference transport, strict hydration preview,
+return transfer and a disabled-memory negative control. Startup assertions
+exclude assistant history, tool results, tool descriptions and prompt canaries;
+topic content must be absent at startup and present after the native Read.
+Unselected project memory must remain unchanged and absent from startup context.
+
+The fixture is implemented, not yet recorded as a native pass. Its five local
+evidence-guard tests pass; the complete local check passes 803 tests in 58 files,
+lint, type checking, build and clean-package smoke, with unchanged 91.90% global
+branch coverage. Exact-candidate native CI is required. Even a pass here is
+two homes on one host with reference storage, not packaged live-cloud parity,
+autonomous hosted-model memory generation, worktree/full settings precedence,
+subagent formats, memory tool-history localization or Codex memory qualification.
+
+The native-claude job `102007136705` in CI `34209586836` on `cd73673` subsequently
+passed, including the explicit four-session memory step. Its redacted pass
+record confirms default/custom-root fresh recall, native topic Read/Edit and
+index Write, strict non-mutating preview, exact transfer/return bytes, preserved
+local settings and the disabled-memory/unselected-project controls. See
+[the executed report](uat/2026-09-08-native-claude-memory.md). An extension adds
+worktree, subdirectory and actual unrelated-project startup cases; those cases
+require a new native run and are not covered by the first pass.
+The entire `34209586836` run also completed successfully in all nine jobs.
+
+The expanded native-claude job `102008351039` in CI `34209964941` on `66f4e1f`
+then passed with seven fresh session IDs. Worktree and subdirectory sessions load
+the original repository index; a separate repository loads only its own index.
+The earlier encrypted round trip, native tools, preview and negative controls
+also pass again. This qualifies selected native location behavior, not Statecase
+worktree capsule transfer, automatic effective-root discovery or full settings
+precedence. The report records the exact versions and topology; wider production
+and Codex memory gates remain open.
+The complete `34209964941` run then finished successfully in all nine jobs.
+
+The documentation follow-up `8dc7b47` also passed CI `34210288919`.
+
+### Typed memory references and same-session qualification — 2026-09-08
+
+A failing-first regression confirmed that restored memory tool inputs still
+contained the source machine's absolute path. Reviewed structured file-tool
+arguments now use logical memory URIs in encrypted history and are localized to
+explicit same-harness/same-project target bindings. Source and target ownership,
+unsafe suffixes, unsupported opaque rewrites and missing references fail closed
+with integrity exit 6. Prose, tool results, edit replacements and Write content
+remain unchanged. Streamed and buffered paths and append activity inspection
+share this policy; failed memory staging is removed.
+
+AD-MEM-011 tests cover typed-field round trips, restaged byte identity, missing
+binding refusal before native writes, global unbound sessions, traversal and
+resource bounds. The local complete check passes 827 tests in 59 files, lint,
+type checking, build and clean-package smoke; global branches are 91.92%
+(4337/4718) and the new memory reference rewriter is 100% (96/96). The extended
+native drill requires the original Claude UUID, preserved old Read output,
+localized historical tool arguments, a new target-native Read and canonical no-op
+pushes in both directions. That native candidate has not yet been qualified.
+
+This does not complete reference portability: relative paths, native freeform
+patch conversion, historical migration, physical aliases and mixed-client
+fencing remain explicit work. The live deployment is unchanged. Do not treat the
+new session representation as backwards-compatible before migration/fencing UAT.
+
+The exact-candidate native-claude job `102014736920` in CI `34211942704` on
+`6ac73fe` passed. The original UUID resumed on the target with all three
+historical memory tool paths localized, its original Read output preserved and
+a new native Read returning the target memory bytes. Both post-hydration and
+post-return canonical pushes are no-ops. All seven fresh-session/location/
+negative controls also pass again. See the expanded
+[native report](uat/2026-09-08-native-claude-memory.md). This is reference-backend,
+same-host evidence; full-run CI status and broader release gates remain separate.
+The complete `34211942704` run subsequently finished successfully in all nine
+jobs, including background synchronization and quality/workerd checks.
+
+### Native-cwd relative memory references — 2026-09-08
+
+The documentation follow-up `20182aa` passed CI `34212268123`. A new failing-first
+regression then demonstrated that `../memory/topic.md` remained unportable and
+its activity could be omitted. Canonical relative memory paths now resolve from
+explicit native cwd observations as records are processed, including cwd changes
+and Claude user/assistant envelopes. Missing/invalid metadata and noncanonical
+alias-sensitive spellings fail closed. Neither process cwd nor prompt/artifact
+text supplies directory identity. Conversion precedes workspace URI rewriting;
+source-local normalized fields also contribute memory dependency activity.
+
+The complete local check passes 830 tests in 59 files, lint, types, build and
+clean-package smoke. Global branches are 91.96% (4384/4767), and the memory
+reference rewriter is 100% (141/141). The packaged memory skill now explains
+reference-integrity failures and preserves mapping/grant/transcript boundaries;
+it was updated with skill-creator and its validator passed.
+
+The native memory fixture now sends relative Read/Edit/Write arguments and
+requires their presence in the source's real history before target resume and
+return checks. That new exact-candidate native execution is still pending.
+Freeform patches, full historical migration, physical aliases, mixed versions,
+independent-host packaged/cloud parity and the wider production gates remain open.
+
+The relative candidate `5c127a8` failed CI `34213273513`: eight jobs passed, while
+the memory step in native-claude failed in `memory-return`. The ordinary native
+session step passed, and the memory drill had reached beyond source-relative
+history, target hydration/resume and target writes. This is a failed candidate,
+not a native-relative pass. Return diagnostics now distinguish publish, pull and
+no-op phases and expose only fixed error classes.
+
+A failing-first local return drill reproduced a source-session `SyncConflict`:
+the applied baseline hashed portable bytes rather than the captured native file,
+and converting relative fields to absolute paths invalidated the literal
+supersequence fallback. Applied session baselines now hash the immutable native
+complete-prefix snapshot; remote object digests remain portable. They never hash
+a later live file. Six tests cover unchanged and legacy-buffered return, edits
+during upload/after push, and incomplete tails before/after capture. Uncaptured
+work is preserved with an atomic refusal. Restoring the exact captured fixture
+permits return and a no-op push; conflict checks are not bypassed.
+
+The updated full local check passes 836 tests in 59 files, lint, types, build
+and clean-package smoke. Global branches are 92.45% (4413/4773); the memory
+rewriter remains 100% (141/141). A new native CI run is required to establish
+that this correction closes the observed hosted-runner failure. Historical,
+mixed-client and concurrent representation-changing append qualification remain
+open alongside the wider production requirements.
+
+The corrective candidate `7d130ab` passed native-claude job `102023418948` in CI
+`34214643016`. Its actual source history contains all three relative memory tool
+arguments; same-UUID target resume, localized history, old Read output, target
+native file operations, source return and both no-op pushes pass. All prior seven
+fresh-session/location/negative controls pass too. This establishes the selected
+pinned native relative-history case after the baseline correction; see the
+[executed report](uat/2026-09-08-native-claude-memory.md). The complete run
+subsequently finished successfully in all nine jobs. Remaining migration,
+concurrency, freeform and cross-host gates are not waived by that result.
+
+## Freeform memory patch implementation — 2026-09-08
+
+AD-MEM-011 now shares one reviewed patch parser between activity extraction and
+memory-header conversion. The parser validates the complete envelope before any
+mapping, rejects malformed/ambiguous headers, and preserves line endings, trailing
+whitespace and authored hunks exactly. Only actual Add/Update/Delete/Move header
+paths map to collection IDs; relative paths use native cwd and receiving paths
+require the same explicit binding/ownership checks as structured file tools.
+Tests cover streamed localization/restaging/activity and ordinary/legacy encrypted
+return. The pinned native Codex drill is extended to actually write selected
+memory with a relative patch, resume with localized history, update it on target
+and return it with no-op pushes. This new native execution is pending; it is not
+Codex automatic memory generation or an independent-host packaged/cloud pass.
+Workspace/Drop freeform header conversion, arbitrary tool syntaxes, historical
+migration and concurrent representation-changing append qualification remain open.
+
+The full local check passes 866 tests in 60 files, lint, typecheck, build and
+clean-installed package smoke. Global branch coverage is 92.50% (4446/4806);
+the memory rewriter is 100% (156/156), and the shared adapter module is 99.32%
+(148/149). These are local results, not the new native scenario's pass record.
+
+Candidate `7adee1b` subsequently passed native-codex job `102027686367` in CI
+`34215976635`. The actual pinned harness created memory through a relative patch,
+resumed the original UUID with a localized historical header, updated the target
+memory and returned exact bytes with both no-op pushes. Prior native assertions
+also passed. See the [executed native report](uat/2026-09-08-native-memory-patches.md)
+for versions, topology and limits. This does not qualify Codex automatic memory,
+arbitrary workspace/Drop patch paths or the independent-host packaged workflow.
+The whole `34215976635` run subsequently finished successfully in all nine jobs,
+including background synchronization and the quality/workerd/audit gate.
+
+## Late-write protection and concurrent memory history — 2026-09-08
+
+SY-012 reproduced eight cases in which a local change after conflict preflight
+was overwritten/deleted by the ordinary materializer. ADR-0026 now captures
+bounded descriptor digests and native/parent identities for every ordinary file
+and tombstone, then checks the same target immediately before mutation. The
+tests preserve streamed-session appends, incomplete tails, Drop edits, new files,
+initially identical destinations, replacement and symlink substitutions while
+rolling back earlier writes and keeping configuration unchanged. A ninth
+regression binds the subsequent buffered conflict read to its captured digest.
+Observation tests additionally cover growth/truncation, missing parents, parent
+replacement, metadata/link changes, chunk bounds and buffer wiping.
+
+Two failing-first AD-MEM-011 engine tests separately reproduced false return
+conflicts after concurrent structured/raw-patch appends with relative memory
+history. The streamed ordered-occurrence comparison now projects only reviewed
+memory fields on both native sequences with independent cwd state. It preserves
+authored content and duplicates, validates all complete records including remote
+suffixes, refuses incomplete/unsupported history and closes early-exit streams.
+Byte-identical portable merge bases and namespace authority rules do not change.
+Unchanged applied native files bypass the unnecessary supersequence comparison.
+
+The exact local check passes 891 tests in 61 files, lint, types, build and the
+clean-installed package test. Global branches are 92.54% (4495/4857); file guards
+97.77% (44/45), streamed merge 93.75% (75/80). The native Codex scenario now
+requires actual original-UUID continuations on both homes before reconciliation,
+preserved applied markers until pull, both contributions once and no-op pushes
+on both peers. Its new native CI result is pending execution.
+
+These guards are not atomic filesystem compare-and-swap, arbitrary active-writer
+hydration safety, persistent SIGKILL recovery, historical/mixed-client migration,
+or packaged independent-host qualification. The final-check/rename window and
+writes through existing descriptors remain explicit release risks. Generic Drop
+permission policy is preserved; dedicated native context restrictions remain.
+
+The native extension on `37b1f7b` subsequently passed job `102034206805` in CI
+`34217993203`: real Codex continuations on both homes retain the original UUID,
+merge over the shared history, preserve the old applied marker until pull and
+retain both contributions once; both peers converge with no-op pushes. All
+prior native assertions also pass. See the
+[concurrent follow-up report](uat/2026-09-08-native-memory-patches.md). This is
+reference-topology evidence, not active-writer or independent-host qualification.
+The complete `34217993203` CI run subsequently passed all nine jobs, including
+background synchronization and quality/workerd/audit. The original unrelated
+background-service-loss investigation is not resolved by this successful run.

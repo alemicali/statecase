@@ -1,16 +1,58 @@
 # Statecase synchronization implementation specification
 
-Status: normative design for implementation
-Last updated: 2026-09-05
+Status: normative design; implementation and release qualification in progress
+Last updated: 2026-09-07
 Related: [Product strategy](./PRODUCT_STRATEGY.md),
 [Test and UAT plan](./TEST_AND_UAT_PLAN.md),
 [Threat model](./THREAT_MODEL.md)
 
 ## 1. Normative language and current-state warning
 
+ADR-0038 adds explicit `profile recover --dry-run|--yes`: inspect locally without
+mutation or confirm stopped-process replay under daemon/harness/config barriers.
+It uses retained original authority even if the profile is temporarily missing,
+requires no credentials/cloud, and distinguishes `pending` from `recovered`.
+This operator recovery command does not enable the still-pending ordinary
+activity-aware engine/CLI/daemon/shim coordinator integration.
+
+ADR-0037 narrows ordinary pull to advanced namespace revisions after validating
+the configured authority/head selection. Unchanged local scopes are not replayed
+as a side effect of another namespace changing. Explicit pinned hydration still
+selects its whole closure. Native reference admission requires successful local
+Git repository discovery, not a generic absent-key response. These corrections
+do not enable unfinished activity-aware runtime/profile recovery wiring.
+
 `MUST`, `MUST NOT`, `SHOULD`, and `MAY` are normative. This document describes
-the target architecture. The standalone repository begins as a pre-alpha
-greenfield scaffold and does not yet provide this synchronization system.
+the target architecture. The current implementation provides the encrypted
+manual CLI and supervised foreground vertical slices plus its single
+Cloudflare stack. Foreground `statecase run`, safe shims, tombstone propagation,
+transactional apply, the persistent daemon core, and native systemd/launchd
+service definitions are implemented. Exact Git index/worktree capsules are
+implemented for ordinary files, safe symlinks, unborn/detached repositories,
+and uninitialized gitlinks. Durable revision pointers, protected snapshots,
+selective staging restore, and full-key in-place restore for two-way Drops and
+stopped Codex/Claude mappings are implemented. Content-addressed
+three-way merge handles disjoint/identical namespace changes and preserves
+same-path conflicts; workspace transports are atomic and append-only mappings
+cannot mutate prior paths. Immutable Session Capsules and atomic multi-revision
+historical closure hydration are implemented. Protocol 1.1 provides namespace-isolated R2
+objects, immutable per-namespace revision chains, atomic namespace heads,
+single-use scoped capability grants, client-encrypted scope-key bootstrap, and
+rootless read+append synchronization. Full-key clients now deterministically
+merge bounded, complete-record same-session JSONL appends and rebuild their
+Session Capsule activity closure; rewrites and incompatible order fail closed.
+UTC hourly/daily/monthly retention and namespace-object reachability GC are
+implemented with protected-snapshot, Session Capsule, append-parent, grace,
+and conservative migration roots. Full-key historical restore now also covers
+exact Git workspaces. Sections covering safe parsed text merge and initialized
+submodule hydration remain target requirements, not current claims.
+
+Persistent device identities, auth-session binding, device enumeration, and
+server-side revocation are implemented. Revocation blocks new service access
+and membership use but cannot erase locally decrypted data. Monotonic vault-key
+epochs, exact active-device sealed-box rewrap, old-epoch write rejection,
+capability invalidation, sequential active-device refresh, and encrypted
+multi-epoch recovery kits are implemented as specified by ADR-0019.
 
 ## 2. System boundaries
 
@@ -93,6 +135,25 @@ service on Linux. The daemon MUST:
 - wake and reconcile after sleep;
 - expose a local status endpoint or IPC channel without opening a public port.
 
+Native service definitions invoke the installing `process.execPath` explicitly
+before the CLI entrypoint. They do not assume that a GUI/user service manager
+loads a login-shell PATH. Definition paths reject ASCII controls; systemd
+specifier escaping and disabled ExecStart environment expansion preserve
+literal `%` and `${...}` in local paths. After replacing/removing the pinned
+Node runtime, reinstall the service. Linux native lifecycle evidence is recorded
+in `uat/2026-09-08-native-systemd.md`; macOS 26.6.2 arm64 lifecycle evidence is
+in `uat/2026-09-08-native-launchd.md`. Neither qualifies machine reboot/sleep
+or authenticated background convergence.
+
+`daemon start|stop` MUST verify the installed Statecase marker and profile
+binding before invoking a manager. A loaded manager definition MUST resolve to
+the expected file. One native service slot exists per OS user; changing
+STATECASE_HOME does not authorize replacing/stopping another profile's slot.
+Repeated start must not kill a healthy writer. Linux stop preserves its enabled
+state; launchd stop unloads the job to defeat KeepAlive. Unknown inspection
+errors never count as an absent job. JSON returns `action`, `platform`, and
+`requested: true`; callers use `daemon status` to check readiness separately.
+
 Proposed defaults: 2-second debounce, 30-second maximum push interval,
 20-second remote-head poll, and exponential retry from 1 second to 5 minutes.
 All are configurable.
@@ -120,7 +181,7 @@ an explicit adapter policy requires an environment override.
 
 ### 4.4 Cloud API
 
-The MVP remote deployment contains exactly one Cloudflare Worker, one R2
+The initial remote deployment contains exactly one Cloudflare Worker, one R2
 bucket, one D1 database, and one Durable Objects namespace. The Worker hosts a
 Hono application. Hono handles routing,
 middleware, authentication, request validation, error mapping, and API
@@ -128,13 +189,14 @@ documentation. The CLI communicates through ordinary HTTPS. Hono RPC MAY be
 used by the TypeScript client, but the wire protocol MUST remain documented
 HTTP/JSON so another client language can be implemented.
 
-There is no remote staging environment in the MVP. Development and automated
+There is no remote staging environment during initial release qualification. Development and automated
 tests use Wrangler/local emulation; the single remote stack is treated as the
-MVP environment. All remote resource names carry an `mvp` marker. Configuration
-MUST keep binding names and resource IDs environment-driven so adding separate
+allowlisted release environment. Resource names do not encode release stage;
+artifact versions and deployment metadata do. Configuration MUST keep binding
+names and resource IDs environment-driven so adding separate
 staging and production stacks later requires no protocol or persisted-data
 format change. See
-[ADR-0002](adr/0002-single-cloudflare-mvp-stack.md).
+[ADR-0002](adr/0002-single-cloudflare-stack.md).
 
 Worker bindings:
 
@@ -143,6 +205,7 @@ type Env = {
   BLOBS: R2Bucket;
   VAULTS: DurableObjectNamespace<VaultCoordinator>;
   DB: D1Database;
+  STATECASE_GC_GRACE_DAYS: string;
 }
 ```
 
@@ -194,8 +257,11 @@ or decrypted manifests. Initial tables:
 accounts(id, created_at, status)
 devices(id, account_id, name, public_signing_key, public_exchange_key,
         status, created_at, last_seen_at)
-vaults(id, account_id, name, coordinator_name, created_at, status)
-vault_members(vault_id, device_id, role, wrapped_key_ref, created_at, revoked_at)
+vaults(id, account_id, name, coordinator_name, key_epoch, created_at, status)
+vault_members(vault_id, device_id, role, wrapped_key_ref, enrolled_key_epoch,
+              created_at, revoked_at)
+vault_key_envelopes(vault_id, key_epoch, device_id, envelope,
+                    created_by_device_id, created_at)
 tokens(id, account_id, device_id, token_hash, scopes_json, expires_at,
        single_use, redeemed_at, revoked_at)
 workspaces(vault_id, id, display_name, canonical_remote, created_at)
@@ -230,7 +296,7 @@ content-addressed. They MUST not expose local paths or Git credentials.
 
 Resolution precedence:
 
-1. explicit `AGENTSTASH_WORKSPACE_ID`;
+1. explicit `STATECASE_WORKSPACE_ID`;
 2. stored mapping for the current path or an ancestor;
 3. normalized Git remote plus optional monorepo relative root;
 4. explicit user-created identity for a non-Git directory;
@@ -244,6 +310,28 @@ with distinct owner paths remain distinct unless explicitly aliased.
 Moving a checkout updates only the local mapping. Cloning the same repository
 twice on one device requires an explicit mapping choice or distinct worktree
 identity to prevent accidental concurrent use.
+
+#### 5.1.1 Device-local native session binding
+
+The remote identity of a portable session is its harness namespace plus logical
+`portable-sessions/<workspaceId>/<nativeSessionId>.jsonl` path. Its native
+filesystem location is not part of that identity. Each installation maintains
+a local-only binding from that remote identity to a validated relative path
+inside the mapped harness root.
+
+A successful non-dry-run push records the native relative path that was scanned.
+A pull consults an existing binding before materialization. On a device without
+one, the adapter chooses its deterministic canonical destination and records
+that choice only after the complete materialization transaction succeeds.
+Hydration and supervised final flushes persist the same binding. A remote or
+successfully published local deletion removes it.
+
+Bindings MUST never enter manifests, object IDs, Session Capsules, API payloads,
+or portable configuration. The relative path MUST remain inside its current
+harness root and classify as a native session for that adapter; its basename
+MUST match the portable native session ID. Multiple logical entries resolving
+to one local path MUST fail before filesystem mutation. Applied content digests
+remain keyed by remote logical path so path choice cannot change sync identity.
 
 ### 5.2 Manifest
 
@@ -276,6 +364,10 @@ interface SessionCapsuleV1 {
   sessionCapsuleId: string;
   sessionKey: string;
   harnessRevisionId: string;
+  harness: {
+    namespace: string;
+    logicalPath: string;
+  };
   workspace: {
     workspaceId: string;
     capsuleRevisionId: string;
@@ -300,6 +392,11 @@ Session capsules are immutable. `resume latest` selects the newest compatible
 capsule; resuming a historical session selects its recorded closure rather than
 whatever workspace head happens to be current.
 
+The current writer creates all references in a new capsule against the same
+atomic vault revision. A client that encounters independently pinned component
+revisions MUST either materialize each referenced namespace from its recorded
+revision or fail closed; it MUST NOT substitute current heads.
+
 ### 5.3 Synchronized namespaces
 
 Every manifest entry belongs to exactly one namespace:
@@ -319,10 +416,13 @@ review before production data is accepted.
 
 ### 6.1 Key hierarchy
 
-- Each vault has a random 256-bit root key.
-- The root key wraps independently generated scope keys for global config,
-  global skills, each workspace, and an optional secrets compartment.
-- Persistent devices receive only authorized wrapped scope keys.
+- Each vault begins with a random 256-bit root key at key epoch one. Every
+  rotation creates a new independent root and advances the epoch by one.
+- Domain-separated scope encryption and deduplication keys are derived from
+  the root for that epoch and for global config, global skills, each
+  workspace/Drop/harness, and an optional secrets compartment.
+- Persistent devices keep a historical vault keyring and receive a sealed-box
+  envelope for each new epoch only while they are active vault members.
 - Ephemeral bootstrap capabilities receive only the requested workspace keys
   and optional read-only global skill/config keys.
 - Authentication signing keys are separate from encryption keys.
@@ -332,7 +432,7 @@ access to every session or secret in the vault.
 
 ### 6.2 Object envelope
 
-- Compute `objectId = HMAC-SHA-256(scopeDedupKey, domain || plaintextChunk)`.
+- Compute `objectId = BLAKE2b-256(scopeDedupKey, domain || plaintextChunk)`.
 - Compress before encryption only when the adapter marks the content safe and
   compression saves a configured minimum.
 - Encrypt with an authenticated-encryption algorithm from a maintained,
@@ -355,17 +455,52 @@ No custom primitive is permitted.
 ### 6.3 Device enrollment
 
 Interactive enrollment creates signing and key-exchange keypairs locally. The
-service receives public keys. An existing trusted device or recovery flow wraps
-authorized vault/scope keys to the new device. Device revocation blocks new API
-operations but cannot make already decrypted data disappear from that device.
+service receives public keys. The encrypted recovery flow supplies a new
+persistent device with the historical vault keyring; active members then
+receive separately wrapped keys on future rotations. Device revocation blocks
+new API operations but cannot make already decrypted data disappear from that
+device.
 
 Recovery material MUST be shown once, never logged, and tested with a recovery
 verification step during onboarding.
 
+After revoking a lost device, an owner rotates each affected vault. The client
+MUST generate a fresh root rather than rewrap the old root, seal it separately
+to the exact active-member public-key set, and publish all envelopes plus the
+next epoch in one D1 transaction. The transaction MUST fail if an active member
+lacks an exchange key, the membership changes, recipients are missing or
+duplicated, or the epoch is no longer current. It also revokes all outstanding
+capability grants and sessions for the vault.
+
+The vault Durable Object serializes the D1 rotation with final commit epoch
+checks. It persists a monotonic minimum write epoch before dispatching the
+transaction; D1 below that floor blocks commits until a valid rotation retry
+completes it. An ambiguous D1 result MUST NOT roll the floor back. Capability
+insertion checks epoch and active owner inside its own D1 transaction.
+Registered device exchange keys are immutable; key replacement requires a new
+device identity. See ADR-0019 for ordering and failure recovery.
+
+Namespace heads, immutable manifests, and entries carry their encryption
+epoch. The first commit after rotation MUST be a snapshot, not an append delta;
+the Worker rejects stale-epoch writes and all protocol 1.0 writes after epoch
+one. Active clients fetch and unwrap every missing per-device envelope in
+order. Any gap fails closed. Version-two recovery kits contain every retained
+historical root plus the current epoch and are required for a replacement
+device after rotation. Enrollment submits the kit epoch and D1 validates it
+inside membership insertion; a stale kit MUST NOT add membership or become
+local authority. An omitted epoch is treated as one for old-client compatibility.
+
+The recovery kit is written exclusively before the remote mutation. An
+ambiguous response is reconciled by reading the authoritative epoch and opening
+the current device's envelope, then comparing the recovered root to the
+candidate root in constant time. If that proof cannot be obtained, the kit is
+preserved and local credentials remain at the old epoch. See ADR-0019.
+
 ### 6.4 Bootstrap capability
 
-`AGENTSTASH_BOOTSTRAP_TOKEN` is a single secret envelope containing or
-referencing:
+`STATECASE_BOOTSTRAP_TOKEN` is a random 256-bit one-time secret. The service
+stores only its SHA-256 digest and an opaque client-encrypted envelope
+containing:
 
 - server-verifiable authorization;
 - expiry and one-time redemption identifier;
@@ -373,18 +508,19 @@ referencing:
 - material required to unwrap only the authorized scope keys.
 
 It MUST be safe to revoke, MUST be redacted in all outputs, and SHOULD be
-injected through a secret manager. Long-lived `AGENTSTASH_TOKEN` is supported
+injected through a secret manager. Long-lived `STATECASE_TOKEN` is supported
 only for trusted automation. Tokens MUST NOT be placed in prompts or command
 arguments visible in process listings; stdin, a protected file, or environment
 secret injection is preferred.
 
 ## 7. Local state
 
-Statecase stores its own state under `AGENTSTASH_HOME`, defaulting to
+Statecase stores its own state under `STATECASE_HOME`, defaulting to
 `~/.statecase`:
 
 ```text
-config.toml                 non-secret profiles and mappings
+config.json                non-secret profiles and mappings
+credentials.json           owner-only legacy secrets or native-key-wrapped document
 state.db                    WAL-enabled local operation journal
 cache/objects/              bounded encrypted/plaintext-safe cache by policy
 locks/                      instance locks
@@ -396,15 +532,62 @@ skills/                     canonical installed skill payload
 Credential resolution order:
 
 1. explicit protected file/stdin option for one invocation;
-2. `AGENTSTASH_BOOTSTRAP_TOKEN` for bootstrap only;
+2. `STATECASE_BOOTSTRAP_TOKEN` for bootstrap only;
 3. scoped environment token for automation;
 4. OS keychain/credential store;
 5. interactive login.
+
+Local persistence supports two explicit modes (ADR-0021). Existing/headless
+profiles retain owner-only version-one JSON files; no profile is silently
+migrated. `credentials status` reports file/native protection metadata without
+accessing the native store. `credentials protect --dry-run` is non-mutating;
+`credentials protect --yes` stores a random 32-byte wrapping key in the native
+store, verifies read-back, then atomically replaces the credential document
+with a version-two XChaCha20-Poly1305 envelope. Both confirmation flags together
+are rejected. Linux uses `/usr/bin/secret-tool` and persistent Secret Service;
+macOS uses `/usr/bin/security` with an optional local `STATECASE_KEYCHAIN_PATH`.
+It sends one bounded quoted add command through stdin, uses explicitly scoped
+array searches for a selected keychain, and never enables overwrite or
+unrestricted item access. Backend mismatch is rejected before native access;
+distinct authenticated contexts bind backend identity while preserving the
+original Linux envelope format. Native macOS qualification is a separate gate.
+The launchd installer persists an explicitly selected keychain path in its
+owned environment dictionary so background execution does not depend on the
+installer's shell environment. Old definitions remain controllable/removable.
+Missing native services do not prevent legacy/headless file-mode use.
+
+All credential reads require an owned regular file without group/other
+permissions or extra hard links. Symlinks, directories and FIFOs are rejected;
+FIFO inspection is nonblocking. The complete file is bounded to 8 MiB, including
+encrypted metadata/base64 expansion. Writes use `0600`, temporary siblings,
+file/directory fsync and atomic rename. A credential mutation lock serializes
+cooperating writers, and read/save compare-and-swap refuses a stale snapshot.
+This is not a guarantee against malicious same-principal parent-directory
+replacement or complete local-file rollback.
+
+Protected profiles fail closed on unavailable/locked/missing/wrong native keys
+or corrupt ciphertext; neither logout nor another write downgrades protection.
+Helper keys use stdin/stdout, not argv, with a restricted environment, 4 KiB
+output bound and 10-second timeout. Migration failures before replacement retain
+the legacy file. A created native key is retained after any ambiguous failure;
+post-rename fsync/lock-release failure may report failure after replacement.
+Do not delete a key or retry from stale in-memory secrets blindly. Reload and
+inspect the authoritative document. Orphan cleanup, explicit downgrade and
+native recovery procedures remain release gates, not automatic behavior.
 
 The local database records operations, observed file fingerprints, object
 upload status, applied remote revisions, pending tombstones, path mappings,
 daemon leases, and redacted errors. A crash at any instruction boundary MUST
 allow replay without duplicate commits or lost queued changes.
+
+Profile locks use a dedicated persistent `<lock>.statecase-lock.sqlite` inode
+and an exclusive native SQLite transaction held for the lock lifetime, separate
+from `state.db` (ADR-0022). Owner metadata is version two, bounded/nonblocking
+and published only after complete private write/fsync. Kernel acquisition,
+not PID reuse, decides exclusion for v2. Live legacy v1 owners are respected;
+stop all older local writers before upgrading. Guard existence is not liveness.
+Never copy/read-open/unlink a live guard outside SQLite or put the profile on
+NFS. Mutex names and sidecars are reserved from synchronization/materialization.
 
 ## 8. Harness adapter contract
 
@@ -453,6 +636,26 @@ be listed/resumed before marking the revision applied.
 For Claude SDK/headless usage, a native external session-store adapter MAY be
 added. Interactive Claude CLI remains supported through the filesystem adapter
 and transparent runtime.
+
+### 8.2a Portable user preferences
+
+ADR-0023 defines the current field policies and encrypted layout. The client
+projects reviewed fields from user Codex `config.toml` and Claude
+`settings.json` into `portable-config/v1/user/<field>.json` entries in the
+harness namespace. Receivers independently validate canonical typed payloads;
+raw native config paths remain excluded. Per-field merge/tombstone semantics
+must never replace/delete local-only fields or native authority settings.
+
+Apply groups edits into one native document, preserves syntax outside edited
+ranges, guards the complete original file against concurrent changes and uses
+owner-only transactional replacement. Applied digests identify portable field
+bytes; emergency recovery targets the physical native file once. Historical
+restore verifies/rekeys those digests across key epochs. See ADR-0023 for exact
+limits, excluded settings, dependency versions and residual filesystem races.
+
+This implementation does not close the full configuration/memory scope.
+Additional documents, instruction and project-memory mapping, effective native
+settings/version validation and older-client fencing remain required.
 
 ### 8.3 Secrets
 
@@ -526,15 +729,135 @@ must be explicit, local, and auditable.
 Hydration requires the exact base commit. If it is already present, no tracked
 baseline bytes are transferred. Otherwise Statecase invokes a user-configured
 Git fetch/clone workflow or reports `BASELINE_UNAVAILABLE`; it MUST NOT embed
-Git credentials in a manifest. The overlay is applied in a staging worktree,
-validated, then moved/applied transactionally. Existing divergent local changes
-produce a previewable conflict and are never overwritten.
+Git credentials in a manifest. The implemented `ask|auto|never` policy is
+device-local and per workspace. `ask` and `never` fail before Git network or
+workspace mutation; `auto` invokes system Git with interactive prompts disabled
+against the checkout's existing `origin`, attempts the exact object before a
+bounded fallback fetch, and emits only redacted diagnostics. All workspaces are
+preflighted first. Acquired checkouts and indexes roll back in reverse order if
+any later acquisition or materialization fails. Existing divergent local
+changes produce a previewable conflict and are never overwritten.
+
+For subsequent sync, a Git-dirty destination MAY advance only after its full
+current capsule is verified against the authenticated last-applied namespace
+revision (ADR-0020). Local digest claims alone MUST NOT authorize replacement.
+The implementation MUST preserve independent staged/worktree state, revert
+obsolete overlay entries correctly, respect Git's index lock, recheck source
+stability, and materialize workspace/index/session changes transactionally.
+Missing history, new local edits, ignored-file collisions, or failed validation
+MUST leave applied markers unchanged. Preview MUST NOT mutate files or markers.
+Crash recovery and concurrent-writer qualification remain release requirements,
+not implied by the initial successful return-sync regression.
+
+Managed branch movement and rollback MUST compare the expected previous Git
+object ID; changing HEAD identity MUST NOT rewrite an independently advanced
+source branch. File rollback MUST preserve independently changed destinations
+and retain available original backups when exact rollback is unsafe or fails.
+The reserved `.statecase-transaction-<uuid>.staged|backup` artifacts MUST remain
+local and excluded from ordinary sync, including case variants of every path
+component so a case-sensitive sender cannot bypass a case-insensitive receiver.
+Retained ad-hoc backups MUST NOT be
+represented as an authenticated or crash-qualified emergency snapshot.
+
+Artifact ownership (ADR-0029) MUST be established by exclusive creation of a
+private same-filesystem reservation directory before claiming any child path.
+The current layout is `<target>.statecase-transaction-<uuid>.staged/` containing
+`prepared` and/or `backup`. Failed reservations MUST preserve pre-existing
+files, directories, symlinks and legacy sibling backups. Observed directory
+substitutions and unexpected children MUST fail closed without recursive cleanup.
+This ownership prerequisite does not implement persistent transaction replay.
+
+ADR-0030 adds an internal file replay coordinator with a private, bounded,
+versioned append journal, ordered/fsynced per-target intents, an explicit commit
+marker and guarded reverse replay. Separate-process SIGKILL tests cover selected
+file mutation and recovery boundaries, including two approved roots. This primitive
+is not yet used by ordinary CLI sync: the outer Git HEAD/refs/index and applied
+profile/session-binding transaction must be coordinated before enabling it.
+
+ADR-0031 now coordinates native files with the final applied-profile/session-
+binding write through an internal ConfigStore checkpoint API. The exact original
+profile supplies restart authority; a durable prepared/applying/settled record
+must agree with the file journal before its removal. Current profile access
+fails closed while pending, but administrative daemon stop can use the validated
+original profile. Git metadata/activity participation and normal sync integration
+remain required before this path is enabled for routine materialization.
+
+ADR-0032 adds an internal pre-mutation workspace handoff: prepare the full file
+and worktree-specific index transaction plus original/desired Git reference
+descriptions while retaining native HEAD/index/worktree state. Object acquisition
+on this path suppresses operational ref mappings and FETCH_HEAD updates, including
+fallback/unshallow acquisition. Repeatable guards reject observed concurrent
+changes, but the handoff does not itself acquire mutation authority, persist Git
+intent or replay Git. Durable native-lock/reference participation and ordinary
+runtime integration remain open; the new callback is not a public preview API.
+
+ADR-0033 adds an internal native lock ownership primitive. Prepare/fsync a private
+same-filesystem anchor, persist its identity in the outer journal, then hard-link
+it exclusively to the native lock name. Recovery removes only proven matching
+inodes and replays directory durability even when an earlier unlink is visible.
+Exact grants, complete parent/artifact observations, bounded private marker reads
+and unknown-child/foreign-lock refusal are required.
+
+ADR-0034 now persists repository-derived index ownership in the real internal
+ConfigStore checkpoint. Derive exact index/lock grants from original configured
+Git roots, validate directory/gitfile/commondir identities, and exclude other Git
+metadata from directory grants. Record every descriptor before native lock
+publication; hold verified ownership through forward writes, caught rollback,
+restart replay and the shared index/file/profile decision. Retain the outer receipt
+until every native release is directory-durable. Version-two checkpoints require
+their Git participants and preview never mutates. Ordinary Git locking/runtime
+remain unchanged until HEAD/ref/object-retention and activity participants also
+join the prepared-workspace transaction; this is not full Git crash qualification.
+
+ADR-0035 joins the prepared workspace to an internal version-three ConfigStore
+decision: original-profile authority before object acquisition; derived HEAD,
+branch, packed-ref and reflog writes; retained commit roots before operational
+mutation; a single file/index/profile journal; owned pin retirement before native
+lock release. Whole-workspace admission precedes file staging, while per-target
+guards repeat immediately before mutation. Stable descriptor reads, fatal UTF-8
+for rewritten control metadata and native Git reflog boolean parsing are required.
+This API rejects dry-run before preparation; recovery preview remains read-only.
+Full dependency retention, every reference backend/fault case, activity barriers
+and ordinary runtime integration remain required, not implied by these tests.
+
+ADR-0036 connects the internal engine handoff to that complete coordinator. Build
+the verified applied/binding proposal before native writes, retain the original
+ConfigStore object identity, and pass full workspace applications and guarded
+files together. Restore in-memory marker references if the coordinator rejects.
+A narrowed hydration view selects content but maps back to the original profile
+for publication; unrelated mappings and markers remain unchanged. Dry-run invokes
+no coordinator. Explicit historical restore keeps its existing emergency
+lifecycle until its remote/local decision is integrated. Normal command, daemon
+and shim wiring remains pending activity, recovery and broader qualification.
+
+Baseline blobs that conform to the Git LFS pointer format MUST NOT be treated as
+the referenced content. Capture and hydration report
+`GIT_LFS_CONTENT_UNAVAILABLE` with logical paths while the worktree still holds
+a pointer or omits the file. A capsule-provided worktree replacement or deletion
+satisfies this check. `ask` and `never` MUST perform no LFS network or working-tree
+mutation. Under explicit `auto` policy, Statecase MUST first attempt a
+device-local `git lfs checkout`, then use bounded non-interactive system Git LFS
+to fetch the exact baseline from the existing `origin` and retry checkout when
+the object is absent. Repository fetch include/exclude settings MUST NOT make a
+required baseline appear complete. Materialized bytes MUST match the pointer's
+declared size and SHA-256. Failure diagnostics MUST redact raw Git LFS output,
+and partial materialization MUST be restored when acquisition or the enclosing
+workspace transaction fails. Statecase MUST NOT serialize remotes or Git/LFS
+credentials.
 
 Modes:
 
 - `metadata-only`: session linkage but no source overlay;
 - `git-overlay`: recommended baseline plus non-reproducible changes;
 - `mirror`: explicit non-Git/full-tree synchronization with Drop-like rules.
+
+`workspace capsule <workspaceId>` performs a local preview of a configured
+`git-overlay` workspace. It forces non-fetching `ask` acquisition policy,
+performs no cloud request or configuration mutation, and exposes only the
+baseline commit, head ref, and aggregate record/blob counts and byte size. It
+MUST NOT emit captured file bytes. `metadata-only` mappings have no Git capsule
+and are rejected. This local Workspace Capsule preview is distinct from the
+immutable remote Session Capsules inspected by `workspace dependencies`.
 
 ### 9.2 Harness activity and read/write completeness
 
@@ -591,6 +914,8 @@ A Drop is a logical tree selected by the user:
 ```bash
 statecase drop add ~/agent-material --name agent-material
 statecase drop map agent-material /srv/agent-material
+statecase drop status agent-material
+statecase drop remove agent-material
 ```
 
 Each Drop has an ID, display name, device-local root mapping, category/scope
@@ -610,6 +935,14 @@ device/revision metadata. Case collisions, Unicode normalization collisions,
 reserved Windows names, and path-length incompatibilities block
 materialization and appear in `statecase conflicts`.
 
+`drop status [dropId]` is a bounded metadata check: it reports whether the
+device-local root is available and compares the locally applied namespace
+revision with the visible remote head. `applied` therefore means revision-head
+alignment, not that local content was scanned for pending changes. A scoped
+client reports an ungranted namespace as `unauthorized`, never as an absent
+remote Drop. `drop remove` removes only the device-local mapping and applied
+marker; it does not delete local files or the encrypted remote namespace.
+
 ## 10. Sync protocol
 
 ### 10.1 Push
@@ -620,7 +953,7 @@ materialization and appear in `statecase conflicts`.
    summaries, and object IDs.
 4. Upload only missing encrypted objects using conditional PUTs.
 5. Upload the encrypted manifest candidate.
-6. Call `POST /v1/vaults/:vaultId/commit` with base revision and manifest
+6. Call `POST /v1/vaults/:vaultId/commits` with base revision and manifest
    reference.
 7. The Durable Object accepts, reports idempotent prior success, or returns a
    structured conflict/rebase requirement.
@@ -634,10 +967,13 @@ materialization and appear in `statecase conflicts`.
 4. Compare logical entries to the last applied revision and local journal.
 5. Download missing objects and verify envelope authentication, IDs, lengths,
    and canonical content digests.
-6. Build a materialization plan in a staging directory.
-7. Validate adapter invariants and available disk space.
-8. Atomically replace safe files or append verified records.
-9. Record the applied revision only after successful materialization.
+6. Resolve portable sessions through the device-local native binding, or the
+   adapter's canonical fallback on a fresh device.
+7. Build a materialization plan in a staging directory.
+8. Validate adapter invariants, binding uniqueness, and available disk space.
+9. Atomically replace safe files or append verified records.
+10. Record the applied revision and native session bindings only after
+    successful materialization.
 
 ### 10.3 Commit concurrency
 
@@ -650,6 +986,22 @@ Every commit includes `baseRevisionId`. If it differs from the current head:
 - delete versus modify becomes a conflict;
 - the same session with different rewrites becomes preserved forks;
 - unknown/binary conflicts preserve both versions and require resolution.
+
+For a recognized portable session, a full-key client performs the append merge
+only when the last locally applied base is a byte-identical, complete JSONL
+prefix of both local and remote branches. Canonical JSON plus occurrence ordinal
+identifies records; a deterministic topological order preserves both branch
+orders and deduplicates only shared occurrences. Invalid UTF-8, malformed or
+partial records, prefix rewrites, and order cycles fail closed. The Worker sees
+only encrypted objects and authenticated manifest metadata. Scoped capability
+clients never use this same-path merge path. A merged publisher deliberately
+keeps its prior applied marker until a subsequent pull proves that the remote
+record stream retains every local occurrence in order. The client validates and
+copies the common base as a stream, compares both prefixes byte for byte, and
+holds only the two concurrent suffixes and their merge graph. Each suffix is
+bounded to 256 MiB and 100,000 records; total session history is bounded by the
+20-GiB session limit. The merged output and the accepting supersequence check
+are file-backed and record-streamed.
 
 No last-writer-wins rule is allowed for user content. Same-key R2 behavior is
 irrelevant to correctness because objects are immutable and the Durable Object
@@ -692,10 +1044,15 @@ Initial endpoints:
 POST   /v1/auth/device/start
 POST   /v1/auth/device/complete
 POST   /v1/auth/token/refresh
-POST   /v1/bootstrap/redeem
+POST   /api/bootstrap/redeem
 GET    /v1/devices
 DELETE /v1/devices/:deviceId
+GET    /v1/vaults/:vaultId/key-recipients
+GET    /v1/vaults/:vaultId/key-envelope
+GET    /v1/vaults/:vaultId/key-envelopes?afterEpoch=<epoch>
+POST   /v1/vaults/:vaultId/key-rotations
 POST   /v1/tokens
+GET    /v1/tokens
 DELETE /v1/tokens/:tokenId
 POST   /v1/sync/plan
 PUT    /v1/vaults/:vaultId/objects/:objectId
@@ -703,12 +1060,19 @@ GET    /v1/vaults/:vaultId/objects/:objectId
 PUT    /v1/vaults/:vaultId/manifests/:revisionId
 GET    /v1/vaults/:vaultId/manifests/:revisionId
 GET    /v1/vaults/:vaultId/head
-POST   /v1/vaults/:vaultId/commit
+POST   /v1/vaults/:vaultId/commits
+GET    /v1/vaults/:vaultId/namespaces
+PUT    /v1/vaults/:vaultId/namespaces/:namespace/objects/:objectId
+GET    /v1/vaults/:vaultId/namespaces/:namespace/objects/:objectId
+GET    /v1/vaults/:vaultId/namespaces/:namespace/revisions/:revisionId
+GET    /v1/vaults/:vaultId/scoped-revisions/:revisionId
+POST   /v1/vaults/:vaultId/namespace-commits
 POST   /v1/vaults/:vaultId/sessions/:sessionId/lease
 DELETE /v1/vaults/:vaultId/sessions/:sessionId/lease
 GET    /v1/vaults/:vaultId/snapshots
 POST   /v1/vaults/:vaultId/snapshots
 DELETE /v1/vaults/:vaultId/snapshots/:snapshotId
+POST   /v1/vaults/:vaultId/garbage-collection
 GET    /v1/vaults/:vaultId/workspaces
 GET    /v1/vaults/:vaultId/drops
 ```
@@ -729,11 +1093,15 @@ condition, `413` size limit, `422` semantically invalid manifest metadata,
 statecase login [--device-name] [--device-code] [--non-interactive]
 statecase logout
 statecase vault create|list|select
+statecase vault join <vaultId> --recovery-file <path>
+statecase vault key rotate --recovery-file <new-path> --yes
 statecase setup [--harness ...] [--transparent] [--dry-run]
-statecase bootstrap [--token-stdin] [--non-interactive]
-statecase workspace attach [--id ...] [--path ...] [--auto]
+statecase bootstrap [--token-file ...] [--non-interactive]
+statecase workspace attach [--id ...] [--path ...] [--auto] [--mode git-overlay|metadata-only] [--git-fetch ask|auto|never]
 statecase workspace list|move|detach
-statecase workspace capsule|dependencies|hydrate
+statecase workspace capsule <workspaceId>
+statecase workspace dependencies [--workspace ...] [--revision ...]
+statecase workspace hydrate --session ... [--mode strict|warn|best-effort] [--dry-run]
 statecase drop add|map|list|remove|status
 statecase pull [--category ...] [--revision ...] [--dry-run]
 statecase push [--category ...] [--dry-run]
@@ -743,8 +1111,11 @@ statecase status [--json]
 statecase doctor [--json]
 statecase conflicts list|show|resolve
 statecase snapshot create|list|protect|delete
-statecase restore --revision ... [--target ...] [--dry-run]
-statecase token create|list|revoke
+statecase restore --revision ... --mapping ... --target ... [--dry-run] [--yes]
+statecase restore --revision ... --mapping ... --in-place [--dry-run|--yes]
+statecase emergency rollback <snapshot-path> --yes
+statecase token create --namespace ... --actions read[,append] --ttl ... --output ...
+statecase token list|revoke
 statecase device list|approve|revoke
 statecase daemon install|start|stop|status|uninstall
 statecase skills install|verify|uninstall
@@ -763,6 +1134,11 @@ The canonical skill is installed in each harness-native discovery path.
 For Codex, user scope is `$HOME/.agents/skills/statecase`; repository-specific
 skills under `.agents/skills` remain source-controlled. Installation MAY use a
 symlink because Codex supports symlinked skill directories.
+For Claude, install/verify/uninstall MUST use the adapter's resolved
+`CLAUDE_CONFIG_DIR` (or `$HOME/.claude` when unset), including relative overrides.
+`setup` MUST NOT silently install into an unused default Claude root. Packaged
+verification uses an isolated HOME and explicit native roots, never operator
+profiles or inherited provider credentials.
 
 The skill MUST:
 
@@ -781,11 +1157,39 @@ trigger prompts.
 
 ## 14. Backup, snapshot, retention, and restore
 
-Every successful commit is a revision. The coordinator periodically marks
-retention checkpoints. A manual protected snapshot is an immutable named
-reference with audit metadata. Garbage collection computes reachability from
-the current head, retained checkpoints, protected snapshots, and unresolved
-conflicts, then waits the grace period before deleting an object.
+Every successful commit is a revision. Protocol 1.1 namespace commits include
+opaque reachability metadata: the manifest object, every required entry and
+conflict object, append parent mode, and the vault revision IDs pinned by
+Session Capsules. This metadata contains identifiers only; the Worker never
+decrypts manifests, paths, prompts, sessions, or dependency names.
+
+The coordinator selects the newest server-ordered revision in each of 24 UTC
+hourly, 30 UTC daily, and 12 UTC monthly buckets. A manual protected snapshot
+is an immutable named reference with audit metadata. The current scoped head,
+checkpoints, protected snapshots, recursively resolved Session Capsule pins,
+and append-delta parents form the reachability roots. Namespace objects outside
+that graph become eligible only after the configured 30-day production grace
+period. Legacy objects, objects uploaded before tracking began, and namespaces
+with missing historical reachability metadata fail conservative and are not
+automatically deleted.
+
+The Worker inventories only the target vault's R2 prefix. A per-vault Durable
+Object lease excludes commits while an executable plan is deleting exact R2
+keys; racing commits receive retryable `GC_BUSY`. Snapshot creation may proceed
+because it can only pin the already-rooted current head. Finalization
+recalculates reachability from the leased roots, persists checkpoints, and
+prunes obsolete coordinator metadata. After lease expiry, writes remain
+blocked: the next scheduled or owner-invoked collector takes over, finalizes
+the same retained roots, recalculates deletion against R2, and completes a new
+lease before admitting another commit. A commit cannot clear an expired lease,
+because the prior Worker might still be deleting. Inventory and graph traversal
+are each bounded to 100,000 records and fail without deletion when exceeded.
+
+Cloudflare invokes this path daily at 03:17 UTC. The owner-only endpoint
+defaults to dry-run and returns aggregate encrypted-object counts and bytes,
+not raw object identifiers. `statecase retention collect --yes` is the explicit
+operator path; direct R2 prefix deletion is never supported. See
+[ADR-0017](adr/0017-retention-and-reachability-gc.md).
 
 Restore modes:
 
@@ -798,6 +1202,33 @@ Restore modes:
 In-place restore MUST refuse active SQLite/WAL targets and MUST preserve a
 local emergency snapshot of files it will replace. Restore completion requires
 adapter validation; a downloaded but unmaterialized revision is not success.
+
+The current implementation enables in-place mode only for full-key devices and
+configured two-way Drop, Codex, Claude, or `git-overlay` workspace mappings.
+Actual execution MUST:
+
+1. require explicit `--in-place --yes`; dry-run MUST remain non-mutating;
+2. acquire the daemon profile lock and, for a harness, an exclusive restore
+   barrier plus a redacted OS process check;
+3. create a protected snapshot of the current remote head;
+4. create and fsync an owner-only emergency snapshot for the exact transaction
+   path set before changing any target; workspace snapshots also preserve HEAD,
+   refs that can move, and the raw index while pinning recovery commits locally;
+5. transactionally materialize and adapter-validate the authenticated target;
+6. commit a new forward namespace/global revision preserving historical
+   Session Capsule pins; and
+7. roll local bytes back from the emergency snapshot if validation or the
+   optimistic commit fails.
+
+The configured target path is inferred from the mapping and an explicit
+`--target`, if supplied, MUST match it. Staging mode MUST refuse that configured
+path so an operator cannot accidentally bypass in-place safeguards. Emergency
+rollback is local/offline, requires `--yes`, and applies the same daemon and
+harness exclusion. Workspace replacement MUST preflight capsule integrity,
+baseline policy, special-file and initialized-submodule boundaries before its
+recovery callback. It then replaces the exact baseline/ref, index, tracked and
+untracked overlay as one recoverable operation. Any HEAD, ref, index, or
+worktree race while recording recovery state aborts before mutation.
 
 ## 15. Observability and privacy
 
@@ -828,6 +1259,38 @@ its file list before writing it.
   pagination and streaming.
 - Rate limiting is per account/device with retry headers and jittered clients.
 
+Recognized harness JSONL is staged record by record in an owner-only temporary
+directory. A single record is bounded to 64 MiB; the overall staged session is
+bounded to 20 GiB. Keyed content digests use the incremental libsodium generic
+hash API and must remain byte-compatible with v1 object identities. JSONL
+objects use deterministic complete-record boundaries with a 4 MiB target and
+hard 4 MiB ceiling; oversized records are split without changing reconstructed
+bytes. Upload encrypts and sends one object at a time and skips object IDs
+already named by the authenticated remote namespace manifest. Pull decrypts
+one object at a time, verifies total size and the incremental content digest,
+localizes portable paths record by record, then atomically installs the
+verified file-backed staging artifact. New empty vaults start directly on
+protocol 1.1; existing protocol 1.0 heads retain the fail-closed migration path.
+
+The concurrent merge path uses the same staging discipline. It downloads and
+authenticates base and remote versions one object at a time, validates the
+potentially multi-gigabyte base without retaining it, loads only the bounded
+branch suffixes, and emits base plus deterministic merged suffix to a new 0600
+staging file. A subsequent pull validates the local record stream as an ordered
+subsequence of the merged remote stream with two-record memory. Literal 2-GiB
+acceptance remains required before the scaled claim is released.
+
+Before each plaintext staging allocation, the client queries the destination
+filesystem's available blocks and requires the predicted copy count plus a
+64-MiB safety reserve. Push uses a conservative two-copy estimate; download,
+localization, merged-output creation, and the atomic materialization copy
+recheck capacity as earlier staging files accumulate. This is a preflight
+rather than a reservation, so `ENOSPC` must still trigger cleanup and leave
+native destinations unchanged. For temporary filesystems that discard empty
+directories, the client recreates the configured temporary root, allocates a
+private child, and runs `statfs` against that materialized child. A failed
+preflight removes the child before returning.
+
 ## 17. Failure behavior
 
 | Failure | Required behavior |
@@ -840,6 +1303,9 @@ its file list before writing it.
 | Durable Object unavailable | queue local work; do not invent a head |
 | Token expires | refresh or return auth code; never discard work |
 | Device revoked mid-session | local work remains; remote writes denied |
+| Rotation response lost | verify own new envelope; otherwise preserve recovery kit and report unknown outcome |
+| Active-device key history has a gap | integrity exit; do not read or write with a guessed/current-only key |
+| Recovery kit is older than the vault | reject join locally; require the current encrypted keyring kit |
 | Disk full | stop before replace; preserve native files and journal |
 | Clock wrong | rely on server expiry and revision graph, not client ordering |
 | Two devices delete/modify | preserve modification and conflict record |
@@ -848,17 +1314,29 @@ its file list before writing it.
 ## 18. Compatibility and schema evolution
 
 Protocol requests carry a major/minor version and client capabilities.
+ADR-0027 defines the initial required service-wide client contract, public bounded
+health negotiation and HTTP 426 refusal before protected domain operations or
+bootstrap consumption. Login/device approval remain exempt. This requires a
+coordinated CLI/Worker cutover; offline old-profile fencing and historical-binary
+upgrade/downgrade qualification are separate, still-open release requirements.
 Manifests and object envelopes are independently versioned. Readers MUST ignore
 unknown optional fields and reject unknown required features. Writers never
 rewrite historical manifests during a schema migration; they create a new
 revision in the new format.
 
 Statecase has no legacy product configuration or backup-repository migration in
-the MVP. It MUST NOT inspect or mutate AgentStash or ClawStash configuration.
+the initial release. It MUST NOT inspect or mutate AgentStash or ClawStash configuration.
 Any future importer requires a separate ADR and remains a one-way, previewed,
 copy-only operation.
 
 ## 19. Delivery sequence
+
+Local profile framing/migration follows ADR-0028. New configurations are framed
+format 2 at the historical `config.json` path; legacy plain JSON requires an
+explicit preview/confirmed upgrade with a retained exact backup. The migration
+does not touch keys, native files or cloud state. Historical reader refusal is
+qualified with actual packages; active old-process and wider filesystem/durability
+limits remain distinct from that stopped-profile result.
 
 1. Freeze protocol/domain types and golden fixtures.
 2. Establish standalone workspace/package boundaries and architecture tests.
@@ -878,10 +1356,148 @@ Each step begins with failing tests identified in the accompanying test plan.
 
 ## 20. Release blockers
 
-- unresolved cryptographic algorithm/library ADR;
+- independent review of the accepted cryptographic integration;
 - no recovery drill on clean machines;
 - any silent last-writer-wins content path;
 - any plaintext content observed in Worker/R2/D1/log captures;
 - inability to bypass or uninstall shims safely;
 - unbounded first-sync memory or request sizes;
+- lack of constant-memory, incremental transfer and append merge for
+  multi-gigabyte sessions;
 - critical test or UAT scenario not automated/documented.
+## Global instruction transport supplement — ADR-0024
+
+Global instruction roots use adapter-reviewed `portable-instructions/v1/`
+logical paths within the harness namespace. Preserve Markdown bytes and
+resolve only closed reviewed imports; never import arbitrary referenced host
+files. Limits, parsing subset, descriptor/parent guards, transaction semantics
+and opt-in workspace-memory design are specified in
+[ADR-0024](adr/0024-portable-instructions-and-memory.md).
+
+Namespace heads/revisions/checkpoints now carry optional `commitMode`, absent
+only for pre-provenance revisions. Persist it from the authorized commit mode,
+never from encrypted manifest declarations. Instruction entries/tombstones
+require `replace`; append history must preserve the server-recorded predecessor.
+The namespace-list response advertises `commitProvenance: 1`; instruction
+publication requires this feature before uploads, also during legacy migration.
+An updated Worker must be deployed before live instruction publication. This
+does not retire the outstanding mixed-client fencing requirement.
+
+CLI instruction authority failures use authorization exit `4`; concurrent native
+file changes use conflict exit `5`; invalid/unsafe/incomplete instruction context
+uses integrity exit `6`. Preserve the existing JSON `{error:{code,message}}`
+contract and fixed redacted messages, rather than exposing native paths or
+OS errors as internal failures.
+
+## Memory collections — ADR-0025
+
+Memory selection is opt-in and separate from Drops and harness setup. A local
+binding names a stable `memory:<id>` namespace, native category, owning harness,
+optional logical workspace and explicit device-local directory. Validate IDs
+and ownership before filesystem access. The sync engine now transports bounded
+Markdown through a dedicated native policy and authenticates the canonical
+`portable-memory/v1/collection.json` descriptor. The descriptor is encrypted
+metadata, never a native file. Each collection uses its own scope key; optional
+Session Capsule `memories` pins contain unique collection IDs and immutable vault
+revision IDs. Structured references into selected collections use the `memory`
+dependency source. A dependency report also checks each pinned descriptor even
+when the transcript has no explicit memory Read event.
+
+Hydration selects only pinned collections and validates local harness/workspace
+ownership before combining their historical state with the session/workspace
+transaction. Missing collections remain unresolved, missing payloads fail before
+application, and unselected local memory stays untouched. Pins contribute opaque
+revision roots to existing GC reachability metadata. Memory-only updates do not
+rewrite an unchanged session's checkpoint; explicitly changing the selected
+collection set creates a new capsule, including when transcript bytes are equal.
+Read-only selected memory must already exist remotely before it can be pinned.
+
+CLI enrollment is now `memory map <id> <path>` with category/harness and, for
+Claude project memory, a logical workspace. Exactly one of `--dry-run` / `--yes`
+is required. Preview scans only the selected root with the bounded native policy
+and returns aggregate counts, not file content. Repeating a binding is idempotent;
+moving its path clears the applied marker without moving/deleting files. Logical
+category/harness/workspace identity is immutable for an existing ID. `memory list`
+is local metadata only; `memory remove` forgets the binding, not cloud history.
+`restore --mapping memory_<id>` selects one memory namespace, and staged restore
+does not change the native binding. In-place restore fences the owning harness.
+Conflicts accept the same mapping ID and preserve unrelated namespace selection.
+
+Configuration writes validate memory ownership even when an ordinary Drop or
+workspace command changes the candidate config. A per-profile kernel mutex and
+observed-content fingerprint reject stale concurrent writes with exit `5`;
+callers must reload before retrying. No field is silently merged or discarded.
+This is configuration serialization, not a transaction spanning remote commits,
+credentials and native files, nor a substitute for old-client fencing.
+
+Daemon watches and native service write roots include selected memory paths.
+After a root change, stop a running service and rerun `daemon install` to refresh
+OS permissions and watchers. The CLI can update selection while an agent is
+active because it neither rewrites native state nor enables memory generation.
+
+This does not establish native-memory compatibility. Full native effective-location precedence, custom/
+subagent formats, path localization of memory references in restored tool history,
+empty/missing-root service initialization, dynamic service refresh, mixed-version
+fencing and packaged independent-host UAT remain
+required. No automatic harness setup enables or scans memory. The complete
+TDD/UAT obligations remain normative in
+[ADR-0025](adr/0025-memory-identity-and-local-bindings.md).
+
+Native evidence is collected separately by the disposable-runner
+`uat:native-claude -- --memory` fixture: fresh startup context, on-demand topic
+Read, native Edit/Write, exact default-to-custom-root encrypted transfer and
+return recall, plus disabled-memory and unselected-project controls. It does
+not invoke the native harness on the operator machine or copy operator memory.
+Local assertion tests are not a native pass; record exact-candidate CI results
+and keep reference-backend evidence distinct from packaged/live-cloud UAT.
+
+AD-MEM-011 adds typed memory-reference conversion in session history. Reviewed
+absolute tool path fields use stable `statecase://memory/<id>/<path>` references;
+materialization resolves only explicitly bound, same-harness/same-project roots.
+Missing/unsafe references are integrity exit 6 before native writes. Content and
+prose are not rewritten. The streamed and buffered session paths, global unbound
+sessions and append-merge activity inspection share the policy. Relative paths,
+freeform patch conversion, old-history migration and mixed-version fencing remain
+required; this format must not be deployed as mixed-client-compatible without
+that qualification. See ADR-0025 for exact boundaries.
+
+The relative-reference follow-up resolves canonical relative memory tool fields
+using per-record native cwd metadata before workspace URI conversion. It never
+uses the CLI process cwd or guesses from a mapped workspace. Missing/invalid cwd
+and noncanonical alias-sensitive spellings fail with the same integrity error.
+Source-local normalization also feeds memory activity/dependency extraction.
+Native relative-history execution must be qualified separately from unit tests;
+freeform patches, historical migration and mixed-version fencing remain open.
+
+Applied-file digests for sessions represent the native complete prefix captured
+for that publication, not its transformed portable payload. Retain the accepted
+native staging path/bytes until hashing and cleanup; do not reread a live source
+after network activity. Portable content digests still address encrypted objects.
+Incomplete tails and post-capture edits are not included as overwrite consent.
+This corrects false source conflicts on relative-to-absolute return hydration;
+it does not waive concurrent edits or qualify historical representation migration.
+
+Reviewed raw `apply_patch` inputs now share a whole-envelope validator with
+activity extraction. Convert only Add/Update/Delete/Move header paths, never
+hunks or surrounding content; preserve exact LF/CRLF and trailing whitespace.
+Memory headers use the same collection identity, cwd and ownership rules as
+structured tools. Malformed patches with selected source memory fail before
+publication, including relative-only input. The mapper does not execute patches
+or resolve filesystem aliases. Workspace/Drop raw patch conversion and native
+automatic memory consumption/generation require separate implementation/evidence.
+
+## Precommit file observations and concurrent native equivalence
+
+ADR-0026 binds ordinary file/tombstone conflict preflight to a scope-keyed,
+descriptor-based observation, rechecked immediately before each native mutation.
+Use bounded 64 KiB chunks, reject unsafe file kinds/parent substitution and
+preserve absent destinations. Changes after preflight are conflict exit 5,
+including during explicit overwrite operations. Roll back earlier writes and
+leave local configuration untouched; do not weaken native context permissions.
+This is not an atomic filesystem compare-and-swap or crash-recovery completion.
+
+For accepting merged sessions, project reviewed memory references on each native
+stream to logical IDs with independent cwd state before comparing ordered record
+occurrences. Validate complete JSONL and all remote suffixes, preserve authored
+content and close iterators on refusal. Portable merge bases remain byte-exact;
+no old-history migration or scoped permission expansion is implied.

@@ -1,0 +1,17 @@
+{
+  "name": "@statecase/adapter-common",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./config": "./src/config.ts",
+    "./settings-transport": "./src/settings-transport.ts",
+    "./instructions": "./src/instructions.ts",
+    "./memory": "./src/memory.ts"
+  },
+  "dependencies": {
+    "jsonc-parser": "3.3.1",
+    "toml-eslint-parser": "0.10.0"
+  }
+}

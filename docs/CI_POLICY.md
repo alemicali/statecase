@@ -9,15 +9,79 @@ Branch protection should require these logical checks on pull requests:
 
 1. `quality` — lint, typecheck, coverage tests, build, package dry-run, and
    production dependency audit on the primary Node version.
+   It also runs `uat:profile`: locked historical source and the current CLI are
+   clean-packaged/installed in disposable roots to verify explicit local-profile
+   upgrade and old config-dependent command refusal, without native harnesses
+   or remote service credentials.
+   The file-recovery suite additionally bundles the internal materializer into
+   disposable children, uses actual SIGKILL and replays in fresh processes on
+   synthetic roots. These checks do not enable or qualify the still-pending
+   outer CLI/Git/profile recovery integration.
 2. `compatibility` — build and tests on every supported Node major.
 3. `CodeQL` — JavaScript/TypeScript static security analysis, required once
    GitHub code scanning is available for the repository.
 4. `Dependency Review` — blocks newly introduced vulnerable dependencies once
    GitHub dependency review is available for the repository.
+5. `native-macos` — real launchd start/stop, private IPC, duplicate-writer denial,
+   profile isolation, filesystem notification, SIGKILL restart, and cleanup on
+   a disposable hosted macOS runner with synthetic unauthenticated state only.
+   Also run the ADR-0033 native Git lock suite on that runner: persisted inode
+   ownership before native publication, real Git writer exclusion, actual
+   SIGKILL/recovery and refusal to remove foreign or changed lock evidence.
+   Include ADR-0034 repository-derived grants and the real ConfigStore Git-index
+   checkpoint suites, including linked worktrees and interrupted release/replay.
+   Include ADR-0035 complete workspace/reference/profile and stable native
+   reference observation suites; these use synthetic Git repositories only.
+   ADR-0036 also runs actual encrypted-engine SIGKILL/fresh-process recovery with
+   the test-only reference transport, synthetic sessions, Drops and Git roots.
+   ADR-0038 adds the public recovery command/preview/refusal suite and routes the
+   whole-engine fresh-process replay through the operator coordinator. Process
+   tables are synthetic; tests do not inspect an operator harness installation.
+6. `background-sync` — two authenticated daemon processes with local
+   workerd/D1/R2, interrupted object upload, durable journal replay, offline
+   restart, disjoint updates, deletion, and idle no-op verification. All account
+   credentials and database/object state are generated inside one temporary
+   fixture; no external account or existing agent directory is used.
+7. `native-codex` and `native-claude` — pinned real harnesses execute file
+   tools, persist sessions, resume their original UUID in a different home and
+   checkout after encrypted engine hydration, and synchronize changes back.
+   Each runs on a disposable hosted VM with a deterministic loopback model
+   provider and in-memory reference storage. These jobs do not replace the
+   packaged/live-cloud cross-host UAT or qualify interactive session pickers.
+   Fresh-session probes must also observe synchronized global instructions in
+   actual request context, including Codex override precedence and Claude
+   reviewed relative imports/global rules (AD-CTX-007). Markers must never be
+   injected into prompts or tool metadata as a substitute for native loading.
+8. `native-credentials` and `native-macos-credentials` — clean installed CLI
+   tarballs migrate synthetic credential files, refuse locked/unavailable native
+   stores, reopen in independent CLI processes and retain encryption on logout.
+   Linux uses a private non-activating D-Bus and disposable persistent Secret
+   Service. macOS uses one explicitly addressed temporary Keychain, never the
+   default store. Owned native resources and fixture files must be cleaned up.
 
 Jobs use `npm ci`, minimum permissions, dependency caching, concurrency
 cancellation, timeouts, and no production credentials. CI forks receive no
 secrets.
+
+The ordinary portable Vitest suite caps concurrent workers at half the available CPU
+parallelism, at least one and at most four. Recovery suites also spawn real Git,
+esbuild and independent Node processes; worker scheduling must leave capacity for
+those children. This does not increase per-test timeouts, skip correctness tests
+or retry failures. Preserve failing-run evidence when adjusting orchestration.
+
+The complete coverage command uses one worker: coverage-instrumented native
+recovery suites repeatedly exceeded their existing five-second deadlines when
+run together on the shared development filesystem, while controlled sequential
+execution passed. This bounds suite-level resource contention, not the explicit
+parallel processes exercised inside race/concurrency tests. Non-coverage Node
+compatibility and macOS tests retain their usual worker cap. No timeout, required
+test or threshold changes; performance-under-load qualification remains separate.
+
+On a shared local machine, do not overlap complete portable coverage runs with
+workerd integration/UAT suites. Their independent worker pools do not share this
+cap. Hosted jobs on separate runners can still execute concurrently. The
+2026-09-09 readiness record preserves eight five-second timeouts from an
+accidental local overlap; serialized diagnosis does not waive timing failures.
 
 ## Runtime matrix
 
@@ -46,7 +110,8 @@ and owner approval; it must not be used to merge untested new code.
 
 ### Pull request
 
-Run quality and runtime compatibility. Add dependency review and CodeQL to the
+Run quality, runtime compatibility, native macOS lifecycle, authenticated
+background sync, Linux/macOS native credential protection, and native Codex/Claude session continuity. Add dependency review and CodeQL to the
 required set as soon as GitHub exposes them for the repository. Core integration
 tests use local Cloudflare emulation and fake identity; no network account or
 personal harness directory.
@@ -66,12 +131,16 @@ failure opens/updates a tracked issue and blocks a release even if PR CI passed.
 ### Release candidate
 
 Run all deterministic, integration, fault, schema-evolution, recovery,
-security, and performance suites plus documented UAT. During the MVP, remote
+security, and performance suites plus documented UAT. During release qualification, remote
 smoke tests use a uniquely prefixed disposable vault in the single remote stack
 and never destructive shared fixtures. A separate staging/production promotion
 flow is required before public launch.
 
 ## Test artifacts and retention
+
+The main portable coverage run emits full JSON branch maps alongside its summary
+and HTML report. Use that same run for changed-critical-region review instead of
+starting a duplicate complete suite solely to obtain machine-readable coverage.
 
 Failed integration/fault jobs upload only redacted logs, seeds, synthetic
 manifests, and reports. Artifacts must pass a canary/secret scan. Never upload

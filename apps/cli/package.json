@@ -1,0 +1,50 @@
+{
+  "name": "@statecase/cli",
+  "version": "0.1.0",
+  "description": "Take your agents anywhere with encrypted portable operational context",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alemicali/statecase.git"
+  },
+  "homepage": "https://github.com/alemicali/statecase#readme",
+  "type": "module",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "bin": {
+    "statecase": "./dist/bin.js"
+  },
+  "scripts": {
+    "build": "esbuild src/bin.ts --bundle --platform=node --format=esm --target=node22 --external:better-sqlite3 --banner:js='#!/usr/bin/env node' --outfile=dist/bin.js && node scripts/copy-assets.mjs",
+    "prepack": "npm run build",
+    "test": "vitest run test"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3"
+  },
+  "devDependencies": {
+    "@statecase/adapter-claude": "*",
+    "@statecase/adapter-codex": "*",
+    "@statecase/adapter-common": "*",
+    "@statecase/crypto": "*",
+    "@statecase/chunking": "*",
+    "@statecase/domain": "*",
+    "@statecase/protocol": "*",
+    "@statecase/runtime": "*",
+    "@statecase/storage-local": "*",
+    "@statecase/sync-core": "*",
+    "@statecase/workspace": "*",
+    "commander": "^15.0.0",
+    "zod": "^4.5.4"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

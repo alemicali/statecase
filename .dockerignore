@@ -1,0 +1,9 @@
+.git
+.wrangler
+coverage
+dist
+**/dist
+**/node_modules
+*.log
+.env*
+!.env.example

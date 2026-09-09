@@ -25,6 +25,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - run: npm run cloud:test
+      - name: Qualify historical package profile upgrade and downgrade refusal
+        run: npm run uat:profile
       - run: npm audit --omit=dev --audit-level=high
       - name: Upload coverage
         if: always()
@@ -51,3 +54,113 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+
+  background-sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run uat:background
+
+  native-credentials:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: sudo apt-get update && sudo apt-get install -y dbus libsecret-tools gnome-keyring
+      - run: npm ci
+      - name: Qualify packaged credentials in a private Secret Service
+        run: STATECASE_PACKAGE_NATIVE_CREDENTIALS=1 npm run test:package
+
+  native-macos-credentials:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Qualify packaged credentials in an explicit disposable Keychain
+        run: STATECASE_PACKAGE_NATIVE_CREDENTIALS=1 npm run test:package
+
+  native-macos:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Qualify recoverable native Git lock ownership
+        run: npx vitest run apps/cli/test/native-lock.test.ts apps/cli/test/git-index-participant.test.ts apps/cli/test/git-profile-checkpoint.test.ts apps/cli/test/git-reference-participant.test.ts apps/cli/test/workspace-profile-recovery.test.ts apps/cli/test/engine-profile-recovery.test.mjs apps/cli/test/profile-materialization.test.ts
+      - name: Qualify isolated launchd lifecycle
+        shell: bash
+        run: |
+          fixture_root=$(mktemp -d /tmp/statecase-launchd-XXXXXX)
+          STATECASE_UAT_CONFIRM=temporary-native-service \
+          STATECASE_UAT_ROOT="$fixture_root" \
+          STATECASE_UAT_CLI="$GITHUB_WORKSPACE/apps/cli/dist/bin.js" \
+          node scripts/uat/native-launchd.mjs
+
+  native-codex:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Install the qualified native harness version
+        run: npm install --prefix "$RUNNER_TEMP/statecase-native-tools" --no-audit --no-fund @openai/codex@0.153.4
+      - name: Qualify native session continuity in the disposable runner VM
+        shell: bash
+        run: |
+          STATECASE_UAT_CODEX="$RUNNER_TEMP/statecase-native-tools/node_modules/.bin/codex" \
+          STATECASE_UAT_PARENT="$GITHUB_WORKSPACE" \
+          STATECASE_UAT_CODEX_SANDBOX=externally-isolated \
+          STATECASE_UAT_CONFIRM=run-native-harness-in-disposable-sandbox \
+          npm run uat:native-codex
+
+  native-claude:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Install the qualified native harness version
+        run: npm install --prefix "$RUNNER_TEMP/statecase-native-tools" --no-audit --no-fund @anthropic-ai/claude-code@2.1.263
+      - name: Qualify native session continuity in the disposable runner VM
+        shell: bash
+        run: |
+          STATECASE_UAT_CLAUDE="$RUNNER_TEMP/statecase-native-tools/node_modules/.bin/claude" \
+          STATECASE_UAT_PARENT="$GITHUB_WORKSPACE" \
+          STATECASE_UAT_CONFIRM=run-native-harness-in-disposable-sandbox \
+          npm run uat:native-claude
+      - name: Qualify native memory recall, writes and return transfer
+        shell: bash
+        run: |
+          STATECASE_UAT_CLAUDE="$RUNNER_TEMP/statecase-native-tools/node_modules/.bin/claude" \
+          STATECASE_UAT_PARENT="$GITHUB_WORKSPACE" \
+          STATECASE_UAT_CONFIRM=run-native-harness-in-disposable-sandbox \
+          npm run uat:native-claude -- --memory
