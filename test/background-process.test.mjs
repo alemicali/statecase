@@ -5,6 +5,25 @@ import { trackFixtureProcess, fixtureFailureSummary } from "../scripts/uat/fixtu
 
 function child() { const value = new EventEmitter(); value.stdout = new PassThrough(); value.stderr = new PassThrough(); return value; }
 describe("redacted background fixture diagnostics (RT-017)", () => {
+  it("classifies backend stdout errors across chunks without exposing output", async () => {
+    const process = child(), tracked = trackFixtureProcess(process, "backend");
+    process.stdout.write("private-stdout-canary [ERROR] ERR_RUNTIME_");
+    process.stdout.write("FAILURE ECONNRESET private-token\n");
+    process.emit("exit", 1, null); await tracked.exited;
+    const report = fixtureFailureSummary({}, "interrupted-upload-journal-retained", [tracked]);
+    expect(report.processes[0]).toMatchObject({ state: "exited", exitCode: 1,
+      stdoutCategories: ["code:ECONNRESET", "code:ERR_RUNTIME_FAILURE", "reported-error"], stderrCategories: [] });
+    expect(JSON.stringify(report)).not.toMatch(/private|token/u);
+  });
+  it("keeps stdout and stderr classifications independent and bounded to known categories", async () => {
+    const process = child(), tracked = trackFixtureProcess(process, "backend");
+    process.stdout.write("secret-output".repeat(20_000)); process.stdout.write("Error: EPIPE\n");
+    process.stderr.write("private-stderr-canary out of memory\n");
+    process.emit("exit", 1, null); await tracked.exited;
+    const report = fixtureFailureSummary({}, "setup", [tracked]);
+    expect(report.processes[0]).toMatchObject({ stdoutCategories: ["code:EPIPE", "reported-error"], stderrCategories: ["out-of-memory"] });
+    expect(JSON.stringify(report)).not.toMatch(/secret|private/u);
+  });
   it("records real termination separately from network failure without printing child output", async () => {
     const process = child(), tracked = trackFixtureProcess(process, "backend");
     process.stderr.write("private-canary secret-token FATAL ERROR: out of memory\n");
